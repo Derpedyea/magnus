@@ -7,21 +7,56 @@
   "engines": {
     "node": ">=22"
   },
+  "imports": {
+    "#shared": "./shared/index.ts",
+    "#shared/*": "./shared/*.ts"
+  },
   "scripts": {
-    "dev": "turbo run dev",
-    "build": "turbo run build",
-    "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
-    "cf-typegen": "turbo run cf-typegen",
-    "deploy": "turbo run deploy",
-    "db:migrate:local": "wrangler d1 migrations apply magnus-directory --local --config apps/web/wrangler.jsonc --persist-to .wrangler/state",
-    "db:seed:local": "wrangler d1 execute magnus-directory --local --config apps/web/wrangler.jsonc --persist-to .wrangler/state --file packages/directory/seed/dev.sql",
-    "db:migrate:remote": "wrangler d1 migrations apply magnus-directory --remote --config apps/web/wrangler.jsonc",
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "vite build && wrangler deploy",
+    "typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.worker.json",
+    "test": "vitest run",
+    "cf-typegen": "wrangler types --strict-vars=false",
+    "db:seed:local": "wrangler d1 migrations apply DIRECTORY --local && wrangler d1 execute DIRECTORY --local --file scripts/seed-dev.sql",
     "mail:test": "node scripts/send-test-email.mjs"
   },
+  "dependencies": {
+    "@base-ui/react": "^1.8.0",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@hono/zod-validator": "^0.9.1",
+    "@tanstack/react-form": "^1.33.5",
+    "@tanstack/react-query": "^5.104.0",
+    "@tanstack/react-router": "^1.170.40",
+    "@tanstack/react-store": "^0.11.1",
+    "better-auth": "1.7.6",
+    "class-variance-authority": "^0.7.1",
+    "cn": "^0.4.0",
+    "hono": "^4.13.9",
+    "input-otp": "^1.5.0",
+    "lucide-react": "^1.48.0",
+    "postal-mime": "^4.0.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "shadcn": "^4.21.0",
+    "tw-animate-css": "^1.4.0",
+    "zod": "^4.6.5"
+  },
   "devDependencies": {
-    "turbo": "^2.11.4",
+    "@cloudflare/vite-plugin": "^1.60.2",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/react-devtools": "^0.10.13",
+    "@tanstack/react-query-devtools": "^5.104.0",
+    "@tanstack/react-router-devtools": "^1.167.2",
+    "@tanstack/router-plugin": "^1.168.41",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2",
     "wrangler": "^4.141.0"
   },
   "pnpm": {
@@ -29,5 +64,18 @@
       "esbuild",
       "workerd"
     ]
+  },
+  "cloudflare": {
+    "bindings": {
+      "DIRECTORY": {
+        "description": "People, domains, and addresses."
+      },
+      "MAIL": {
+        "description": "Raw messages, bodies, and attachments."
+      },
+      "INBOUND": {
+        "description": "Hands incoming mail from the SMTP session to the parser."
+      }
+    }
   }
 }

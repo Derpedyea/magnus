@@ -1,146 +1,122 @@
 # Deploying Magnus
 
-Everything below runs against your own Cloudflare account, by hand, in order. Steps that change DNS or mail
-flow are marked ⚠️. The examples use `example.com`; substitute your domain throughout.
+You need a Cloudflare account on **Workers Paid** ($5/month; Email Sending to arbitrary recipients requires it)
+and a domain whose DNS is on Cloudflare.
 
-**Turning on Email Routing for a domain replaces its MX records**, so whatever receives that domain's mail
-today stops receiving it immediately. Turning on Email Sending only adds records under `cf-bounce.<domain>`
-(plus `_dmarc`), so it's safe while another provider still receives. If you can, pilot on a domain with no
-mail yet.
+## 1. Deploy
 
-## 0. Prerequisites
+**With the button** (recommended):
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Derpedyea/magnus)
 
-- A Cloudflare account on **Workers Paid** ($5/mo). Email Sending to arbitrary recipients requires it.
-- Your domain(s) on Cloudflare DNS.
-- Node 22+, pnpm 10, then `pnpm install` at the repo root and `npx wrangler login`.
+Cloudflare copies the repository to your GitHub, creates the D1 database, R2 bucket, and queues, and deploys
+the Worker. Every push to that copy redeploys it.
 
-## 1. Create resources
+**From the command line** instead:
 
 ```sh
-npx wrangler d1 create magnus-directory
-#   → paste the printed database_id into apps/mx/wrangler.jsonc AND apps/web/wrangler.jsonc
-
-npx wrangler r2 bucket create magnus-mail
-npx wrangler r2 bucket lifecycle add magnus-mail reap-uploads uploads/ --expire-days 14
-
-npx wrangler queues create magnus-inbound
-npx wrangler queues create magnus-inbound-dlq
-npx wrangler queues create magnus-email-events
+git clone https://github.com/Derpedyea/magnus && cd magnus
+pnpm install
+npx wrangler login
+pnpm run deploy        # creates the database, bucket, and queues on first run
 ```
 
-## 2. Point the config at your domain
+Either way, nothing needs configuring: the D1 schema is applied by the Worker itself, and the session secret
+is generated on first run.
 
-| File | Key | Set to |
-| --- | --- | --- |
-| `apps/mx/wrangler.jsonc` | `addresses` | `*@example.com` for each domain that receives here |
-| `apps/web/wrangler.jsonc` | `routes[0].pattern` | Where the web app lives, e.g. `mail.example.com` |
-| | `vars.BETTER_AUTH_URL` | `https://` + that hostname |
-| | `vars.LOGIN_CODE_FROM` and `send_email[0].allowed_sender_addresses` | The address sign-in codes come from, e.g. `login@example.com` |
+## 2. Set up
 
-## 3. Directory schema and data
+Open the Worker's URL, `https://magnus.<your-subdomain>.workers.dev`. Until someone finishes setup, every
+page leads to `/setup`:
+
+1. **Connect Cloudflare.** *Create a token* opens Cloudflare's token page with most permissions filled in.
+   Add the two it can't pre-select, create the token, and paste it. The token must belong to the account
+   Magnus is deployed to: setup looks for this exact deployment in it, which is how it knows you own this
+   install and aren't a stranger who found the URL first. The token is used for that request and never stored.
+2. **Pick your domain.** Each one shows who receives its mail today.
+3. **Create your account:** your name, your new address, and a *sign-in email* somewhere else (your current
+   inbox), where sign-in codes go.
+4. **Turn on the domain.** Magnus does it, one step at a time:
+   Email Routing, a catch-all rule sending every address to this Worker, Email Sending, and a delivery-event
+   subscription. Sending usually waits a minute for DNS; *Check again* picks it up.
+
+Then you're in. Everything else happens under **Admin** in the sidebar.
+
+### The token's permissions
+
+| Permission | Why |
+| --- | --- |
+| Account · Workers Scripts · Read | Find this install in your account |
+| Account · Queues · Edit | Subscribe the delivery-events queue to Email Sending |
+| Account · Email Sending · Edit | Turn on sending for a domain (add by hand) |
+| Zone · Zone · Read | List your domains |
+| Zone · Zone Settings · Edit | Turn on Email Routing |
+| Zone · DNS · Edit | Read MX records, and remove another provider's when you move a domain |
+| Zone · Email Routing Rules · Edit | Point the catch-all at this Worker (add by hand) |
+
+Admins paste a token again whenever they add or turn on a domain. It's kept in that tab's memory only.
+
+## 3. Admin
+
+- **Domains.** Add more of your Cloudflare domains, turn them on, and choose what happens to mail for
+  addresses that don't exist: reject it (the default), or deliver it to someone.
+- **People.** Add someone with their own mailbox and address; they sign in with a code sent to their sign-in
+  email. Make them an admin, suspend them (they can't sign in, but their mail keeps arriving), or remove
+  them (their mailbox and its mail are deleted).
+- **Addresses.** Add addresses and choose who receives them. Several people makes a shared address like
+  `family@`: each gets a copy and can reply from it.
+
+## Moving a domain from another provider
+
+A domain that gets mail elsewhere (Proton, Google, …) shows that provider when you pick it. Turning it on
+removes the provider's MX records and adds Cloudflare's, so **mail stops arriving at the old provider right
+away**, and Magnus asks you to confirm first. Before you do:
+
+1. Export your old mail (usually to `.eml`). Importing it is on the [roadmap](ARCHITECTURE.md#8-roadmap).
+2. Lower the TTL on the existing MX records a day ahead, so the switch spreads quickly.
+
+Afterwards, remove the old provider's SPF `include:`, DKIM records, and verification TXT from the zone, and
+tighten DMARC to `v=DMARC1; p=quarantine; rua=mailto:dmarc@example.net` (then `p=reject` once the reports
+look clean).
+
+To roll back, restore the old MX records in Cloudflare DNS. Every message that arrived in the meantime is in
+R2 under `raw/`.
+
+## A custom domain for the app
+
+The app works at its `workers.dev` URL. To use something like `mail.example.com`, add it under the Worker's
+**Settings → Domains & Routes** in the Cloudflare dashboard. Sign-in works on both.
+
+## Google sign-in (optional)
+
+Codes by email need nothing extra. To add "Continue with Google":
+
+1. In Google Cloud's **Google Auth Platform**, create a web client with the redirect URI
+   `https://<your Magnus host>/api/auth/callback/google`.
+2. Set both halves as secrets: `npx wrangler secret put GOOGLE_CLIENT_ID`, then `GOOGLE_CLIENT_SECRET`.
+
+Only people already added can sign in with Google, matched by their sign-in email.
+
+## Updating
+
+With the button, your copy is a new repository in your GitHub account. Pull this one into it and push, and
+Workers Builds redeploys:
 
 ```sh
-pnpm db:migrate:remote
+git remote add upstream https://github.com/Derpedyea/magnus   # once
+git pull upstream main && git push
 ```
 
-Then create your users, mailboxes, and addresses. Copy `packages/directory/seed/dev.sql` as a template: swap
-`dev@localhost` for the email you'll sign in with, and use your real domains and local parts. Only set
-`receiving = 1` for domains whose MX actually points at Cloudflare.
-
-```sh
-npx wrangler d1 execute magnus-directory --remote --file path/to/your-seed.sql
-```
-
-## 4. Google sign-in
-
-Only emails in `users.login_email` (step 3) can sign in; anyone else is turned away after Google. The other
-way in, a code emailed to that address, needs nothing here and starts working once step 6 turns on Email
-Sending for the `LOGIN_CODE_FROM` domain.
-
-1. Google Cloud console → **Google Auth Platform**: create a project, then under **Branding** name the app.
-   Audience: External, publishing status **In production** (it only asks for `openid`, `email`, and
-   `profile`, which need no Google review).
-2. **Clients → Create client → Web application.** Authorized redirect URI:
-   `https://mail.example.com/api/auth/callback/google`. For real sign-in locally, also add
-   `http://localhost:5173/api/auth/callback/google` and put the same pair in `apps/web/.dev.vars`.
-3. Put the client ID in `apps/web/wrangler.jsonc` → `vars.GOOGLE_CLIENT_ID`, then set the secrets:
-
-   ```sh
-   cd apps/web
-   npx wrangler secret put GOOGLE_CLIENT_SECRET
-   openssl rand -base64 32 | npx wrangler secret put BETTER_AUTH_SECRET
-   ```
-
-   Rotating `BETTER_AUTH_SECRET` signs everyone out.
-
-## 5. Deploy (order matters: the DO class must exist before bindings reference it)
-
-```sh
-(cd apps/mailstore && npx wrangler deploy)
-(cd apps/web && pnpm build && npx wrangler deploy)      # creates the custom domain from step 2
-# mx is deployed in step 6, together with routing
-```
-
-## 6. ⚠️ First domain
-
-```sh
-npx wrangler email routing enable example.com          # apex MX/SPF/DKIM for inbound
-npx wrangler email sending enable example.com          # cf-bounce MX/SPF/DKIM + DMARC for outbound
-npx wrangler email sending dns get example.com         # confirm records
-(cd apps/mx && npx wrangler deploy)                    # installs the *@example.com catch-all → magnus-mx
-```
-
-Subscribe delivery events. The zone ID is on the domain's Overview page in the dashboard. Confirm the event
-names with `npx wrangler queues subscription create --help`:
-
-```sh
-npx wrangler queues subscription create magnus-email-events \
-  --source email.sending --zone-id <zone id> --domain example.com \
-  --events message.delivered,message.deferred,message.bounced,message.failed,message.rejected,message.complained
-```
-
-Smoke test:
-
-1. From another account, write to `you@example.com`, then to `you+test@example.com` (it should land with a
-   `test` label). Write to a nonexistent address too; it should bounce at SMTP time unless you set a
-   catch-all mailbox.
-2. Reply from the web app. In Gmail, open **Show original** and check SPF/DKIM/DMARC = PASS. Also check that
-   the `Message-ID` matches the one on the Sent message ([ARCHITECTURE §7](ARCHITECTURE.md#7-things-to-verify-on-the-first-real-send)).
-3. Reply again from the other account and confirm it threads onto the same conversation.
-4. Within a minute, the Sent message's badge should change from `sent` to `delivered` (event subscription).
-
-## 7. ⚠️ Domains that already receive mail elsewhere
-
-**Send first (optional).** You can send as the domain while your current provider keeps receiving:
-
-```sh
-npx wrangler email sending dns get example.net         # review first: does it touch your existing _dmarc?
-npx wrangler email sending enable example.net
-```
-
-Set `domains.sending = 1` for it in D1 and repeat the event subscription. Replies still go to the old
-provider until you cut over receiving.
-
-**Cut over receiving**, per domain, when you're ready:
-
-1. Export your history from the old provider (`.eml`). Importing it is roadmap item 6 in
-   [ARCHITECTURE.md](ARCHITECTURE.md#8-roadmap).
-2. Lower the TTL on the existing MX records a day ahead.
-3. `npx wrangler email routing enable example.net`. This replaces the old MX records. From here, mail
-   arrives in Magnus.
-4. Add `"*@example.net"` to `addresses` in `apps/mx/wrangler.jsonc`, set `domains.receiving = 1`, and
-   redeploy mx.
-5. Afterwards, remove the old provider's SPF `include:`, DKIM records, and verification TXT, and tighten DMARC
-   to `v=DMARC1; p=quarantine; rua=mailto:dmarc@example.net` (then `p=reject` once reports are clean).
-
-Rollback: restore the old MX records (and remove the Email Routing ones). The raw copy of every message that
-arrived in the meantime is in R2 under `raw/`.
+From the command line, `git pull && pnpm run deploy`. New D1 migrations apply themselves when the updated
+Worker first runs.
 
 ## Operations cheat sheet
 
 ```sh
-npx wrangler tail magnus-mx                    # live inbound logs (accepted/rejected/ingested)
-npx wrangler tail magnus-mailstore             # outbox sends, failures
-npx wrangler queues info magnus-inbound-dlq    # anything stuck?
-npx wrangler d1 execute magnus-directory --remote --command "SELECT * FROM addresses"
+npx wrangler tail magnus                                      # live logs: accepted/rejected/ingested, sends
+npx wrangler d1 execute DIRECTORY --remote --command "SELECT address, domain FROM addresses"
+# Optional: delete attachments uploaded to drafts that were never sent, after 14 days.
+npx wrangler r2 bucket lifecycle add magnus-mail reap-uploads uploads/ --expire-days 14
 ```
+
+A message that still fails to parse after its retries is logged as `queue message failed`, with its raw copy's
+R2 key. Send its job to the inbound queue again to replay it.

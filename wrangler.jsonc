@@ -1,0 +1,40 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// One Worker does everything: email() takes mail at SMTP time, queue() parses it, fetch() serves the app and
+	// its API, and the Mailbox Durable Object holds each mailbox. Resources have names but no IDs, so `wrangler
+	// deploy` and the Deploy to Cloudflare button create them on first deploy. D1 migrations run from the Worker.
+	"name": "magnus",
+	"main": "worker/index.ts",
+	"compatibility_date": "2026-09-26",
+	"compatibility_flags": ["nodejs_compat"],
+	// First visit goes to <name>.<subdomain>.workers.dev/setup. Add a custom domain whenever you like.
+	"workers_dev": true,
+	"preview_urls": false,
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	},
+	"assets": {
+		"not_found_handling": "single-page-application",
+		"run_worker_first": ["/api/*"]
+	},
+	// Setup proves you own this install by finding this exact version in your Cloudflare account.
+	"version_metadata": { "binding": "CF_VERSION_METADATA" },
+	"d1_databases": [{ "binding": "DIRECTORY", "database_name": "magnus-directory", "migrations_dir": "migrations" }],
+	"r2_buckets": [{ "binding": "MAIL", "bucket_name": "magnus-mail" }],
+	"durable_objects": {
+		"bindings": [{ "name": "MAILBOX", "class_name": "Mailbox" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Mailbox"] }],
+	"queues": {
+		"producers": [{ "binding": "INBOUND", "queue": "magnus-inbound" }],
+		"consumers": [
+			{ "queue": "magnus-inbound", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 10 },
+			// Fed by an Email Sending event subscription per domain, which setup creates.
+			{ "queue": "magnus-email-events", "max_batch_size": 50, "max_batch_timeout": 5, "max_retries": 5 }
+		]
+	},
+	// Unrestricted: who may send as which address is decided against the D1 directory.
+	"send_email": [{ "name": "EMAIL" }]
+	// Nothing to configure. Optional secrets (Google sign-in, local dev) are listed in worker/optional.ts.
+}

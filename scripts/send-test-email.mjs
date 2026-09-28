@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Simulate an inbound SMTP delivery to the local magnus-mx Worker.
+// Simulate an inbound SMTP delivery to the local Worker (`pnpm dev`).
 // Usage: pnpm mail:test [to] [from] [subject] [--reply-to <Message-ID>]
 const args = process.argv.slice(2);
 const replyIdx = args.indexOf("--reply-to");
 const inReplyTo = replyIdx >= 0 ? args.splice(replyIdx, 2)[1] : null;
 const [to = "me@example.com", from = "friend@example.org", subject = "Hello from the outside"] = args;
-const port = process.env.MX_PORT ?? "8791";
+const port = process.env.PORT ?? "5173";
 const messageId = `<${crypto.randomUUID()}@example.org>`;
 const boundary = `b-${crypto.randomUUID()}`;
 
@@ -24,7 +24,7 @@ const raw = [
 	`--${boundary}`,
 	"Content-Type: text/plain; charset=utf-8",
 	"",
-	"Hi! This is a test message routed through magnus-mx.",
+	"Hi! This is a test message routed through the email() handler.",
 	"",
 	`--${boundary}`,
 	"Content-Type: text/html; charset=utf-8",
