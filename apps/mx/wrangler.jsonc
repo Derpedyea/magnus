@@ -1,0 +1,50 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	// Inbound edge. Email Routing hands every message for our domains to email();
+	// it accepts/rejects at SMTP time, stores the raw message, and queues it for parsing.
+	"name": "magnus-mx",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-09-26",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": false,
+	"preview_urls": false,
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	},
+	// Email Routing rules managed by `wrangler deploy` (catch-all → this Worker).
+	// Only add a domain here once its MX records point at Cloudflare Email Routing (docs/DEPLOY.md).
+	"addresses": ["*@example.com"],
+	"d1_databases": [
+		{
+			"binding": "DIRECTORY",
+			"database_name": "magnus-directory",
+			// Replace with the id printed by `wrangler d1 create magnus-directory` (same value in apps/web).
+			"database_id": "00000000-0000-0000-0000-000000000000",
+			"migrations_dir": "../../packages/directory/migrations"
+		}
+	],
+	"r2_buckets": [{ "binding": "MAIL", "bucket_name": "magnus-mail" }],
+	"durable_objects": {
+		"bindings": [{ "name": "MAILBOX", "class_name": "Mailbox", "script_name": "magnus-mailstore" }]
+	},
+	"queues": {
+		"producers": [{ "binding": "INBOUND", "queue": "magnus-inbound" }],
+		"consumers": [
+			{
+				"queue": "magnus-inbound",
+				"max_batch_size": 10,
+				"max_batch_timeout": 1,
+				"max_retries": 10,
+				"dead_letter_queue": "magnus-inbound-dlq"
+			},
+			{
+				// Fed by an Email Sending event subscription (delivered/bounced/…) per sending domain.
+				"queue": "magnus-email-events",
+				"max_batch_size": 50,
+				"max_batch_timeout": 5,
+				"max_retries": 5
+			}
+		]
+	}
+}

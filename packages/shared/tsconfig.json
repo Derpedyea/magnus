@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Runs in Workers and the browser: stick to the web-platform globals both provide.
+    "lib": ["es2024", "dom"],
+    "types": []
+  },
+  "include": ["src"]
+}

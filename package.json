@@ -1,0 +1,33 @@
+{
+  "name": "magnus",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "pnpm@10.27.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "cf-typegen": "turbo run cf-typegen",
+    "deploy": "turbo run deploy",
+    "db:migrate:local": "wrangler d1 migrations apply magnus-directory --local --config apps/web/wrangler.jsonc --persist-to .wrangler/state",
+    "db:seed:local": "wrangler d1 execute magnus-directory --local --config apps/web/wrangler.jsonc --persist-to .wrangler/state --file packages/directory/seed/dev.sql",
+    "db:migrate:remote": "wrangler d1 migrations apply magnus-directory --remote --config apps/web/wrangler.jsonc",
+    "mail:test": "node scripts/send-test-email.mjs"
+  },
+  "devDependencies": {
+    "turbo": "^2.11.4",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.141.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "workerd"
+    ]
+  }
+}

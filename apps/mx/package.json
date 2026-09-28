@@ -1,0 +1,19 @@
+{
+  "name": "@magnus/mx",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8791 --inspector-port 9231 --persist-to ../../.wrangler/state",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@magnus/directory": "workspace:*",
+    "@magnus/shared": "workspace:*",
+    "postal-mime": "^4.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.141.0"
+  }
+}
