@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+    "paths": { "@/*": ["./src/*"] }
+  },
+  // shared/ runs in the browser and the Worker, so it's checked against the web-platform globals both provide.
+  "include": ["src", "shared"]
+}

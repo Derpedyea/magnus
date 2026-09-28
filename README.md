@@ -1,8 +1,10 @@
 # Magnus
 
 Self-hosted email for your own domains, running entirely on Cloudflare. There's no mail server to patch and
-no IP reputation to nurse: Email Routing receives, Email Sending delivers, Workers, Durable Objects, D1, R2,
-and Queues handle everything in between, and a fast web client sits on top.
+no IP reputation to nurse: Email Routing receives, Email Sending delivers, a single Worker with Durable
+Objects, D1, R2, and Queues handles everything in between, and a fast web client sits on top.
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Derpedyea/magnus)
 
 ![Magnus: one inbox across three addresses, with a threaded conversation open](docs/screenshot.png)
 
@@ -13,8 +15,10 @@ and Queues handle everything in between, and a fast web client sits on top.
 ## Features
 
 - **Every address, one inbox.** Any number of domains and addresses feed one mailbox. Filter by address in a
-  click. Group aliases like `family@` can fan out to several people's mailboxes.
+  click. Group addresses like `family@` deliver a copy to each person.
 - **`+tag` becomes a label.** Mail to `me+receipts@` lands under *receipts* automatically.
+- **Set up and run from the app.** Add domains, people, and addresses in the admin pages. Magnus turns on
+  Email Routing and Email Sending in Cloudflare for you.
 - **Rejects during the SMTP session.** Unknown recipients and blocked senders bounce before the message is
   accepted, so Magnus never sends backscatter.
 - **Real threading** by `Message-ID`/`References`, with a careful subject fallback. Replies thread in Gmail,
@@ -23,26 +27,44 @@ and Queues handle everything in between, and a fast web client sits on top.
 - **Live updates** over hibernatable WebSockets, so idle tabs cost nothing.
 - **Hostile HTML stays contained**: streaming sanitizer, strict CSP, sandboxed iframe, and remote images
   blocked until you ask.
-- **Sign in with Google or an emailed code.** There's no sign-up; only people you add can get in.
+- **Sign in with an emailed code**, or Google if you add it. There's no sign-up; only people you add can get in.
 - **Every raw message is kept in R2**, so a parsing bug is fixed by replaying the queue, not by losing mail.
+
+## Deploy
+
+You need a Cloudflare account on **Workers Paid** ($5/month, which includes 3,000 outbound emails) and a
+domain on Cloudflare DNS. Everything else for a few people fits in the included usage.
+
+1. **Click Deploy to Cloudflare** above. Cloudflare copies Magnus to your GitHub, creates its database,
+   storage, and queues, and deploys it. There's nothing to fill in.
+2. **Open the Worker's URL** (`magnus.<your-subdomain>.workers.dev`). It starts at setup.
+3. **Paste a Cloudflare API token, pick your domain, and create your account.** Magnus turns the domain on
+   and signs you in.
+
+![Setup: connect Cloudflare, pick a domain, create your account, and watch the domain turn on](docs/setup.png)
+
+[docs/DEPLOY.md](docs/DEPLOY.md) covers the token's permissions, deploying from the command line, moving a
+domain over from another provider, and updating.
 
 ## How it works
 
 ```
-Internet ── SMTP ──▶ Email Routing ──▶ magnus-mx ──▶ raw .eml to R2 ──▶ Queue ──▶ parse ──▶ Mailbox DO
-Browser ── HTTPS ──▶ magnus-web ──── RPC / WebSocket ────────────────────────────────────▶ Mailbox DO
-                                                        Mailbox DO ── alarm ──▶ Email Sending ──▶ recipients
+Internet ── SMTP ──▶ Email Routing ──▶ email() ──▶ raw .eml to R2 ──▶ Queue ──▶ queue(): parse ──▶ Mailbox DO
+Browser ── HTTPS ──▶ fetch(): app + API ──────── RPC / WebSocket ────────────────────────────▶ Mailbox DO
+                                                          Mailbox DO ── alarm ──▶ Email Sending ──▶ recipients
 ```
 
-| Worker | Role |
-| --- | --- |
-| `apps/mx` → **magnus-mx** | Accepts or rejects at SMTP time, stores the raw message, parses it, routes delivery events |
-| `apps/mailstore` → **magnus-mailstore** | One `Mailbox` Durable Object (SQLite) per mailbox: threads, labels, search, outbox, live updates |
-| `apps/web` → **magnus-web** | React client and JSON API, sign-in via Better Auth |
+One Worker does it all:
 
-They deploy independently, so mail keeps arriving while the web app redeploys. Shared contracts live in
-`packages/shared`, and the D1 directory (domains, users, addresses, routes) in `packages/directory`.
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) covers the full design and its tradeoffs.
+| Part | Code | Role |
+| --- | --- | --- |
+| `email()` | `worker/mail/` | Accepts or rejects at SMTP time, stores the raw message, queues it |
+| `queue()` | `worker/mail/` | Parses queued mail into its mailbox; applies delivery events |
+| `fetch()` | `worker/`, `src/` | The React app and its API: mail, setup, and admin |
+| `Mailbox` | `worker/mailbox/` | One Durable Object (SQLite) per mailbox: threads, labels, search, outbox, live updates |
+
+`shared/` holds what the app and the Worker both use, and `migrations/` the D1 schema, which the Worker
+applies itself. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) covers the full design and its tradeoffs.
 
 ## Run it locally
 
@@ -51,14 +73,13 @@ Needs Node 22+ and pnpm 10. No Cloudflare account required.
 ```sh
 git clone https://github.com/Derpedyea/magnus && cd magnus
 pnpm install
-pnpm db:migrate:local && pnpm db:seed:local       # a dev user, two domains, three addresses
-sed "s|^BETTER_AUTH_SECRET=|BETTER_AUTH_SECRET=$(openssl rand -base64 32)|" \
-  apps/web/.dev.vars.example > apps/web/.dev.vars
-pnpm dev                                          # mailstore :8790, mx :8791, web :5173
+pnpm db:seed:local                            # an admin with one mailbox and three addresses
+echo "DEV_USER_EMAIL=dev@localhost" > .dev.vars
+pnpm dev                                      # http://localhost:5173
 ```
 
-Open http://localhost:5173. You're signed in as the seeded dev user (`DEV_USER_EMAIL`, honored only on
-localhost). Send it some mail through the real `email()` handler:
+You're signed in as the seeded admin (`DEV_USER_EMAIL` only works on localhost). Send it some mail through
+the real `email()` handler:
 
 ```sh
 pnpm mail:test                                                  # → me@example.com
@@ -66,22 +87,15 @@ pnpm mail:test "me+receipts@example.com" shop@example.org "Your receipt"
 pnpm mail:test me@example.com friend@example.org "Re: hi" --reply-to "<some-message-id@host>"
 ```
 
-Nothing is really sent locally. Outbound mail is written to `apps/mailstore/.wrangler/tmp/email/`.
+Nothing is really sent locally. Outbound mail, sign-in codes included, is written to `.wrangler/tmp/email/`.
 
 | Command | What it does |
 | --- | --- |
-| `pnpm dev` | All Workers in watch mode, sharing D1/R2 state in `.wrangler/state/` |
-| `pnpm typecheck` | `tsc` across every package |
-| `pnpm test` | Unit tests (threading, addressing, multi-mailbox views) |
-| `pnpm cf-typegen` | Regenerate `worker-configuration.d.ts` after changing any `wrangler.jsonc` |
-| `pnpm db:migrate:local` / `db:migrate:remote` | Apply D1 migrations |
-
-## Deploy
-
-You need a Cloudflare account on **Workers Paid** ($5/month, which includes 3,000 outbound emails) and your
-domains on Cloudflare DNS. Everything else for a few people fits in the included usage.
-[docs/DEPLOY.md](docs/DEPLOY.md) walks through creating resources, pointing the config at your domain,
-sign-in, and moving a domain over from your current provider without losing mail.
+| `pnpm dev` | The app and Worker in watch mode, with local D1/R2/Queues in `.wrangler/state/` |
+| `pnpm typecheck` | `tsc` for the app and the Worker |
+| `pnpm test` | Unit tests |
+| `pnpm run deploy` | Build and deploy to your Cloudflare account |
+| `pnpm cf-typegen` | Regenerate `worker-configuration.d.ts` after changing `wrangler.jsonc` |
 
 ## Limitations
 

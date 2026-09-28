@@ -28,55 +28,53 @@ Constraints worth being honest about:
   bulk mail. One person writing to other people isn't bulk, but don't use this system for newsletters or
   mass mail. That could put the account's sending reputation at risk.
 - **We can't choose Message-IDs.** The ID Cloudflare assigns is stored and registered for threading
-  (see §5.4).
+  (see §5.5).
 
 ## 2. Topology
 
 ```
-                    ┌─────────────────────── Cloudflare ────────────────────────────────────────────┐
-  Internet MTAs     │                                                                               │
-  ── SMTP :25 ──▶  Email Routing (catch-all *@domain) ──▶ ┌─────────────┐   R2 magnus-mail         │
-                    │                                     │  magnus-mx   │──▶ raw/…/<ulid>.eml       │
-                    │                          email() ──▶│  accept /    │                           │
-                    │                                     │  reject      │──▶ Queue magnus-inbound ─┐│
-                    │                                     │              │                          ││
-                    │                          queue() ◀──│  parse       │◀─────────────────────────┘│
-                    │         D1 magnus-directory ◀──────▶│  (postal-mime)──▶ R2 m/<mbx>/<msg>/…      │
-                    │         (domains, users, addresses) └──────┬──────┘                            │
-                    │                    ▲                       │ RPC ingest()                      │
-                    │                    │                       ▼                                   │
-  Browser ─ HTTPS ──────────────────────▶ ┌─────────────┐  ┌──────────────────────────┐              │
-  (mail.example     │ (Google sign-in)    │ magnus-web  │  │ magnus-mailstore          │              │
-   .com)            │                     │ React SPA + │─▶│ Mailbox DO (1 per mailbox)│── alarm ──▶ Email Sending ─▶ recipients
-                    │                     │ Hono API    │  │ SQLite: threads, labels,  │             │
-                    │   WebSocket ◀───────│  /api/*     │◀─│ FTS5, outbox, deliveries  │◀─┐          │
-                    │   (hibernatable)    └─────────────┘  └──────────────────────────┘   │          │
-                    │                                                                     │          │
-                    │         Email Sending events ──▶ Queue magnus-email-events ──▶ mx queue() ─────┘
-                    └───────────────────────────────────────────────────────────────────────────────┘
+                    ┌─────────────────────── Cloudflare ─────────────────────────────────────────────┐
+  Internet MTAs     │                                                                                │
+  ── SMTP :25 ──▶  Email Routing (catch-all *@domain) ──▶ email() ──▶ R2 raw/…/<ulid>.eml            │
+                    │                                        │                                       │
+                    │                                        └──▶ Queue magnus-inbound ──┐           │
+                    │                                                                    ▼           │
+                    │   D1 magnus-directory ◀───────────────────────────────────── queue(): parse    │
+                    │   (people, domains,                                    (postal-mime) │ ──▶ R2   │
+                    │    addresses, settings)                                              │ RPC      │
+                    │          ▲                                                           ▼          │
+  Browser ─ HTTPS ──────────▶ fetch(): React app + Hono API ──── RPC ────▶ Mailbox DO (1 per mailbox) │
+  (*.workers.dev    │         /api/* (mail, setup, admin,         ◀─ WS ── SQLite: threads, labels,   │
+   or your domain)  │         Better Auth)                                 FTS5, outbox, deliveries ──── alarm ──▶ Email Sending
+                    │                                                                  ▲                 │
+                    │   Email Sending events ──▶ Queue magnus-email-events ──▶ queue() ─┘                │
+                    └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Three Workers, deployed independently:
+**One Worker**, `magnus`, with four entry points:
 
-| Worker | Role | Public surface |
+| Entry | Code | Role |
 | --- | --- | --- |
-| `apps/mx` → **magnus-mx** | SMTP-time accept/reject, raw capture, parsing, delivery-event routing | None (`workers_dev: false`). Only Email Routing and Queues invoke it |
-| `apps/mailstore` → **magnus-mailstore** | Hosts the `Mailbox` Durable Object class, which owns all mail data and the outbox | None. Other Workers reach it through DO bindings (`script_name`) |
-| `apps/web` → **magnus-web** | React client + JSON API + WebSocket proxy | `mail.<your domain>`, sign-in with Google or an email code (Better Auth) |
+| `email()` | `worker/mail/inbound.ts` | SMTP-time accept/reject, raw capture to R2, enqueue |
+| `queue()` | `worker/mail/` | Parse inbound mail into its mailbox; apply delivery events. Messages are told apart by shape, since queues can be renamed at deploy |
+| `fetch()` | `worker/api.ts`, `src/` | The React app (static assets) and `/api/*`: mail, `/setup`, `/admin`, and Better Auth |
+| `Mailbox` | `worker/mailbox/` | The Durable Object class that owns all mail data and the outbox |
 
-Why split them: the inbound path must keep accepting mail while the web app is redeployed or broken. The
-mailstore owns the schema, so its migrations ship on their own schedule. Each Worker gets only the bindings
-it needs. For example, only mailstore sends user mail, and only web is reachable from the internet. (Web's own
-`send_email` binding can only send as `LOGIN_CODE_FROM`, for sign-in codes.)
+Why one Worker: it's what the Deploy to Cloudflare button can install in one click, it deploys as a unit, and
+local development is a single `vite dev`. The earlier design split inbound, storage, and web into three Workers
+so a broken web deploy couldn't stop mail. The trade is accepted because the entry points share no
+module-level state that can fail at import, and Workers keeps previous versions for instant rollback.
 
-Shared code lives in packages, not Workers:
+`shared/` holds what the browser and the Worker both use: DTOs, queue payloads, the R2 key layout, threading
+and address utilities, and zod schemas (a separate `#shared/schemas` entry, so the mail path doesn't bundle zod).
+The Worker types its Durable Object stubs from the `Mailbox` class itself.
 
-- `packages/shared`: contracts (`MailboxApi` RPC interface, queue payloads, DTOs), R2 key layout, threading and
-  address utilities, and zod schemas (as a separate `@magnus/shared/schemas` entry, so the mail path doesn't bundle zod).
-- `packages/directory`: the D1 schema, migrations, and typed queries (`resolveRecipient`, `getSendIdentities`, …).
+### Resources and migrations
 
-Workers type their DO stubs against `MailboxApi` instead of importing the `Mailbox` class, so each Worker's
-generated `Env` stays independent.
+`wrangler.jsonc` names every resource but gives no IDs, so the first deploy (from the button or `wrangler
+deploy`) creates them. D1 migrations (`migrations/*.sql`) are applied by the Worker the first time each instance
+touches D1 (`worker/migrate.ts`), recorded in wrangler's own `d1_migrations` table, so a deploy never needs a
+separate migration step. The Mailbox schema migrates itself the same way, per object.
 
 ## 3. Storage
 
@@ -84,24 +82,26 @@ Each store holds one kind of data:
 
 | Store | Holds | Why this store |
 | --- | --- | --- |
-| **D1 `magnus-directory`** | domains, users, mailboxes, memberships, addresses, address→mailbox routes, sender blocks | Small, global, read on every inbound message by `mx` and every API call by `web` |
+| **D1 `magnus-directory`** | people and sessions (Better Auth), domains, mailboxes, memberships, addresses, address→mailbox routes, sender blocks, install settings | Small, global, read on every inbound message and every API call |
 | **Durable Object `Mailbox`** (SQLite, one per mailbox) | threads, messages, labels, attachment metadata, Message-ID→thread index, FTS5 index, outbox, per-recipient delivery state | Strongly consistent per-mailbox transactions, a natural isolation boundary, alarms for scheduled send, hibernatable WebSockets for live push, 10 GB each |
 | **R2 `magnus-mail`** | raw `.eml`, HTML bodies, attachments, composer uploads | Blobs. Cheap, no egress fees |
-| **Queues** | `magnus-inbound` (+ DLQ), `magnus-email-events` | Durable hand-off with retries. Parsing never blocks the SMTP session |
+| **Queues** | `magnus-inbound`, `magnus-email-events` | Durable hand-off with retries. Parsing never blocks the SMTP session |
 
-### D1 directory (`packages/directory/migrations/0001_directory.sql`)
+### D1 directory (`migrations/0001_init.sql`)
 
 ```
-domains(name, receiving, sending, catch_all_mailbox_id)
-users(id, login_email, display_name, is_admin)               ← login_email = the Google account that signs in
+auth_users(id, name, email, role, banned, …)                  ← Better Auth + admin plugin; email = where codes go
+auth_sessions, auth_accounts, auth_verifications, …          ← Better Auth's own
+settings(key, value)                                         ← install (account, Worker name), session secret
+domains(name, zone_id, receiving, sending, catch_all_mailbox_id)
 mailboxes(id, name)                                          ← id = Durable Object name
-mailbox_members(mailbox_id, user_id, role)                   ← shared mailboxes later
+mailbox_members(mailbox_id, user_id, role)                   ← user_id → auth_users; everyone gets their own
 addresses(address, domain, display_name, enabled)            ← normalized, no +tag
 address_routes(address, mailbox_id, can_send)                ← >1 row = group alias (e.g. family@)
 sender_blocks(pattern)                                       ← 'x@y.com' or '*@y.com', rejected at SMTP time
 ```
 
-### Mailbox DO schema (`apps/mailstore/src/schema.ts`)
+### Mailbox DO schema (`worker/mailbox/schema.ts`)
 
 `threads`, `messages`, `message_labels`, `message_addresses`, `attachments`, `thread_refs`, `outbox`, `deliveries`,
 `messages_fts` (FTS5, porter + unicode61). Migrations are an append-only array applied in `blockConcurrencyWhile`.
@@ -118,20 +118,20 @@ in one mailbox; a shared `family@` can be its own mailbox with several members. 
 the mail: `message_addresses` records which of our addresses each message was delivered to (+tag stripped) or
 sent from. List, search, and count reads take an optional address filter.
 
-`GET /api/threads`, `/api/search`, and `/api/counts` span every mailbox the user belongs to. `magnus-web` fans
-out to each Mailbox DO and merges the results (`packages/shared/src/scope.ts`); `?in=a@x,b@y` narrows the view
+`GET /api/threads`, `/api/search`, and `/api/counts` span every mailbox the user belongs to. The API fans
+out to each Mailbox DO and merges the results (`shared/scope.ts`); `?in=a@x,b@y` narrows the view
 to some addresses. Reads and writes on a single thread stay under `/api/mailboxes/:id/…`.
 
-### R2 layout (`packages/shared/src/keys.ts`)
+### R2 layout (`shared/keys.ts`)
 
 ```
 raw/2026/09/26/<ingestId>.eml          raw inbound, shared across fan-out, kept forever (source of truth)
 m/<mailboxId>/<messageId>/body.html     HTML body (served through the sanitizer)
 m/<mailboxId>/<messageId>/att/<attId>   attachments (inbound, and outbound once sent)
-uploads/<mailboxId>/<uuid>              composer uploads; 14-day lifecycle rule reaps abandoned ones
+uploads/<mailboxId>/<uuid>              composer uploads; a lifecycle rule (DEPLOY.md) can reap abandoned ones
 ```
 
-Everything a mailbox owns sits under `m/<mailboxId>/`, so deleting a mailbox is a prefix delete. The raw archive
+Everything a mailbox owns sits under `m/<mailboxId>/`, so deleting a mailbox (removing a person) is a prefix delete. The raw archive
 means any parsing bug can be fixed by re-queuing `InboundJob`s. Ingest is idempotent.
 
 ## 4. Flows
@@ -139,21 +139,22 @@ means any parsing bug can be fixed by re-queuing `InboundJob`s. Ingest is idempo
 ### 4.1 Inbound
 
 1. A remote MTA delivers to Cloudflare MX. Email Routing enforces the size limit, DMARC policy, and RBLs, then
-   invokes `magnus-mx.email()` once per recipient.
+   invokes the Worker's `email()` once per recipient.
 2. `resolveRecipient()` makes one D1 batch covering the exact address, the domain catch-all, and sender blocks.
    Unknown recipients get `setReject("5.1.1 …")` **during the SMTP session**, so we never send backscatter.
 3. The raw bytes are buffered once and written to R2. Then one `InboundJob` per target mailbox is enqueued
    (group aliases fan out here). Returning ends the SMTP transaction. If R2 or the queue fails, the handler
    throws instead of returning, so the message is never silently accepted (see §7 for the exact SMTP reply).
-4. `mx.queue()` parses with postal-mime, writes the HTML and attachments to R2, extracts the
+4. `queue()` parses with postal-mime, writes the HTML and attachments to R2, extracts the
    `Authentication-Results` verdicts, applies first-pass triage (DMARC fail → `spam`), and calls
    `Mailbox.ingest()`.
 5. `ingest()` is idempotent. It dedupes on `ingestId` and on `Message-ID`, so the same mail arriving via two
    of our addresses, or our own outbound copy coming back, is stored once with merged labels. It then threads
-   the message (§5.4), indexes it for search, and broadcasts `threads.changed` over WebSocket.
+   the message (§5.5), indexes it for search, and broadcasts `threads.changed` over WebSocket.
 
-Failures retry with exponential backoff (max 10) and then land in `magnus-inbound-dlq`. The raw message is
-already safe in R2.
+Failures retry with exponential backoff (max 10). A message that still fails is logged with its job, raw key
+included, and dropped from the queue; the raw message is safe in R2 and replays by re-sending the job. (There's
+no dead-letter queue: the Deploy button can't be relied on to create one.)
 
 ### 4.2 Outbound
 
@@ -181,7 +182,7 @@ already safe in R2.
 
 ### 4.3 Delivery status
 
-An Email Sending **event subscription** per domain feeds `magnus-email-events`. `mx.queue()` looks up which
+An Email Sending **event subscription** per domain feeds `magnus-email-events` (setup creates it). `queue()` looks up which
 mailboxes may send as `payload.sender` and offers the event to each. The one holding the message ID applies
 it to `deliveries(message_id, recipient)` and rolls it up to a message status, worst first:
 bounced > rejected > failed > complained > deferred > sent > delivered. The UI shows this as a badge on each
@@ -189,7 +190,7 @@ sent message.
 
 ### 4.4 Live updates
 
-The browser opens `GET /api/mailboxes/:id/live` for each of the user's mailboxes. `magnus-web` authenticates the request and hands the upgrade
+The browser opens `GET /api/mailboxes/:id/live` for each of the user's mailboxes. The API authenticates the request and hands the upgrade
 to the Mailbox DO, which accepts it with the **hibernation API**. Idle sockets cost nothing, and `ping`/`pong`
 is answered by `setWebSocketAutoResponse` without waking the object. Every mutation broadcasts a small
 event, and the client invalidates the matching TanStack Query caches.
@@ -198,26 +199,51 @@ event, and the client invalidates the matching TanStack Query caches.
 
 ### 5.1 Authentication and authorization
 
-- **Better Auth** runs inside `magnus-web` at `/api/auth/*`, with two ways in: "Continue with Google", or a
-  6-digit code emailed to your `users.login_email` (for devices that block outside Google accounts, like a
-  school Chromebook). Either one yields a 30-day rolling session cookie backed by D1 (`auth_*` tables,
-  `0002_auth.sql`). There is no sign-up: an account is only created for an email that's already a
-  `users.login_email`, and codes are only sent to those addresses, though the page answers the same for any.
-- Codes go out through Email Sending from `LOGIN_CODE_FROM`, expire after 10 minutes, die after 3 wrong
-  guesses, and are stored hashed. Sign-in endpoints are rate-limited per client IP (3 a minute), with the
-  counters in D1 so the limit holds across Worker instances.
-- Every other `/api/*` request needs that session. Its verified email maps to `users.login_email`, which stays
-  the authority: deleting the row locks the person out within 5 minutes (the session cookie cache). Mailbox
-  access requires a `mailbox_members` row, and sending as an address requires `address_routes.can_send`.
+- **Better Auth** runs at `/api/auth/*` with the email-code and admin plugins. You sign in with a 6-digit code
+  emailed to your *sign-in email*, an address outside this install so a code can always reach you, or with
+  Google if its client ID and secret are set. Either yields a 30-day rolling session cookie backed by D1.
+- **Nobody signs up.** `auth_users` is the list of people, and admins add them. Codes are only sent to
+  people who exist (`disableSignUp`), though the page answers the same for anyone, and Google only signs in
+  an existing person, matched by email.
+- Codes go out through Email Sending from `login@` the oldest domain that can send. They expire after 10
+  minutes, die after 3 wrong guesses, and are stored hashed. Sign-in endpoints are rate-limited per client
+  IP (3 a minute), with the counters in D1 so the limit holds across Worker instances.
+- **Roles** are the admin plugin's: `admin` or not. Role changes and suspensions go from the browser straight
+  to the plugin (`/api/auth/admin/*`); adding and removing people goes through `/api/admin`, since that also
+  creates or deletes their mailbox. Suspending revokes sessions immediately, apart from the 5-minute session
+  cookie cache. You can't change your own role, suspend yourself, or remove yourself.
+- Mailbox access requires a `mailbox_members` row, and sending as an address requires
+  `address_routes.can_send` on a domain that can send.
+- One Better Auth instance per origin the Worker is reached on (`workers.dev`, a custom domain), so OAuth
+  callbacks return to the same host and only that origin is trusted.
+- The session secret is generated on first run and kept in `settings`. Anyone who can read D1 can already
+  read every session, so it adds no exposure, and there's no secret to set when deploying.
 - Requests whose `Origin` is another site (form posts, WebSocket upgrades) are refused, so another page
   can't ride the session cookie. Better Auth checks its own endpoints.
 - Why not Cloudflare Access: it signs you in on its own domain before the app loads, which fights the
   planned installable app (login redirects inside a home-screen app, manifest and service-worker fetches
   without the cookie) and leaves no room for in-app sign-in such as passkeys, a Better Auth plugin away.
-- Local dev bypass: `DEV_USER_EMAIL` in `.dev.vars` is honored **only on localhost** and is never deployed.
-- `mx` and `mailstore` have no public URLs.
+- Local dev: `DEV_USER_EMAIL` in `.dev.vars` signs that person in for real (a server-made one-time code), and
+  only on localhost.
 
-### 5.2 Rendering untrusted HTML
+### 5.2 Setup and Cloudflare configuration
+
+A fresh install has no people, so every page leads to `/setup` until someone claims it. The claim needs a
+Cloudflare API token, which also proves ownership: setup lists the token's accounts and Workers and looks for
+**the exact version that's running** (`CF_VERSION_METADATA`). Only the account that deployed this install can
+see that version, so a stranger who finds the `workers.dev` URL first can't take it over, and a renamed
+Worker is still found. The claim is a single `INSERT OR IGNORE` into `settings`, so two racing setups can't
+both win. The first admin is created server-side with the admin plugin and signed in with a one-time code that
+never leaves the Worker.
+
+Turning a domain on (`worker/connect.ts`) is four idempotent steps, each checked before it acts:
+Email Routing on the zone (removing another provider's MX records only after the admin confirms), a catch-all
+rule sending every address to this Worker, Email Sending on the domain, and an event subscription from Email
+Sending to the queue this Worker consumes but doesn't produce to. The directory's `receiving` and `sending`
+flags follow what Cloudflare reports after every step. Setup and the admin Domains page run the same steps.
+Tokens are used for the request they arrive with and never stored.
+
+### 5.3 Rendering untrusted HTML
 
 Email HTML is hostile by default. Four layers protect the client:
 
@@ -233,7 +259,7 @@ Email HTML is hostile by default. Four layers protect the client:
    unless the type is on an inline-safe allowlist (images, PDF, text), and are always served with a
    `sandbox` CSP. An HTML or SVG attachment can't execute on the mail origin.
 
-### 5.3 Deliverability
+### 5.4 Deliverability
 
 Cloudflare manages SPF/DKIM on `cf-bounce.<domain>`, IP reputation, soft-bounce retries, and suppression lists.
 Your part:
@@ -243,7 +269,7 @@ Your part:
 - Always send a text part (the composer is text-first).
 - Watch bounce and complaint rates. The delivery badges surface them per message.
 
-### 5.4 Threading
+### 5.5 Threading
 
 Threading is RFC 5322 first, heuristic second:
 
@@ -258,16 +284,16 @@ Threading is RFC 5322 first, heuristic second:
 Outbound replies carry `In-Reply-To` + a trimmed `References` chain, so Gmail, Apple Mail, and Outlook thread
 them too.
 
-### 5.5 Reliability summary
+### 5.6 Reliability summary
 
 | Failure | Outcome |
 | --- | --- |
-| Parser crash or DO unavailable during ingest | Queue retry with backoff, then DLQ; raw message kept in R2 and replayable |
+| Parser crash or DO unavailable during ingest | Queue retry with backoff, then logged; raw message kept in R2 and replayable |
 | Duplicate delivery (queue at-least-once, same mail to two aliases) | Idempotent on `ingestId` + `Message-ID` |
 | R2 or Queue failure inside `email()` | Handler throws instead of accepting; see §7 on whether the sender sees a retryable 4xx |
 | Transient Email Sending error | DO alarm retries with backoff |
 | DO evicted mid-send | Marked failed rather than possibly duplicated |
-| Web app outage | Mail keeps flowing in; outbox alarms keep sending |
+| Bad deploy | Roll back to the previous version in the dashboard; raw mail accepted meanwhile is in R2 |
 
 ## 6. Cost at personal scale
 
@@ -308,17 +334,16 @@ The web app is the only client, so it has to be good on phones and good enough t
 5. **Contacts/autocomplete** built from sent and received addresses. **Signatures** per identity.
 6. **Mailbox import** from your previous provider (export to `.eml`, e.g. Proton's Import-Export app). Upload
    the raw files to R2 and enqueue `InboundJob`s; the existing ingest path does the rest.
-7. **Admin page** for users, mailboxes, addresses, and aliases, so adding someone doesn't mean writing SQL.
 
 **Later**
 
-8. **Rules and filters** per mailbox (from/to/subject → labels, skip inbox, auto-archive), evaluated in ingest.
-9. **Image proxy** through the Worker so "Show images" doesn't leak your IP.
-10. **Rich-text compose** (the composer is text-first today).
-11. **Workers AI**: spam and phishing scoring, category labels, thread summaries. Use **Vectorize** for
+7. **Rules and filters** per mailbox (from/to/subject → labels, skip inbox, auto-archive), evaluated in ingest.
+8. **Image proxy** through the Worker so "Show images" doesn't leak your IP.
+9. **Rich-text compose** (the composer is text-first today).
+10. **Workers AI**: spam and phishing scoring, category labels, thread summaries. Use **Vectorize** for
     semantic search next to FTS5.
-12. **Vacation responder** via `env.EMAIL.send` (skip auto-submitted and list mail; honor `Auto-Submitted`).
-13. **DMARC aggregate report parsing** from the `rua` mailbox into a dashboard.
-14. **Retention/export**: per-label retention, full mailbox export (raw `.eml` is already in R2).
+11. **Vacation responder** via `env.EMAIL.send` (skip auto-submitted and list mail; honor `Auto-Submitted`).
+12. **DMARC aggregate report parsing** from the `rua` mailbox into a dashboard.
+13. **Retention/export**: per-label retention, full mailbox export (raw `.eml` is already in R2).
 
 **Decided against:** IMAP and JMAP servers (see §1).
