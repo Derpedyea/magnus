@@ -1,7 +1,13 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "types": ["./worker-configuration.d.ts", "vite/client"]
+    "types": ["./worker-configuration.d.ts", "vite/client"],
+    // Declarations, for the app's typed API client (see tsconfig.app.json).
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": ".",
+    "outDir": "node_modules/.tmp/worker"
   },
   "include": ["worker", "worker-configuration.d.ts"]
 }

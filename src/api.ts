@@ -1,19 +1,9 @@
-import type {
-	Address,
-	AppConfig,
-	Counts,
-	Directory,
-	MailboxThread,
-	Me,
-	SendAttachmentRef,
-	SendQueued,
-	StepId,
-	StepStatus,
-	ThreadDetail,
-	Zone,
-} from "#shared";
+import type { Address, StepId } from "#shared";
 import { adminClient, emailOTPClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/client";
+import { hc, type InferRequestType, parseResponse } from "hono/client";
+// Built declarations, not the worker's source: see tsconfig.app.json.
+import type { AppType } from "#worker/api";
 
 /** An address the user can send as, and the mailbox that sends it. */
 export interface Identity {
@@ -34,14 +24,6 @@ export class ApiError extends Error {
 /** For error boundaries, which receive whatever was thrown. */
 export const errorMessage = (error: unknown) => (error instanceof Error ? error.message : "Something went wrong");
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-	const headers = new Headers(init.headers);
-	if (typeof init.body === "string") headers.set("Content-Type", "application/json");
-	const res = await fetch(`/api${path}`, { ...init, headers });
-	if (!res.ok) throw new ApiError(await failureMessage(res), res.status);
-	return (res.status === 204 ? undefined : await res.json()) as T;
-}
-
 /** Our API answers `{ error }` and Better Auth `{ message }`. Validation errors are objects, so those fall back to the status. */
 async function failureMessage(res: Response): Promise<string> {
 	const body: unknown = await res.json().catch(() => null);
@@ -50,11 +32,6 @@ async function failureMessage(res: Response): Promise<string> {
 	if ("message" in body && typeof body.message === "string") return body.message;
 	return res.statusText;
 }
-
-const post = <T>(path: string, body: unknown) => request<T>(path, { method: "POST", body: JSON.stringify(body) });
-const put = (path: string, body: unknown) => request<void>(path, { method: "PUT", body: JSON.stringify(body) });
-const patch = (path: string, body: unknown) => request<void>(path, { method: "PATCH", body: JSON.stringify(body) });
-const del = (path: string) => request<void>(path, { method: "DELETE" });
 
 /** Better Auth from the browser: sign-in, sign-out, and the admin plugin's people actions. */
 export const authClient = createAuthClient({
@@ -69,67 +46,76 @@ export const authClient = createAuthClient({
 	},
 });
 
-/** Query string for cross-mailbox reads; an empty scope means every address. */
-const scoped = (scope: string[], params: Record<string, string> = {}) =>
-	new URLSearchParams(scope.length ? { ...params, in: scope.join(",") } : params).toString();
+/**
+ * The worker's routes, typed from worker/api.ts. A failure throws ApiError with the server's message, so
+ * parseResponse only ever sees successes and returns their body (undefined for a 204).
+ */
+const client = hc<AppType>("/", {
+	fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+		const res = await fetch(input, init);
+		if (!res.ok) throw new ApiError(await failureMessage(res), res.status);
+		return res;
+	},
+}).api;
+
+/** A route's JSON body, for wrappers that pass one straight through. */
+type Json<Route> = InferRequestType<Route> extends { json: infer Body } ? Body : never;
+
+/** `?in=` for cross-mailbox reads; an empty scope means every address. */
+const scoped = (scope: string[]) => (scope.length ? scope.join(",") : undefined);
+
+const mailbox = client.mailboxes[":mailboxId"];
 
 export const api = {
-	config: () => request<AppConfig>("/config"),
-	me: () => request<Me>("/me"),
-	threads: (scope: string[], label: string) => request<{ threads: MailboxThread[] }>(`/threads?${scoped(scope, { label })}`),
-	search: (scope: string[], q: string) => request<{ threads: MailboxThread[] }>(`/search?${scoped(scope, { q })}`),
-	counts: (scope: string[]) => request<Counts>(`/counts?${scoped(scope)}`),
-	thread: (mb: string, id: string) => request<ThreadDetail>(`/mailboxes/${mb}/threads/${id}`),
-	modify: (mb: string, threadIds: string[], add: string[], remove: string[]) =>
-		post<void>(`/mailboxes/${mb}/threads/modify`, { threadIds, add, remove }),
-	markRead: (mb: string, threadIds: string[], read: boolean) => post<void>(`/mailboxes/${mb}/threads/read`, { threadIds, read }),
-	upload: (mb: string, file: File) =>
-		request<SendAttachmentRef>(`/mailboxes/${mb}/uploads`, {
-			method: "POST",
-			body: file,
-			headers: { "Content-Type": file.type || "application/octet-stream", "X-Filename": encodeURIComponent(file.name) },
-		}),
-	send: (mb: string, draft: SendRequest) => post<SendQueued>(`/mailboxes/${mb}/send`, draft),
-	shareLink: (mb: string, messageId: string, attachmentId: string, shared: boolean) =>
-		patch(`/mailboxes/${mb}/messages/${messageId}/attachments/${attachmentId}`, { shared }),
-	cancel: (mb: string, messageId: string) => post<void>(`/mailboxes/${mb}/outbox/${messageId}/cancel`, {}),
+	config: () => parseResponse(client.config.$get()),
+	me: () => parseResponse(client.me.$get()),
+	threads: (scope: string[], label: string) => parseResponse(client.threads.$get({ query: { in: scoped(scope), label } })),
+	search: (scope: string[], q: string) => parseResponse(client.search.$get({ query: { in: scoped(scope), q } })),
+	counts: (scope: string[]) => parseResponse(client.counts.$get({ query: { in: scoped(scope) } })),
+	thread: (mailboxId: string, threadId: string) => parseResponse(mailbox.threads[":threadId"].$get({ param: { mailboxId, threadId } })),
+	modify: (mailboxId: string, threadIds: string[], add: string[], remove: string[]) =>
+		parseResponse(mailbox.threads.modify.$post({ param: { mailboxId }, json: { threadIds, add, remove } })),
+	markRead: (mailboxId: string, threadIds: string[], read: boolean) =>
+		parseResponse(mailbox.threads.read.$post({ param: { mailboxId }, json: { threadIds, read } })),
+	upload: (mailboxId: string, file: File) =>
+		parseResponse(
+			mailbox.uploads.$post(
+				{ param: { mailboxId } },
+				{ init: { body: file }, headers: { "Content-Type": file.type || "application/octet-stream", "X-Filename": encodeURIComponent(file.name) } },
+			),
+		),
+	send: (mailboxId: string, draft: Json<typeof mailbox.send.$post>) => parseResponse(mailbox.send.$post({ param: { mailboxId }, json: draft })),
+	shareLink: (mailboxId: string, messageId: string, attachmentId: string, shared: boolean) =>
+		parseResponse(mailbox.messages[":messageId"].attachments[":attachmentId"].$patch({ param: { mailboxId, messageId, attachmentId }, json: { shared } })),
+	cancel: (mailboxId: string, messageId: string) => parseResponse(mailbox.outbox[":messageId"].cancel.$post({ param: { mailboxId, messageId } })),
 };
 
 /** First run: prove ownership with a Cloudflare token, then become the first admin (and get signed in). */
 export const setupApi = {
-	verify: (token: string) => post<{ accountName: string; zones: Zone[] }>("/setup/verify", { token }),
-	complete: (input: { token: string; zoneId: string; name: string; localPart: string; email: string }) => post<void>("/setup/complete", input),
+	verify: (token: string) => parseResponse(client.setup.verify.$post({ json: { token } })),
+	complete: (json: Json<typeof client.setup.complete.$post>) => parseResponse(client.setup.complete.$post({ json })),
 };
+
+const admin = client.admin;
 
 export const adminApi = {
-	directory: () => request<Directory>("/admin/directory"),
+	directory: () => parseResponse(admin.directory.$get()),
 	/** Checked against this install, then saved encrypted; Cloudflare calls below use it. */
-	saveToken: (token: string) => put("/admin/cloudflare-token", { token }),
-	forgetToken: () => del("/admin/cloudflare-token"),
-	zones: () => request<{ zones: Zone[] }>("/admin/zones"),
-	addDomain: (zoneId: string) => post<{ name: string }>("/admin/domains", { zoneId }),
-	domainStatus: (domain: string) => post<Record<StepId, StepStatus>>(`/admin/domains/${domain}/status`, {}),
-	runStep: (domain: string, step: StepId, moveMail: boolean) => post<StepStatus>(`/admin/domains/${domain}/steps/${step}`, { moveMail }),
-	setCatchAll: (domain: string, catchAllMailboxId: string | null) => patch(`/admin/domains/${domain}`, { catchAllMailboxId }),
-	removeDomain: (domain: string) => del(`/admin/domains/${domain}`),
-	addPerson: (input: { name: string; email: string; isAdmin: boolean; address?: { localPart: string; domain: string } }) =>
-		post<{ id: string }>("/admin/people", input),
-	removePerson: (id: string) => del(`/admin/people/${id}`),
-	addAddress: (input: { localPart: string; domain: string; displayName?: string; mailboxIds: string[] }) => post<{ address: string }>("/admin/addresses", input),
-	removeAddress: (address: string) => del(`/admin/addresses/${encodeURIComponent(address)}`),
+	saveToken: (token: string) => parseResponse(admin["cloudflare-token"].$put({ json: { token } })),
+	forgetToken: () => parseResponse(admin["cloudflare-token"].$delete()),
+	zones: () => parseResponse(admin.zones.$get()),
+	addDomain: (zoneId: string) => parseResponse(admin.domains.$post({ json: { zoneId } })),
+	runStep: (domain: string, step: StepId, moveMail: boolean) =>
+		parseResponse(admin.domains[":domain"].steps[":step"].$post({ param: { domain, step }, json: { moveMail } })),
+	setCatchAll: (domain: string, catchAllMailboxId: string | null) =>
+		parseResponse(admin.domains[":domain"].$patch({ param: { domain }, json: { catchAllMailboxId } })),
+	removeDomain: (domain: string) => parseResponse(admin.domains[":domain"].$delete({ param: { domain } })),
+	addPerson: (json: Json<typeof admin.people.$post>) => parseResponse(admin.people.$post({ json })),
+	removePerson: (id: string) => parseResponse(admin.people[":id"].$delete({ param: { id } })),
+	addAddress: (json: Json<typeof admin.addresses.$post>) => parseResponse(admin.addresses.$post({ json })),
+	// hc puts params into the path as given.
+	removeAddress: (address: string) => parseResponse(admin.addresses[":address"].$delete({ param: { address: encodeURIComponent(address) } })),
 };
-
-export interface SendRequest {
-	from: string;
-	to: Address[];
-	cc: Address[];
-	bcc: Address[];
-	subject: string;
-	text: string;
-	replyToMessageId?: string;
-	attachments: SendAttachmentRef[];
-	delaySeconds: number;
-}
 
 export const messageUrl = (mb: string, messageId: string) => `/api/mailboxes/${mb}/messages/${messageId}`;
 

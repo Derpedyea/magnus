@@ -4,7 +4,12 @@
     "lib": ["es2024", "dom", "dom.iterable"],
     "jsx": "react-jsx",
     "types": ["vite/client"],
-    "paths": { "@/*": ["./src/*"] }
+    "paths": {
+      "@/*": ["./src/*"],
+      // The worker's routes, for src/api.ts, from declarations that install and `pnpm typecheck` emit. Not the
+      // sources: they need Workers globals, which clash with the DOM's.
+      "#worker/api": ["./node_modules/.tmp/worker/worker/api"]
+    }
   },
   // shared/ runs in the browser and the Worker, so it's checked against the web-platform globals both provide.
   "include": ["src", "shared"]
