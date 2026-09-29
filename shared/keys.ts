@@ -5,7 +5,6 @@
  *   m/<mailboxId>/<messageId>/body.html        rendered HTML body (cid: rewritten)
  *   m/<mailboxId>/<messageId>/att/<attId>      attachment bytes
  *   uploads/<mailboxId>/<uuid>                 composer uploads awaiting send
- *   keys/<uuid>                                the key to the saved Cloudflare token (its ciphertext is in D1)
  *
  * Everything a mailbox keeps sits under m/<mailboxId>/ so deleting a mailbox is a prefix delete.
  * Uploads are copied under m/ once sent; put a 14-day lifecycle rule on "uploads/" to reap abandoned ones.
@@ -27,8 +26,5 @@ export const r2Keys = {
 	},
 	upload(mailboxId: string, uploadId: string): string {
 		return `uploads/${mailboxId}/${uploadId}`;
-	},
-	key(keyId: string): string {
-		return `keys/${keyId}`;
 	},
 };

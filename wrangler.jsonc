@@ -24,9 +24,16 @@
 	"d1_databases": [{ "binding": "DIRECTORY", "database_name": "magnus-directory", "migrations_dir": "migrations" }],
 	"r2_buckets": [{ "binding": "MAIL", "bucket_name": "magnus-mail" }],
 	"durable_objects": {
-		"bindings": [{ "name": "MAILBOX", "class_name": "Mailbox" }]
+		// Vault encrypts the saved Cloudflare token and keeps its key out of D1 and R2.
+		"bindings": [
+			{ "name": "MAILBOX", "class_name": "Mailbox" },
+			{ "name": "VAULT", "class_name": "Vault" }
+		]
 	},
-	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Mailbox"] }],
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["Mailbox"] },
+		{ "tag": "v2", "new_sqlite_classes": ["Vault"] }
+	],
 	"queues": {
 		"producers": [{ "binding": "INBOUND", "queue": "magnus-inbound" }],
 		"consumers": [
