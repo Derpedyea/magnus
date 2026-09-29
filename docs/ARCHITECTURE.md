@@ -106,7 +106,7 @@ signatures(user_id, address, text)                           ← per person and 
 ### Mailbox DO schema (`worker/mailbox/schema.ts`)
 
 `threads`, `messages`, `message_labels`, `message_addresses`, `attachments`, `thread_refs`, `outbox`, `deliveries`,
-`contacts`, `messages_fts` (FTS5, porter + unicode61). Migrations are an append-only array applied in `blockConcurrencyWhile`.
+`contacts`, `sends` (every id Email Sending gave a message), `messages_fts` (FTS5, porter + unicode61). Migrations are an append-only array applied in `blockConcurrencyWhile`.
 
 Labels follow the Gmail model: they live on messages, and a thread appears in a view if any of its messages
 has the label. System labels are `inbox`, `sent`, `outbox`, `spam`, `trash`, `starred`. "Archive" means
@@ -190,14 +190,23 @@ no dead-letter queue: the Deploy button can't be relied on to create one.)
    If every recipient is local, `env.EMAIL.send()` is skipped. Otherwise the message still goes to everyone,
    and the copy that loops back through MX merges into this one by Message-ID. Our addresses that live in
    *other* mailboxes still take the round trip.
+7. **Retry:** a message that failed, bounced, or was rejected says who it didn't reach, with a Retry button.
+   `POST /api/mailboxes/:id/messages/:messageId/retry` checks the sender and routes the recipients again, then
+   `Mailbox.retrySend()` rebuilds the message from what's stored and puts it back in the outbox, addressed to
+   everyone if it never left, or else only to the recipients whose servers refused it, so nobody gets it twice.
+   It's the same message: it keeps its thread and the date it first went out, and each send's id goes in
+   `sends`. A copy with nobody left in To addresses its Cc'd recipients there, since they're the only people it
+   names. Undo doesn't apply: it would delete mail others already have.
 
 ### 4.3 Delivery status
 
 An Email Sending **event subscription** per domain feeds `magnus-email-events` (setup creates it). `queue()` looks up which
-mailboxes may send as `payload.sender` and offers the event to each. The one holding the message ID applies
-it to `deliveries(message_id, recipient)` and rolls it up to a message status, worst first:
+mailboxes may send as `payload.sender` and offers the event to each. The one whose `sends` holds the message
+ID applies it to `deliveries(message_id, recipient)` and rolls it up to a message status, worst first:
 bounced > rejected > failed > complained > deferred > sent > delivered. The UI shows this as a badge on each
-sent message.
+sent message. When a retry goes out, its recipients' rows restart at `sent` and the status rolls up again, so
+another recipient's complaint or deferral still shows. Events from the earlier send are older, so they no longer
+apply to the retried recipients.
 
 ### 4.4 Live updates
 
@@ -347,6 +356,7 @@ them too.
 | Duplicate delivery (queue at-least-once, same mail to two aliases) | Idempotent on `ingestId` + `Message-ID` |
 | R2 or Queue failure inside `email()` | Handler throws instead of accepting; see §7 on whether the sender sees a retryable 4xx |
 | Transient Email Sending error | DO alarm retries with backoff |
+| Permanent send failure, bounce, or rejection | Retry from the message, to just the recipients it didn't reach |
 | DO evicted mid-send | Marked failed rather than possibly duplicated |
 | Bad deploy | Roll back to the previous version in the dashboard; raw mail accepted meanwhile is in R2 |
 
@@ -385,7 +395,7 @@ The web app is the only client, so it has to be good on phones and good enough t
    manifest + service worker so it installs to the home screen on iOS and Android.
 2. **Push notifications** (Web Push, VAPID): the Mailbox DO already knows the moment mail lands. iOS only
    delivers web push to home-screen apps, which item 1 covers.
-3. **Drafts** (autosave into the DO), **forward** (with attachments), **retry failed sends**.
+3. **Drafts** (autosave into the DO), **forward** (with attachments).
 4. **Keyboard shortcuts** (j/k, e archive, r reply, c compose, / search), **bulk select**, **infinite scroll**
    (the API already pages with `before`).
 5. **Mailbox import** from your previous provider (export to `.eml`, e.g. Proton's Import-Export app). Upload

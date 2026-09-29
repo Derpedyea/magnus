@@ -69,6 +69,9 @@ export type DeliveryStatus =
 	| "complained"
 	| "cancelled";
 
+/** What the sender can retry: Email Sending refused the message (`failed`), or recipients' servers did. */
+export const RETRYABLE = new Set<DeliveryStatus>(["bounced", "rejected", "failed"]);
+
 export interface AuthResults {
 	spf: string | null;
 	dkim: string | null;
@@ -128,7 +131,12 @@ export interface MessageDetail {
 	isRead: boolean;
 	labels: string[];
 	attachments: AttachmentMeta[];
-	delivery: { status: DeliveryStatus; detail: string | null } | null;
+	delivery: {
+		status: DeliveryStatus;
+		detail: string | null;
+		/** Recipients whose servers refused it (a RETRYABLE status). Empty when nobody did, or it never left. */
+		undelivered: string[];
+	} | null;
 	auth: AuthResults | null;
 }
 

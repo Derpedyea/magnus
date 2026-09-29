@@ -154,4 +154,15 @@ export const MIGRATIONS: string[] = [
 	SELECT p.address, n.name, sum(p.sent), max(p.date) FROM people p LEFT JOIN named n USING (address)
 	WHERE p.address LIKE '_%@_%' GROUP BY p.address;
 	`,
+	`
+	-- Every id Email Sending gave an outbound message, in Message-ID form: its first send, then one per retry.
+	-- Delivery events can name any of them, so this is where they're matched.
+	CREATE TABLE sends (
+		provider_message_id TEXT PRIMARY KEY,
+		message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE
+	);
+	INSERT OR IGNORE INTO sends (provider_message_id, message_id)
+	SELECT message_id_header, id FROM messages
+	WHERE direction = 'out' AND provider_message_id IS NOT NULL AND message_id_header IS NOT NULL;
+	`,
 ];

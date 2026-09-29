@@ -91,6 +91,8 @@ export const api = {
 	shareLink: (mailboxId: string, messageId: string, attachmentId: string, shared: boolean) =>
 		parseResponse(mailbox.messages[":messageId"].attachments[":attachmentId"].$patch({ param: { mailboxId, messageId, attachmentId }, json: { shared } })),
 	cancel: (mailboxId: string, messageId: string) => parseResponse(mailbox.outbox[":messageId"].cancel.$post({ param: { mailboxId, messageId } })),
+	/** Sends a failed or bounced message again, to whoever it didn't reach. */
+	retry: (mailboxId: string, messageId: string) => parseResponse(mailbox.messages[":messageId"].retry.$post({ param: { mailboxId, messageId } })),
 };
 
 /** First run: prove ownership with a Cloudflare token, then become the first admin (and get signed in). */
