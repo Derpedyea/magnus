@@ -27,9 +27,10 @@ const Routing = z.object({ enabled: z.boolean(), status: z.string().optional() }
 const CatchAll = z.object({ enabled: z.boolean(), actions: z.array(z.object({ type: z.string(), value: z.array(z.string()).optional() })) });
 const SendingDomain = z.object({ tag: z.string(), name: z.string(), enabled: z.boolean() });
 const DnsStatus = z.object({ errors: z.array(z.object({ code: z.string() })).default([]) });
+// The API reference names a consumer's Worker `script_name`, but the list endpoint answers with `script`.
 const Queue = z.object({
 	queue_id: z.string(),
-	consumers: z.array(z.object({ script_name: z.string().optional() })).default([]),
+	consumers: z.array(z.object({ script: z.string().optional(), script_name: z.string().optional() })).default([]),
 	producers: z.array(z.object({ script: z.string().optional() })).default([]),
 });
 const Subscription = z.object({ source: z.object({ domain: z.string().optional() }) });
@@ -69,7 +70,7 @@ async function sendingStatus(ctx: DomainContext): Promise<StepStatus> {
 async function eventsQueue(ctx: DomainContext) {
 	const queues = await ctx.cf.get(z.array(Queue), "queues", `/accounts/${ctx.install.accountId}/queues`);
 	const name = ctx.install.workerName;
-	return queues.find((q) => q.consumers.some((c) => c.script_name === name) && !q.producers.some((p) => p.script === name)) ?? null;
+	return queues.find((q) => q.consumers.some((c) => (c.script ?? c.script_name) === name) && !q.producers.some((p) => p.script === name)) ?? null;
 }
 
 async function eventsStatus(ctx: DomainContext): Promise<StepStatus> {

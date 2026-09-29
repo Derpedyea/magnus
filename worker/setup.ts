@@ -5,12 +5,13 @@ import { z } from "zod";
 import { auth, signInWithoutCode } from "./auth";
 import { cloudflare, findInstall, getZone, listZones } from "./cloudflare";
 import { addAddress, addDomain, createMailbox } from "./directory";
-import { claimInstall, getInstall, releaseInstall } from "./settings";
+import { claimInstall, getInstall, releaseInstall, saveCloudflareToken } from "./settings";
 
 /**
  * First run, before anyone can sign in: /setup proves the visitor owns this install with a Cloudflare token
  * (see findInstall), then creates them as the first admin with their own mailbox and address, and signs them in.
- * Turning the domain on happens next, through the same admin endpoints the Domains page uses.
+ * The token is saved, so turning the domain on (next, through the admin endpoints) and later admin work don't
+ * ask for it again. Setup itself never reads the saved one: pasting a token is how it proves ownership.
  */
 export const setup = new Hono<{ Bindings: Env }>();
 
@@ -19,7 +20,7 @@ setup.use("*", async (c, next) => {
 	await next();
 });
 
-const NOT_THIS_INSTALL =
+export const NOT_THIS_INSTALL =
 	"That token can't see this Magnus install. Create it in the Cloudflare account Magnus is deployed to, with Workers Scripts · Read.";
 
 export const TokenSchema = z.object({ token: z.string().trim().min(1, "Paste your Cloudflare API token.") });
@@ -68,6 +69,7 @@ setup.post("/complete", zValidator("json", CompleteSchema), async (c) => {
 		const mailbox = createMailbox(db, userId, body.name);
 		await addDomain(db, zone.name, zone.id);
 		await db.batch([...mailbox.statements, ...addAddress(db, `${body.localPart}@${zone.name}`, body.name, [mailbox.id])]);
+		await saveCloudflareToken(c.env, body.token);
 
 		const res = c.body(null, 204);
 		for (const cookie of await signInWithoutCode(c.req.raw, body.email)) res.headers.append("Set-Cookie", cookie);

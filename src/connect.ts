@@ -13,12 +13,12 @@ export function useDomainConnect() {
 	const qc = useQueryClient();
 	const [steps, setSteps] = useState<Partial<Record<StepId, StepState>>>({});
 	const run = useMutation({
-		mutationFn: async (target: { token: string; domain: string; moveMail: boolean }) => {
+		mutationFn: async (target: { domain: string; moveMail: boolean }) => {
 			setSteps({});
 			for (const step of STEP_IDS) {
 				setSteps((prev) => ({ ...prev, [step]: { state: "running" } }));
 				const result = await adminApi
-					.runStep(target.token, target.domain, step, target.moveMail)
+					.runStep(target.domain, step, target.moveMail)
 					.catch((error: unknown): StepStatus => ({ state: "failed", detail: error instanceof Error ? error.message : String(error) }));
 				setSteps((prev) => ({ ...prev, [step]: result }));
 				if (result.state === "failed") return;

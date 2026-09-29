@@ -52,6 +52,7 @@ async function failureMessage(res: Response): Promise<string> {
 }
 
 const post = <T>(path: string, body: unknown) => request<T>(path, { method: "POST", body: JSON.stringify(body) });
+const put = (path: string, body: unknown) => request<void>(path, { method: "PUT", body: JSON.stringify(body) });
 const patch = (path: string, body: unknown) => request<void>(path, { method: "PATCH", body: JSON.stringify(body) });
 const del = (path: string) => request<void>(path, { method: "DELETE" });
 
@@ -102,11 +103,13 @@ export const setupApi = {
 
 export const adminApi = {
 	directory: () => request<Directory>("/admin/directory"),
-	zones: (token: string) => post<{ zones: Zone[] }>("/admin/zones", { token }),
-	addDomain: (token: string, zoneId: string) => post<{ name: string }>("/admin/domains", { token, zoneId }),
-	domainStatus: (token: string, domain: string) => post<Record<StepId, StepStatus>>(`/admin/domains/${domain}/status`, { token }),
-	runStep: (token: string, domain: string, step: StepId, moveMail: boolean) =>
-		post<StepStatus>(`/admin/domains/${domain}/steps/${step}`, { token, moveMail }),
+	/** Checked against this install, then saved encrypted; Cloudflare calls below use it. */
+	saveToken: (token: string) => put("/admin/cloudflare-token", { token }),
+	forgetToken: () => del("/admin/cloudflare-token"),
+	zones: () => request<{ zones: Zone[] }>("/admin/zones"),
+	addDomain: (zoneId: string) => post<{ name: string }>("/admin/domains", { zoneId }),
+	domainStatus: (domain: string) => post<Record<StepId, StepStatus>>(`/admin/domains/${domain}/status`, {}),
+	runStep: (domain: string, step: StepId, moveMail: boolean) => post<StepStatus>(`/admin/domains/${domain}/steps/${step}`, { moveMail }),
 	setCatchAll: (domain: string, catchAllMailboxId: string | null) => patch(`/admin/domains/${domain}`, { catchAllMailboxId }),
 	removeDomain: (domain: string) => del(`/admin/domains/${domain}`),
 	addPerson: (input: { name: string; email: string; isAdmin: boolean; address?: { localPart: string; domain: string } }) =>

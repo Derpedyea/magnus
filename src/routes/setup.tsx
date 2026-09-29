@@ -70,7 +70,7 @@ function Setup() {
 						claimed={claimed}
 						onClaimed={(target) => {
 							setClaimed(target);
-							connect.run({ token, domain: target.domain, moveMail: target.moveMail });
+							connect.run({ domain: target.domain, moveMail: target.moveMail });
 						}}
 					/>
 				) : (
@@ -90,7 +90,7 @@ function Setup() {
 										Open inbox
 									</Button>
 									{connect.done ? null : (
-										<Button variant="ghost" onClick={() => connect.run({ token, domain: claimed.domain, moveMail: claimed.moveMail })}>
+										<Button variant="ghost" onClick={() => connect.run({ domain: claimed.domain, moveMail: claimed.moveMail })}>
 											Check again
 										</Button>
 									)}

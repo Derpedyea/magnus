@@ -80,6 +80,8 @@ export interface Directory {
 	people: Person[];
 	mailboxes: DirectoryMailbox[];
 	addresses: DirectoryAddress[];
+	/** A Cloudflare token is saved, so turning domains on doesn't ask for one. */
+	cloudflareTokenSaved: boolean;
 }
 
 /** A domain in the Cloudflare account, and who receives its mail today. */

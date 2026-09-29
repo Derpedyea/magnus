@@ -3,14 +3,15 @@ import { z } from "zod";
 import { optional } from "./optional";
 import type { Install } from "./settings";
 
-// The few Cloudflare API calls setup and the admin pages make, with the token someone pasted. The token is used
-// for the request it arrived with and never stored.
+// The few Cloudflare API calls setup and the admin pages make: setup with the token just pasted, admin pages with
+// the one saved encrypted (settings.ts).
 
 const API = "https://api.cloudflare.com/client/v4";
 
 const Envelope = z.object({
 	success: z.boolean(),
-	errors: z.array(z.object({ code: z.number(), message: z.string() })).default([]),
+	// Some APIs (Queues) answer a success with `"errors": null` rather than an empty list.
+	errors: z.array(z.object({ code: z.number(), message: z.string() })).nullish(),
 	result: z.unknown(),
 });
 
