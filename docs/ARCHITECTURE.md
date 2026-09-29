@@ -356,6 +356,11 @@ Threading is RFC 5322 first, heuristic second:
 Outbound replies carry `In-Reply-To` + a trimmed `References` chain, so Gmail, Apple Mail, and Outlook thread
 them too.
 
+Within a thread, the same headers say which message each one answers (`replyParents()`: `In-Reply-To`, else
+the nearest `References` entry that's here, matching any id a retried send went out under). The client lays
+that out as a tree that only branches where replies fork (`src/replies.ts`), so a thread without forks reads
+as a plain list.
+
 ### 5.6 Reliability summary
 
 | Failure | Outcome |
