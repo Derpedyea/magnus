@@ -57,7 +57,7 @@ Constraints worth being honest about:
 | --- | --- | --- |
 | `email()` | `worker/mail/inbound.ts` | SMTP-time accept/reject, raw capture to R2, enqueue |
 | `queue()` | `worker/mail/` | Parse inbound mail into its mailbox; apply delivery events. Messages are told apart by shape, since queues can be renamed at deploy |
-| `fetch()` | `worker/api.ts`, `src/` | The React app (static assets) and `/api/*`: mail, `/setup`, `/admin`, and Better Auth |
+| `fetch()` | `worker/api.ts`, `worker/links.ts`, `src/` | The React app (static assets), `/api/*` (mail, `/setup`, `/admin`, Better Auth), and `/f/*` downloads for files sent as links |
 | `Mailbox` | `worker/mailbox/` | The Durable Object class that owns all mail data and the outbox |
 
 Why one Worker: it's what the Deploy to Cloudflare button can install in one click, it deploys as a unit, and
@@ -160,7 +160,8 @@ no dead-letter queue: the Deploy button can't be relied on to create one.)
 
 1. `POST /api/mailboxes/:id/send` validates the request (zod). It checks that `from` is one of **this mailbox's
    send identities** (`address_routes.can_send` on a domain with `sending = 1`), that attachments are this
-   mailbox's own uploads (sizes re-read from R2, not trusted from the client), and that the total stays under 5 MiB.
+   mailbox's own uploads (sizes re-read from R2, not trusted from the client). Files that would push the
+   message past 5 MiB go as download links instead (§4.5).
 2. `Mailbox.enqueueSend()` writes the message into the thread, labeled `outbox`, with status `queued`. For
    replies it computes `In-Reply-To`/`References` from the parent, capped at 2,048 bytes (root + newest IDs).
    It then inserts an `outbox` row with `send_at = now + delay` and sets a DO alarm.
@@ -194,6 +195,34 @@ The browser opens `GET /api/mailboxes/:id/live` for each of the user's mailboxes
 to the Mailbox DO, which accepts it with the **hibernation API**. Idle sockets cost nothing, and `ping`/`pong`
 is answered by `setWebSocketAutoResponse` without waking the object. Every mutation broadcasts a small
 event, and the client invalidates the matching TanStack Query caches.
+
+### 4.5 Files too big to attach
+
+Email Sending caps a message at 5 MiB, so larger files go as download links, the way Gmail's Drive links
+work. Code: `shared/links.ts`, `worker/links.ts`.
+
+1. **Upload** takes files up to 100 MB (Cloudflare's request body limit on Free and Pro plans).
+2. **Split:** `planAttachments()` counts every part as base64 plus a fixed allowance for headers, then turns
+   the largest files into links until the rest fits. Linking grows the body (step 3), so once anything is
+   linked it splits again against the linked body. The composer runs the same function to mark linked files
+   as you attach them, and the send route runs it again on the sizes in R2, refusing a body too big to send.
+3. **Enqueue:** each linked file becomes an ordinary attachment row with a 128-bit `link_token`. The text part
+   gets a block naming each file, its size, and link, above any trailing quote, where Gmail would fold it away.
+   The message also gains an HTML part: the sender's text with a card per file in the same place (extension
+   tile, name, size, View or Download), built from tables and inline styles so it holds up in Gmail and
+   Outlook. HTML readers never see the bare URLs. The sent copy keeps both, so the sender sees what recipients
+   got.
+4. **Send:** only the attached files are read into memory. On success, every file is streamed from `uploads/` to
+   `m/…` like any attachment.
+5. **Download:** the link, `GET /f/<mailboxId>/<token>`, opens a plain page (no scripts) with the file's name,
+   size, and sender, a preview when the browser can show it safely (§5.3), and a Download button. The bytes
+   are at `/f/<mailboxId>/<token>/<filename>`, streamed with Range support, and `?download=1` saves them. The
+   name in the path is only there for viewers to show and save as. Both are public; the token is the
+   credential. The mailbox is checked in D1 before touching the Durable Object, since `getByName` would create
+   one for any name.
+6. **Stop sharing:** links don't expire, because an attachment stays readable in the recipient's archive forever
+   and a link should too. Instead the sender can stop sharing a file from its Sent message (`link_stopped`),
+   which turns the link into a 410 page naming the sender, and share it again, which revives the same link.
 
 ## 5. Cross-cutting design
 
@@ -255,9 +284,12 @@ Email HTML is hostile by default. Four layers protect the client:
    self/data unless the user clicks "Show images", `form-action 'none'`, `base-uri 'none'`.
 3. **Sandboxed iframe** without `allow-scripts`. `allow-same-origin` is safe without scripts and lets inline
    images authenticate and the frame auto-size.
-4. **Attachments** are forced to download (`application/octet-stream` + `Content-Disposition: attachment`)
-   unless the type is on an inline-safe allowlist (images, PDF, text), and are always served with a
-   `sandbox` CSP. An HTML or SVG attachment can't execute on the mail origin.
+4. **Attachments** show inline only when `preview()` in `shared/files.ts` allows it: raster images, common
+   video and audio, and PDF, never HTML or SVG. They're served as the allowlisted type rather than the
+   sender's label (a page named `photo.png` goes out as `image/png`, which browsers won't run); everything
+   else downloads as `application/octet-stream`. Every file response carries a `sandbox` CSP, which Chrome's
+   and Firefox's PDF viewers both tolerate, and honours `Range`, so video and audio seek without downloading
+   first. An HTML or SVG attachment can't execute on the mail origin.
 
 ### 5.4 Deliverability
 
@@ -267,6 +299,8 @@ Your part:
 - Keep **DMARC** at `p=quarantine` or stricter, with `rua` pointing at a mailbox here (reports arrive as mail
   and can be parsed later).
 - Always send a text part (the composer is text-first).
+- Give the app a custom domain before sending large files. Their links point at the app's host, and filters
+  distrust `workers.dev`, which phishing kits use heavily.
 - Watch bounce and complaint rates. The delivery badges surface them per message.
 
 ### 5.5 Threading
@@ -317,6 +351,8 @@ The local simulator can't prove these:
 4. **What the sending server sees when `email()` throws.** The docs don't say whether it's a temporary (4xx,
    sender retries) or permanent failure. Test once with a forced exception on the pilot domain. If it's
    permanent, catch R2/Queue errors and fall back to `message.forward()` to a verified backup address.
+5. **Does the 5 MiB limit count base64 or raw bytes?** Magnus assumes base64, so files over about 3.8 MB go as
+   links. If a 4.5 MB attachment sends fine, `encodedSize()` in `shared/links.ts` can count raw bytes instead.
 
 ## 8. Roadmap
 

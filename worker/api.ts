@@ -1,27 +1,30 @@
 import { zValidator } from "@hono/zod-validator";
 import {
 	canMatch,
+	formatBytes,
 	interleave,
 	localRecipients,
 	type MailboxQuery,
 	type MailboxThread,
+	MAX_UPLOAD_BYTES,
 	mergeByRecency,
 	mergeCounts,
 	normalizeAddress,
+	planAttachments,
 	planScope,
 	r2Keys,
 	type SendAttachmentRef,
 	type ThreadSummary,
 	type User,
 } from "#shared";
-import { ComposeSchema, MarkReadSchema, MAX_OUTBOUND_BYTES, ModifyThreadsSchema } from "#shared/schemas";
+import { ComposeSchema, MarkReadSchema, ModifyThreadsSchema, ShareLinkSchema } from "#shared/schemas";
 import { isAPIError } from "better-auth/api";
 import { type Context, Hono } from "hono";
 import { admin } from "./admin";
 import { auth, currentUser, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
 import { getSendIdentities, getUserMailboxes, isMailboxMember, resolveRecipient } from "./directory";
-import { attachmentHeaders, renderEmailHtml } from "./html";
+import { fileHeaders, renderEmailHtml, serveFile } from "./html";
 import type { Mailbox } from "./mailbox/mailbox";
 import { getInstall } from "./settings";
 import { setup } from "./setup";
@@ -169,13 +172,19 @@ mb.get("/messages/:messageId/body", async (c) => {
 	});
 });
 
-mb.get("/messages/:messageId/attachments/:attachmentId", async (c) => {
+// The optional name is ignored; it's there so viewers (Chrome's PDF viewer, "Save video as…") show and save it.
+mb.get("/messages/:messageId/attachments/:attachmentId/:filename?", async (c) => {
 	const blobs = await c.var.mailbox.getMessageBlobs(c.req.param("messageId"));
 	const att = blobs?.attachments.find((a) => a.id === c.req.param("attachmentId"));
-	if (!att) return c.json({ error: "Not found" }, 404);
-	const obj = await c.env.MAIL.get(att.r2Key);
-	if (!obj) return c.json({ error: "Not found" }, 404);
-	return new Response(obj.body, { headers: attachmentHeaders(att, c.req.query("download") === "1") });
+	const file = att && (await serveFile(c.env.MAIL, att.r2Key, c.req.raw, fileHeaders(att, c.req.query("download") === "1")));
+	return file || c.json({ error: "Not found" }, 404);
+});
+
+/** Stops or resumes sharing a file that was sent as a download link. */
+mb.patch("/messages/:messageId/attachments/:attachmentId", zValidator("json", ShareLinkSchema), async (c) => {
+	const { messageId, attachmentId } = c.req.param();
+	const ok = await c.var.mailbox.setLinkShared(messageId, attachmentId, c.req.valid("json").shared);
+	return ok ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
 });
 
 mb.get("/messages/:messageId/raw", async (c) => {
@@ -193,11 +202,11 @@ mb.get("/messages/:messageId/raw", async (c) => {
 	});
 });
 
-/** Composer attachment upload: raw body, filename in X-Filename (URI-encoded). */
+/** Composer attachment upload: raw body, filename in X-Filename (URI-encoded). Whatever doesn't fit in the message goes as a link. */
 mb.post("/uploads", async (c) => {
 	const length = Number(c.req.header("Content-Length") ?? 0);
 	if (!length) return c.json({ error: "Content-Length required" }, 411);
-	if (length >= MAX_OUTBOUND_BYTES) return c.json({ error: "Attachments are limited to 5 MiB per message" }, 413);
+	if (length > MAX_UPLOAD_BYTES) return c.json({ error: `Files are limited to ${formatBytes(MAX_UPLOAD_BYTES)}` }, 413);
 	const body = c.req.raw.body;
 	if (!body) return c.json({ error: "Empty body" }, 400);
 
@@ -225,10 +234,9 @@ mb.post("/send", zValidator("json", ComposeSchema), async (c) => {
 		if (!head) return c.json({ error: `Attachment expired: ${a.filename}` }, 400);
 		attachments.push({ ...a, size: head.size });
 	}
-	const bodyBytes = new TextEncoder().encode(req.text + (req.html ?? "")).length;
-	if (bodyBytes + attachments.reduce((n, a) => n + a.size, 0) >= MAX_OUTBOUND_BYTES) {
-		return c.json({ error: "Message exceeds the 5 MiB outbound limit" }, 413);
-	}
+	const linkBase = `${new URL(c.req.url).origin}/f/${c.var.mailboxId}/`;
+	const { attached, linked, fits } = planAttachments(attachments, req, linkBase);
+	if (!fits) return c.json({ error: "Message is too long to send" }, 413);
 
 	const recipients = [...new Set([...req.to, ...req.cc, ...req.bcc].map((a) => normalizeAddress(a.address)))];
 	const routed = await Promise.all(
@@ -246,7 +254,9 @@ mb.post("/send", zValidator("json", ComposeSchema), async (c) => {
 		text: req.text,
 		html: req.html,
 		replyToMessageId: req.replyToMessageId,
-		attachments,
+		attachments: attached,
+		links: linked,
+		linkBase,
 		delayMs: req.delaySeconds * 1000,
 		localRecipients: local,
 		localOnly: local.length === recipients.length,

@@ -14,9 +14,11 @@ import {
 	type MessageBlobs,
 	type MessageDetail,
 	makeSnippet,
+	newLinkToken,
 	normalizeAddress,
 	normalizeSubject,
 	r2Keys,
+	type SendAttachmentRef,
 	type SendInput,
 	type SendQueued,
 	type StoredAttachment,
@@ -24,6 +26,7 @@ import {
 	type ThreadDetail,
 	type ThreadSummary,
 	ulid,
+	withLinks,
 } from "#shared";
 import { MIGRATIONS } from "./schema";
 
@@ -95,6 +98,8 @@ interface AttachmentRow extends Row {
 	content_id: string | null;
 	inline: number;
 	r2_key: string;
+	link_token: string | null;
+	link_stopped: number;
 }
 
 const THREAD_SELECT = `
@@ -342,8 +347,8 @@ export class Mailbox extends DurableObject<Env> {
 
 	private insertAttachment(messageId: string, a: StoredAttachment): void {
 		this.sql.exec(
-			`INSERT INTO attachments (id, message_id, filename, content_type, size, content_id, inline, r2_key)
-			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+			`INSERT INTO attachments (id, message_id, filename, content_type, size, content_id, inline, r2_key, link_token)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
 			a.id,
 			messageId,
 			a.filename,
@@ -352,6 +357,7 @@ export class Mailbox extends DurableObject<Env> {
 			a.contentId,
 			a.inline ? 1 : 0,
 			a.r2Key,
+			a.link?.token ?? null,
 		);
 	}
 
@@ -451,6 +457,17 @@ export class Mailbox extends DurableObject<Env> {
 		return { rawKey: msg.raw_key, htmlKey: msg.html_key, attachments: attachments.map(toStoredAttachment) };
 	}
 
+	/** A file sent as a link, found by its token for the public download route, which checks it's still shared. */
+	async getLinkedFile(token: string): Promise<{ file: StoredAttachment; from: Address } | null> {
+		const row = this.sql
+			.exec<AttachmentRow & { from_json: string }>(
+				`SELECT a.*, m.from_json FROM attachments a JOIN messages m ON m.id = a.message_id WHERE a.link_token = ?1`,
+				token,
+			)
+			.toArray()[0];
+		return row ? { file: toStoredAttachment(row), from: JSON.parse(row.from_json) } : null;
+	}
+
 	async counts(query: AddressFilter): Promise<Counts> {
 		const labels = this.sql
 			.exec<{ label: string; threads: number; unread: number }>(
@@ -484,6 +501,22 @@ export class Mailbox extends DurableObject<Env> {
 			this.addLabels(ids, add);
 		});
 		this.broadcast({ type: "threads.changed", threadIds: input.threadIds });
+	}
+
+	/** Stops or resumes a linked file's download link. Returns false if there's no such linked file. */
+	async setLinkShared(messageId: string, attachmentId: string, shared: boolean): Promise<boolean> {
+		const updated = this.sql
+			.exec(
+				`UPDATE attachments SET link_stopped = ?3 WHERE id = ?1 AND message_id = ?2 AND link_token IS NOT NULL RETURNING id`,
+				attachmentId,
+				messageId,
+				shared ? 0 : 1,
+			)
+			.toArray();
+		if (updated.length === 0) return false;
+		const { thread_id } = this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM messages WHERE id = ?1`, messageId).one();
+		this.broadcast({ type: "threads.changed", threadIds: [thread_id] });
+		return true;
 	}
 
 	async markRead(input: { threadIds: string[]; read: boolean }): Promise<void> {
@@ -522,21 +555,34 @@ export class Mailbox extends DurableObject<Env> {
 			headers.References = buildReferences(JSON.parse(parent.refs), parent.message_id_header).join(" ");
 		}
 
-		let htmlKey: string | null = null;
-		if (input.html) {
-			htmlKey = r2Keys.html(input.mailboxId, id);
-			await this.env.MAIL.put(htmlKey, input.html, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
-		}
-
-		const attachments: StoredAttachment[] = input.attachments.map((a) => ({
+		const stored = (a: SendAttachmentRef, link: StoredAttachment["link"]): StoredAttachment => ({
 			id: ulid(now),
 			filename: a.filename,
 			contentType: a.contentType,
 			size: a.size,
 			contentId: null,
 			inline: false,
+			link,
 			r2Key: a.r2Key,
-		}));
+		});
+		const attached = input.attachments.map((a) => stored(a, null));
+		const linked = input.links.map((a) => {
+			const token = newLinkToken();
+			return { file: stored(a, { token, shared: true }), url: input.linkBase + token };
+		});
+		const attachments = [...attached, ...linked.map((l) => l.file)];
+
+		// The sent copy keeps the links too, so the sender sees what recipients got.
+		let { text, html } = input;
+		if (linked.length > 0) {
+			({ text, html } = withLinks({ text, html }, linked.map((l) => ({ ...l.file, url: l.url }))));
+		}
+
+		let htmlKey: string | null = null;
+		if (html) {
+			htmlKey = r2Keys.html(input.mailboxId, id);
+			await this.env.MAIL.put(htmlKey, html, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
+		}
 
 		const payload: OutboxPayload = {
 			from: input.from,
@@ -544,15 +590,15 @@ export class Mailbox extends DurableObject<Env> {
 			cc: input.cc,
 			bcc: input.bcc,
 			subject: input.subject,
-			text: input.text,
-			html: input.html,
+			text,
+			html,
 			headers,
 			attachments,
 			localRecipients: input.localRecipients,
 			localOnly: input.localOnly,
 		};
 
-		const snippet = makeSnippet(input.text);
+		const snippet = makeSnippet(text);
 		const threadId = this.ctx.storage.transactionSync(() => {
 			const threadId = parent?.thread_id ?? this.createThread(input.subject, now);
 			const { rowid } = this.sql
@@ -572,14 +618,14 @@ export class Mailbox extends DurableObject<Env> {
 					input.subject,
 					snippet,
 					sendAt,
-					input.text,
+					text,
 					htmlKey,
 				)
 				.one();
 			this.addLabels([id], ["outbox"]);
 			this.addAddress(id, normalizeAddress(input.from.address));
 			for (const a of attachments) this.insertAttachment(id, a);
-			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc, ...input.bcc], input.text);
+			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc, ...input.bcc], text);
 			this.touchThread(threadId, sendAt, snippet, [input.from, ...input.to, ...input.cc]);
 			this.sql.exec(`INSERT INTO outbox (message_id, send_at, payload) VALUES (?1, ?2, ?3)`, id, sendAt, JSON.stringify(payload));
 			return threadId;
@@ -674,11 +720,13 @@ export class Mailbox extends DurableObject<Env> {
 			this.sql.exec(`UPDATE outbox SET attempts = attempts + 1 WHERE message_id = ?1`, row.message_id);
 
 			const payload: OutboxPayload = JSON.parse(row.payload);
-			let files: ArrayBuffer[];
 			let providerMessageId: string | undefined;
 			try {
-				files = await this.loadAttachments(payload.attachments);
-				if (!payload.localOnly) providerMessageId = (await this.env.EMAIL.send(buildSendRequest(payload, files))).messageId;
+				if (!payload.localOnly) {
+					// Linked files stay behind; the text already links to them. (Rows queued before links existed lack the field.)
+					const attached = await this.loadAttachments(payload.attachments.filter((a) => !a.link));
+					providerMessageId = (await this.env.EMAIL.send(buildSendRequest(payload, attached))).messageId;
+				}
 			} catch (err) {
 				const code = typeof err === "object" && err && "code" in err ? String(err.code) : "E_UNKNOWN";
 				const detail = `${code}: ${err instanceof Error ? err.message : String(err)}`;
@@ -696,7 +744,7 @@ export class Mailbox extends DurableObject<Env> {
 
 			this.finishSend(row.message_id, row.thread_id, "sent", null, providerMessageId, payload.localRecipients);
 			try {
-				await this.persistSentAttachments(row.message_id, payload.attachments, files);
+				await this.persistSentAttachments(row.message_id, payload.attachments);
 			} catch (err) {
 				// The mail went out; the attachment rows still point at the upload copies.
 				console.error(JSON.stringify({ msg: "persisting sent attachments failed", messageId: row.message_id, error: String(err) }));
@@ -706,23 +754,28 @@ export class Mailbox extends DurableObject<Env> {
 		await this.scheduleOutbox();
 	}
 
-	private async loadAttachments(attachments: StoredAttachment[]): Promise<ArrayBuffer[]> {
+	private async loadAttachments(attachments: StoredAttachment[]): Promise<EmailAttachment[]> {
 		return Promise.all(
 			attachments.map(async (a) => {
 				const obj = await this.env.MAIL.get(a.r2Key);
 				if (!obj) throw Object.assign(new Error(`Attachment missing: ${a.filename}`), { code: "E_ATTACHMENT_MISSING" });
-				return obj.arrayBuffer();
+				return { content: await obj.arrayBuffer(), filename: a.filename, type: a.contentType, disposition: "attachment" as const };
 			}),
 		);
 	}
 
-	/** Uploads live under a lifecycle-reaped prefix; keep a permanent copy with the sent message. */
-	private async persistSentAttachments(messageId: string, attachments: StoredAttachment[], files: ArrayBuffer[]): Promise<void> {
+	/**
+	 * Uploads live under a lifecycle-reaped prefix; keep a permanent copy with the sent message.
+	 * Streamed rather than buffered: linked files run up to MAX_UPLOAD_BYTES.
+	 */
+	private async persistSentAttachments(messageId: string, attachments: StoredAttachment[]): Promise<void> {
 		if (attachments.length === 0) return;
 		const mailboxId = this.mailboxId();
-		for (const [i, a] of attachments.entries()) {
+		for (const a of attachments) {
+			const upload = await this.env.MAIL.get(a.r2Key);
+			if (!upload) throw new Error(`Attachment missing: ${a.filename}`);
 			const r2Key = r2Keys.attachment(mailboxId, messageId, a.id);
-			await this.env.MAIL.put(r2Key, files[i]!, { httpMetadata: { contentType: a.contentType } });
+			await this.env.MAIL.put(r2Key, upload.body, { httpMetadata: { contentType: a.contentType } });
 			this.sql.exec(`UPDATE attachments SET r2_key = ?2 WHERE id = ?1`, a.id, r2Key);
 			if (a.r2Key.startsWith("uploads/")) await this.env.MAIL.delete(a.r2Key);
 		}
@@ -820,7 +873,7 @@ export class Mailbox extends DurableObject<Env> {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-function buildSendRequest(p: OutboxPayload, files: ArrayBuffer[]): EmailMessageBuilder {
+function buildSendRequest(p: OutboxPayload, attachments: EmailAttachment[]): EmailMessageBuilder {
 	const toEmail = (a: Address) => (a.name ? { email: a.address, name: a.name } : a.address);
 	return {
 		from: toEmail(p.from),
@@ -831,16 +884,7 @@ function buildSendRequest(p: OutboxPayload, files: ArrayBuffer[]): EmailMessageB
 		text: p.text,
 		...(p.html ? { html: p.html } : {}),
 		...(Object.keys(p.headers).length ? { headers: p.headers } : {}),
-		...(files.length
-			? {
-					attachments: p.attachments.map((a, i) => ({
-						content: files[i]!,
-						filename: a.filename,
-						type: a.contentType,
-						disposition: "attachment" as const,
-					})),
-				}
-			: {}),
+		...(attachments.length ? { attachments } : {}),
 	};
 }
 
@@ -899,6 +943,7 @@ function toAttachmentMeta(a: AttachmentRow): AttachmentMeta {
 		size: a.size,
 		contentId: a.content_id,
 		inline: a.inline === 1,
+		link: a.link_token === null ? null : { token: a.link_token, shared: a.link_stopped === 0 },
 	};
 }
 

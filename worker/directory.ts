@@ -91,6 +91,10 @@ export async function isMailboxMember(db: D1Database, userId: string, mailboxId:
 	return row !== null;
 }
 
+export async function mailboxExists(db: D1Database, mailboxId: string): Promise<boolean> {
+	return (await db.prepare(`SELECT 1 AS ok FROM mailboxes WHERE id = ?1`).bind(mailboxId).first()) !== null;
+}
+
 export interface SendIdentity {
 	address: string;
 	displayName: string | null;

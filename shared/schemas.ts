@@ -2,8 +2,6 @@ import { z } from "zod";
 
 /** Email Service: to + cc + bcc combined. */
 export const MAX_RECIPIENTS = 50;
-/** Email Service: total outbound message size (body + attachments) for non-verified recipients. */
-export const MAX_OUTBOUND_BYTES = 5 * 1024 * 1024;
 /** Email Service: max entries in the attachments array. */
 export const MAX_ATTACHMENTS = 32;
 
@@ -35,9 +33,6 @@ export const ComposeSchema = z
 	})
 	.refine((c) => c.to.length + c.cc.length + c.bcc.length <= MAX_RECIPIENTS, {
 		message: `At most ${MAX_RECIPIENTS} recipients (to + cc + bcc)`,
-	})
-	.refine((c) => c.attachments.reduce((n, a) => n + a.size, 0) < MAX_OUTBOUND_BYTES, {
-		message: "Attachments exceed the 5 MiB outbound limit",
 	});
 
 export type ComposeRequest = z.infer<typeof ComposeSchema>;
@@ -47,6 +42,9 @@ export const ModifyThreadsSchema = z.object({
 	add: z.array(z.string().min(1).max(64)).default([]),
 	remove: z.array(z.string().min(1).max(64)).default([]),
 });
+
+/** Stops or resumes sharing a file sent as a link. The link itself never changes. */
+export const ShareLinkSchema = z.object({ shared: z.boolean() });
 
 export const MarkReadSchema = z.object({
 	threadIds: z.array(z.string()).min(1).max(500),

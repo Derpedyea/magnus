@@ -1,8 +1,8 @@
-import type { Address, DeliveryStatus, MessageDetail } from "#shared";
+import { type Address, type AttachmentMeta, type DeliveryStatus, formatBytes, type MessageDetail, type PreviewKind, preview } from "#shared";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
-import { ArchiveIcon, ImageOffIcon, InboxIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, StarIcon, StarOffIcon, Trash2Icon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ArchiveIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, StarIcon, StarOffIcon, Trash2Icon } from "lucide-react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import { openDraft } from "../compose";
 import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
 import type { Draft } from "./Composer";
+import { FileViewer } from "./FileViewer";
 
 const route = getRouteApi("/_app/_mail/$view/$mailboxId/$threadId");
 
@@ -104,8 +105,30 @@ function Message(props: {
 	onReply: (all: boolean) => void;
 }) {
 	const m = props.message;
+	const qc = useQueryClient();
 	const [open, setOpen] = useState(props.defaultOpen);
 	const files = m.attachments.filter((a) => !a.inline);
+	const fileUrl = (a: AttachmentMeta) => `${messageUrl(props.mailboxId, m.id)}/attachments/${a.id}/${encodeURIComponent(a.filename)}`;
+	// Kept after closing, so the viewer can animate out.
+	const [viewing, setViewing] = useState<{ file: AttachmentMeta; kind: PreviewKind; open: boolean } | null>(null);
+	/** Previews what the browser can show; downloads the rest. */
+	const openFile = (a: AttachmentMeta) => {
+		const shown = preview(a);
+		if (shown) setViewing({ file: a, kind: shown.kind, open: true });
+		else window.location.assign(`${fileUrl(a)}?download=1`);
+	};
+	// The cards in our own sent mail link to the recipients' page. Here, open the file in place instead: some
+	// browsers (embedded ones especially) would replace the app with that page, which has no way back.
+	const openLinked = (href: string) => {
+		const token = /^\/f\/[^/]+\/([\w-]{22})$/.exec(new URL(href).pathname)?.[1];
+		const file = token ? files.find((a) => a.link?.token === token) : undefined;
+		if (file) openFile(file);
+		return file !== undefined;
+	};
+	const share = useMutation({
+		mutationFn: (v: { attachmentId: string; shared: boolean }) => api.shareLink(props.mailboxId, m.id, v.attachmentId, v.shared),
+		onSuccess: () => qc.invalidateQueries({ queryKey: ["mail"] }),
+	});
 
 	return (
 		<Collapsible open={open} onOpenChange={setOpen} render={<Card size="sm" />}>
@@ -123,18 +146,66 @@ function Message(props: {
 						{m.cc.length ? ` · cc ${formatList(m.cc)}` : ""}
 						{m.auth ? ` · spf ${m.auth.spf ?? "?"} · dkim ${m.auth.dkim ?? "?"} · dmarc ${m.auth.dmarc ?? "?"}` : ""}
 				</p>
-				{m.hasHtml ? <HtmlBody src={`${messageUrl(props.mailboxId, m.id)}/body`} /> : <pre className="font-sans whitespace-pre-wrap">{m.text}</pre>}
+				{m.hasHtml ? (
+					<HtmlBody src={`${messageUrl(props.mailboxId, m.id)}/body`} onLink={openLinked} />
+				) : (
+					<pre className="font-sans whitespace-pre-wrap">{m.text}</pre>
+				)}
 				{files.length ? (
 					<ul className="mt-4 flex flex-wrap gap-2">
-						{files.map((a) => (
-							<li key={a.id}>
-								<a href={`${messageUrl(props.mailboxId, m.id)}/attachments/${a.id}?download=1`} className={buttonVariants({ variant: "outline", size: "sm" })}>
-									<PaperclipIcon />
-									{a.filename} <span className="text-muted-foreground">{Math.ceil(a.size / 1024)} KB</span>
-								</a>
-							</li>
-						))}
+						{files.map((a) => {
+							const Icon = a.link ? (a.link.shared ? LinkIcon : Link2OffIcon) : PaperclipIcon;
+							const label = (
+								<>
+									<Icon />
+									{a.filename} <span className="text-muted-foreground">{formatBytes(a.size)}</span>
+								</>
+							);
+							return (
+								<li key={a.id} className="flex items-center gap-0.5">
+									{/* Opens in the viewer when the browser can show it; otherwise a plain download link. */}
+									{preview(a) ? (
+										<Button variant="outline" size="sm" onClick={() => openFile(a)}>
+											{label}
+										</Button>
+									) : (
+										<a href={`${fileUrl(a)}?download=1`} className={buttonVariants({ variant: "outline", size: "sm" })}>
+											{label}
+										</a>
+									)}
+									{a.link ? (
+										<Tooltip>
+											<TooltipTrigger
+												render={
+													<Button
+														variant="ghost"
+														size="sm"
+														className="text-muted-foreground"
+														disabled={share.isPending}
+														onClick={() => share.mutate({ attachmentId: a.id, shared: !a.link?.shared })}
+													>
+														{a.link.shared ? "Stop sharing" : "Share again"}
+													</Button>
+												}
+											/>
+											<TooltipContent>
+												{a.link.shared ? "The link stops working until you share it again" : "The same link works again"}
+											</TooltipContent>
+										</Tooltip>
+									) : null}
+								</li>
+							);
+						})}
 					</ul>
+				) : null}
+				{viewing ? (
+					<FileViewer
+						file={viewing.file}
+						kind={viewing.kind}
+						url={fileUrl(viewing.file)}
+						open={viewing.open}
+						onOpenChange={(open) => setViewing({ ...viewing, open })}
+					/>
 				) : null}
 				<div className="mt-4 flex items-center gap-2">
 					<Button variant="outline" size="sm" onClick={() => props.onReply(false)}>
@@ -158,11 +229,26 @@ function Message(props: {
  * Email HTML renders in a sandboxed iframe: no scripts (sandbox + CSP), same-origin only so we
  * can size it and so inline cid: images authenticate. Remote images stay blocked until asked.
  */
-function HtmlBody({ src }: { src: string }) {
+function HtmlBody({ src, onLink }: { src: string; /** Gets each link click first; returns true to keep it in the app. */ onLink: (href: string) => boolean }) {
 	const ref = useRef<HTMLIFrameElement>(null);
 	const [images, setImages] = useState(false);
 	const [height, setHeight] = useState(48);
 	const [hasBlocked, setHasBlocked] = useState(false);
+	// Each load (showing images reloads the frame) brings a new document to listen to.
+	const [doc, setDoc] = useState<Document | null>(null);
+
+	const onClick = useEffectEvent((e: MouseEvent) => {
+		for (const target of e.composedPath()) {
+			if (!("href" in target) || typeof target.href !== "string") continue;
+			if (onLink(target.href)) e.preventDefault();
+			return;
+		}
+	});
+	useEffect(() => {
+		if (!doc) return;
+		doc.addEventListener("click", onClick);
+		return () => doc.removeEventListener("click", onClick);
+	}, [doc]);
 
 	const onLoad = () => {
 		const doc = ref.current?.contentDocument;
@@ -171,6 +257,7 @@ function HtmlBody({ src }: { src: string }) {
 		const margin = Number.parseFloat(getComputedStyle(doc.body).marginTop) + Number.parseFloat(getComputedStyle(doc.body).marginBottom);
 		setHeight(Math.ceil(doc.body.scrollHeight + margin) + 4);
 		setHasBlocked(doc.querySelector("img[data-blocked-src]") !== null);
+		setDoc(doc);
 	};
 
 	return (

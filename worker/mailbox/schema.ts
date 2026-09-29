@@ -117,4 +117,11 @@ export const MIGRATIONS: string[] = [
 		WHERE instr(addr, '@') > 1
 	);
 	`,
+	`
+	-- Files sent as download links because they didn't fit in the message. The token is the link's only
+	-- credential; GET /f/<mailboxId>/<token> serves the file unless the sender has stopped sharing it.
+	ALTER TABLE attachments ADD COLUMN link_token TEXT;
+	ALTER TABLE attachments ADD COLUMN link_stopped INTEGER NOT NULL DEFAULT 0;
+	CREATE UNIQUE INDEX attachments_link_token ON attachments(link_token);
+	`,
 ];

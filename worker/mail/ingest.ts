@@ -43,6 +43,7 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 			size: content.byteLength,
 			contentId,
 			inline: a.disposition === "inline" || (a.related === true && contentId !== null),
+			link: null,
 			r2Key,
 		});
 	}

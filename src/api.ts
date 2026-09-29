@@ -89,6 +89,8 @@ export const api = {
 			headers: { "Content-Type": file.type || "application/octet-stream", "X-Filename": encodeURIComponent(file.name) },
 		}),
 	send: (mb: string, draft: SendRequest) => post<SendQueued>(`/mailboxes/${mb}/send`, draft),
+	shareLink: (mb: string, messageId: string, attachmentId: string, shared: boolean) =>
+		patch(`/mailboxes/${mb}/messages/${messageId}/attachments/${attachmentId}`, { shared }),
 	cancel: (mb: string, messageId: string) => post<void>(`/mailboxes/${mb}/outbox/${messageId}/cancel`, {}),
 };
 
