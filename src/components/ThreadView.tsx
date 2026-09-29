@@ -150,9 +150,7 @@ function Message(props: {
 						{m.cc.length ? ` · cc ${formatList(m.cc)}` : ""}
 						{m.auth ? ` · spf ${m.auth.spf ?? "?"} · dkim ${m.auth.dkim ?? "?"} · dmarc ${m.auth.dmarc ?? "?"}` : ""}
 				</p>
-				{props.outgoing && m.delivery && RETRYABLE.has(m.delivery.status) ? (
-					<Undelivered mailboxId={props.mailboxId} messageId={m.id} delivery={m.delivery} />
-				) : null}
+				{props.outgoing ? <Undelivered mailboxId={props.mailboxId} message={m} /> : null}
 				{m.hasHtml ? (
 					<HtmlBody src={`${messageUrl(props.mailboxId, m.id)}/body`} onLink={openLinked} />
 				) : (
@@ -237,14 +235,16 @@ function Message(props: {
 
 const RECIPIENTS = new Intl.ListFormat(undefined, { type: "conjunction" });
 
-/** A sent message that didn't make it: who it missed, why, and a way to send it again to just them. */
-function Undelivered(props: { mailboxId: string; messageId: string; delivery: NonNullable<MessageDetail["delivery"]> }) {
+/** A sent message that didn't make it: who it missed, why, and a way to send it again to just them. Nothing otherwise. */
+function Undelivered(props: { mailboxId: string; message: MessageDetail }) {
 	const qc = useQueryClient();
 	const retry = useMutation({
-		mutationFn: () => api.retry(props.mailboxId, props.messageId),
+		mutationFn: () => api.retry(props.mailboxId, props.message.id),
 		onSuccess: () => qc.invalidateQueries({ queryKey: ["mail"] }),
 	});
-	const { undelivered, detail } = props.delivery;
+	const { delivery } = props.message;
+	if (!delivery || !RETRYABLE.has(delivery.status)) return null;
+	const { undelivered, detail } = delivery;
 	const reason = retry.error ? errorMessage(retry.error) : detail;
 	return (
 		<div className="mb-3 flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2">
