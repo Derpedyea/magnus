@@ -141,9 +141,16 @@ export interface MessageDetail {
 	auth: AuthResults | null;
 }
 
+/** A message as its thread shows it. */
+export interface ThreadMessage extends MessageDetail {
+	/** The message here it replies to (replyParents()). Null when it starts the thread or answers nothing here. */
+	parentId: string | null;
+}
+
 export interface ThreadDetail {
 	thread: ThreadSummary;
-	messages: MessageDetail[];
+	/** Oldest first. */
+	messages: ThreadMessage[];
 }
 
 export interface LabelCount {

@@ -56,3 +56,40 @@ export function makeSnippet(text: string | null | undefined, max = 200): string 
 	const collapsed = unquoted.replaceAll(/\s+/g, " ").trim();
 	return collapsed.length > max ? `${collapsed.slice(0, max - 1)}…` : collapsed;
 }
+
+/** What a message in a thread says about where it sits: the Message-IDs it went by, and the ones it answers. */
+export interface ReplyHeaders {
+	id: string;
+	/** Its own Message-IDs: one, or one per send when a retry went out under a new id. */
+	messageIds: string[];
+	inReplyTo: string[];
+	references: string[];
+}
+
+/**
+ * The message each one answers, by local id: the one its In-Reply-To names, else the nearest of its References
+ * that's in the thread, so a reply still attaches when a message between them never reached us. Null when it
+ * starts the thread or answers nothing here. Forged headers can't make a message its own ancestor.
+ */
+export function replyParents(messages: ReplyHeaders[]): Map<string, string | null> {
+	const byMessageId = new Map<string, string>();
+	for (const m of messages) for (const id of m.messageIds) if (!byMessageId.has(id)) byMessageId.set(id, m.id);
+
+	const parents = new Map<string, string | null>();
+	for (const m of messages) {
+		const candidates = [...m.inReplyTo, ...m.references.toReversed()];
+		const parent = candidates.map((id) => byMessageId.get(id)).find((id) => id !== undefined && id !== m.id);
+		parents.set(m.id, parent ?? null);
+	}
+	for (const m of messages) {
+		const seen = new Set([m.id]);
+		for (let at = parents.get(m.id); at; at = parents.get(at)) {
+			if (seen.has(at)) {
+				parents.set(m.id, null);
+				break;
+			}
+			seen.add(at);
+		}
+	}
+	return parents;
+}

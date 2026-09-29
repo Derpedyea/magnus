@@ -23,6 +23,8 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
   accepted, so Magnus never sends backscatter.
 - **Real threading** by `Message-ID`/`References`, with a careful subject fallback. Replies thread in Gmail,
   Apple Mail, and Outlook too.
+- **Conversations branch where they fork.** When two people answer the same message, each reply hangs off it
+  with its own follow-ups, and the history a reply quotes folds away behind a •••.
 - **Forwards that look like the original.** Its HTML, images, and the files you keep go along, under a Gmail-style
   header, and the forward stays in the conversation.
 - **Full-text search**, undo send, and a delivery badge on every sent message (delivered, bounced, …). Mail

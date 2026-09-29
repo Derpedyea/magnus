@@ -1,8 +1,19 @@
-import { type Address, type AttachmentMeta, type DeliveryStatus, formatBytes, type MessageDetail, type PreviewKind, preview, RETRYABLE } from "#shared";
+import {
+	type Address,
+	type AttachmentMeta,
+	type DeliveryStatus,
+	formatBytes,
+	type MessageDetail,
+	makeSnippet,
+	type PreviewKind,
+	preview,
+	RETRYABLE,
+	type ThreadMessage,
+} from "#shared";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, CircleAlertIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon } from "lucide-react";
+import { ArchiveIcon, CircleAlertIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +27,8 @@ import { api, errorMessage, formatList, type Identity, messageUrl } from "../api
 import { openDraft, quote, withSignature } from "../compose";
 import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
+import { findQuote, isForward, splitQuote } from "../quotes";
+import { type Branch, replyTree } from "../replies";
 import { appearance } from "../theme";
 import { BlockSender } from "./BlockSender";
 import type { Draft } from "./Composer";
@@ -74,29 +87,87 @@ export function ThreadView() {
 				{action(<MailIcon />, "Mark unread", () => (markRead.mutate(false), close()))}
 			</div>
 			<h1 className="mb-6 font-heading text-xl font-semibold">{summary.subject}</h1>
-			<div className="space-y-3">
-				{messages.map((m, i) => {
-					const ctx: AnswerContext = {
-						mailboxId,
-						identities,
-						delivered: summary.addresses,
-						outgoing: m.direction === "out" && inView(m.from.address),
-						inView,
-					};
-					return (
-						<Message
-							key={m.id}
-							mailboxId={mailboxId}
-							message={m}
-							outgoing={ctx.outgoing}
-							defaultOpen={i === messages.length - 1 || !m.isRead}
-							onReply={(all) => openDraft(replyDraft(m, all, ctx))}
-							onForward={() => openDraft(forwardDraft(m, ctx))}
-						/>
-					);
-				})}
+			<div>
+				{replyTree(messages).map((branch) => (
+					<BranchView
+						key={branch.messages[0]?.id}
+						branch={branch}
+						render={(m, above) => {
+							const ctx: AnswerContext = {
+								mailboxId,
+								identities,
+								delivered: summary.addresses,
+								outgoing: m.direction === "out" && inView(m.from.address),
+								inView,
+							};
+							return (
+								<Message
+									mailboxId={mailboxId}
+									message={m}
+									outgoing={ctx.outgoing}
+									// Branches that stopped indenting say which message a reply answers when it isn't the one above.
+									replyingTo={above && m.parentId && m.parentId !== above.id ? messages.find((p) => p.id === m.parentId) : undefined}
+									defaultOpen={m === messages.at(-1) || !m.isRead}
+									onReply={(all) => openDraft(replyDraft(m, all, ctx))}
+									onForward={() => openDraft(forwardDraft(m, ctx))}
+								/>
+							);
+						}}
+					/>
+				))}
 			</div>
 		</article>
+	);
+}
+
+/*
+ * Geometry shared by the rails and elbows: avatars are size-7 (28px) and sit mt-2 (8px) down, so their centres are
+ * 14px in and 22px down, level with the card's header. A fork's branches indent pl-7, one avatar's width.
+ */
+const RAIL = "absolute left-[13.5px] w-px bg-foreground/15";
+
+/** A branch's messages, joined by a rail through their avatars, then the branches forking off its last message. */
+function BranchView(props: { branch: Branch<ThreadMessage>; render: (m: ThreadMessage, above: ThreadMessage | undefined) => React.ReactNode }) {
+	const { messages, forks } = props.branch;
+	const last = messages.at(-1);
+	return (
+		<>
+			{messages.map((m, i) => (
+				<div key={m.id} className="relative grid grid-cols-[1.75rem_minmax(0,1fr)] gap-x-2.5 pb-3">
+					{i > 0 ? <span aria-hidden className={cn(RAIL, "top-0 h-2")} /> : null}
+					{m !== last || forks.length > 0 ? <span aria-hidden className={cn(RAIL, "top-9 bottom-0")} /> : null}
+					<Avatar from={m.from} ours={m.direction === "out"} />
+					{props.render(m, messages[i - 1])}
+				</div>
+			))}
+			{forks.length > 0 && last ? (
+				<div role="group" aria-label={`Replies to ${last.from.name || last.from.address}`}>
+					{forks.map((fork, i) => (
+						<div key={fork.messages[0]?.id} className="relative pl-7">
+							{i < forks.length - 1 ? <span aria-hidden className={cn(RAIL, "top-0 bottom-0")} /> : null}
+							<span aria-hidden className="absolute top-0 left-[13.5px] h-[22.5px] w-[14.5px] rounded-bl-lg border-b border-l border-foreground/15" />
+							<BranchView branch={fork} render={props.render} />
+						</div>
+					))}
+				</div>
+			) : null}
+		</>
+	);
+}
+
+/** Their initial; yours stand out, so your side of the conversation shows at a glance. */
+function Avatar({ from, ours }: { from: Address; ours: boolean }) {
+	const initial = Array.from(from.name?.trim() || from.address)[0]?.toUpperCase();
+	return (
+		<span
+			aria-hidden
+			className={cn(
+				"mt-2 flex size-7 items-center justify-center rounded-full text-xs font-medium",
+				ours ? "bg-primary text-primary-foreground" : "bg-muted text-foreground ring-1 ring-foreground/10 ring-inset",
+			)}
+		>
+			{initial}
+		</span>
 	);
 }
 
@@ -105,6 +176,8 @@ function Message(props: {
 	message: MessageDetail;
 	/** Sent from an address in view; see ThreadView. */
 	outgoing: boolean;
+	/** The message it answers, when that isn't the one above it. */
+	replyingTo?: MessageDetail;
 	defaultOpen: boolean;
 	onReply: (all: boolean) => void;
 	onForward: () => void;
@@ -112,6 +185,8 @@ function Message(props: {
 	const m = props.message;
 	const qc = useQueryClient();
 	const [open, setOpen] = useState(props.defaultOpen);
+	// Forwards keep what they carry; replies fold the history the thread already shows.
+	const fold = !isForward(m.subject);
 	const files = m.attachments.filter((a) => !a.inline);
 	const fileUrl = (a: AttachmentMeta) => `${messageUrl(props.mailboxId, m.id)}/attachments/${a.id}/${encodeURIComponent(a.filename)}`;
 	// Kept after closing, so the viewer can animate out.
@@ -138,12 +213,7 @@ function Message(props: {
 	return (
 		<Collapsible open={open} onOpenChange={setOpen} render={<Card size="sm" />}>
 			<CardHeader>
-				<CollapsibleTrigger className="-my-1 flex w-full items-center gap-2 rounded-md py-1 text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
-					<span className="font-medium">{m.from.name || m.from.address}</span>
-					{m.from.name ? <span className="truncate text-xs text-muted-foreground">{m.from.address}</span> : null}
-					{props.outgoing ? <DeliveryBadge message={m} /> : null}
-					<time className="ml-auto shrink-0 text-xs text-muted-foreground">{new Date(m.date).toLocaleString()}</time>
-				</CollapsibleTrigger>
+				<MessageHeader message={m} open={open} fold={fold} outgoing={props.outgoing} replyingTo={props.replyingTo} />
 			</CardHeader>
 			<CollapsibleContent render={<CardContent />}>
 				<p className="pb-2 text-xs text-muted-foreground">
@@ -153,9 +223,9 @@ function Message(props: {
 				</p>
 				{props.outgoing ? <Undelivered mailboxId={props.mailboxId} message={m} /> : null}
 				{m.hasHtml ? (
-					<HtmlBody src={`${messageUrl(props.mailboxId, m.id)}/body`} onLink={openLinked} />
+					<HtmlBody src={`${messageUrl(props.mailboxId, m.id)}/body`} fold={fold} onLink={openLinked} />
 				) : (
-					<pre className="font-sans whitespace-pre-wrap">{m.text}</pre>
+					<TextBody text={m.text ?? ""} fold={fold} />
 				)}
 				{files.length ? (
 					<ul className="mt-4 flex flex-wrap gap-2">
@@ -238,6 +308,59 @@ function Message(props: {
 	);
 }
 
+/** Opens and closes the message. Closed, it previews what's new in it; open, it shows the sender's address. */
+function MessageHeader(props: { message: MessageDetail; open: boolean; fold: boolean; outgoing: boolean; replyingTo?: MessageDetail }) {
+	const m = props.message;
+	return (
+		<CollapsibleTrigger className="-my-1 flex w-full min-w-0 items-center gap-2 rounded-md py-1 text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+			<span className="shrink-0 font-medium">{m.from.name || m.from.address}</span>
+			{props.replyingTo ? (
+				<span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+					<ReplyIcon className="size-3" />
+					{props.replyingTo.from.name || props.replyingTo.from.address}
+				</span>
+			) : null}
+			{!props.open ? (
+				<span className="truncate text-muted-foreground">{makeSnippet(props.fold ? splitQuote(m.text ?? "").body : m.text)}</span>
+			) : m.from.name ? (
+				<span className="truncate text-xs text-muted-foreground">{m.from.address}</span>
+			) : null}
+			{props.outgoing ? <DeliveryBadge message={m} /> : null}
+			<time className="ml-auto shrink-0 text-xs text-muted-foreground">{new Date(m.date).toLocaleString()}</time>
+		</CollapsibleTrigger>
+	);
+}
+
+/** Gmail's "•••": shows or hides the quoted history folded off the end of a reply. */
+function QuoteToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+	const label = open ? "Hide quoted text" : "Show quoted text";
+	return (
+		<Tooltip>
+			<TooltipTrigger
+				render={
+					<Button variant="secondary" size="xs" className="mt-2 h-4 px-1.5" aria-label={label} aria-expanded={open} onClick={onToggle}>
+						<EllipsisIcon />
+					</Button>
+				}
+			/>
+			<TooltipContent>{label}</TooltipContent>
+		</Tooltip>
+	);
+}
+
+function TextBody({ text, fold }: { text: string; fold: boolean }) {
+	const [showQuote, setShowQuote] = useState(false);
+	const { body, quote } = fold ? splitQuote(text) : { body: text, quote: "" };
+	return (
+		<>
+			<pre className="font-sans whitespace-pre-wrap">{body}</pre>
+			{/* Below the quote once shown, like HTML bodies, whose toggle sits under the frame. */}
+			{quote && showQuote ? <pre className="mt-4 font-sans whitespace-pre-wrap text-muted-foreground">{quote}</pre> : null}
+			{quote ? <QuoteToggle open={showQuote} onToggle={() => setShowQuote(!showQuote)} /> : null}
+		</>
+	);
+}
+
 const RECIPIENTS = new Intl.ListFormat(undefined, { type: "conjunction" });
 
 /** A sent message that didn't make it: who it missed, why, and a way to send it again to just them. Nothing otherwise. */
@@ -272,12 +395,24 @@ function Undelivered(props: { mailboxId: string; message: MessageDetail }) {
  * Mail that sets no colours of its own takes the theme's; the rest keeps the look it was designed
  * for, on a white sheet.
  */
-function HtmlBody({ src, onLink }: { src: string; /** Gets each link click first; returns true to keep it in the app. */ onLink: (href: string) => boolean }) {
+function HtmlBody({
+	src,
+	fold,
+	onLink,
+}: {
+	src: string;
+	/** Folds the quote ending a reply (findQuote()). */
+	fold: boolean;
+	/** Gets each link click first; returns true to keep it in the app. */
+	onLink: (href: string) => boolean;
+}) {
 	const ref = useRef<HTMLIFrameElement>(null);
 	const [images, setImages] = useState(false);
 	const [height, setHeight] = useState(48);
 	const [hasBlocked, setHasBlocked] = useState(false);
 	const [plain, setPlain] = useState(false);
+	const [hasQuote, setHasQuote] = useState(false);
+	const [showQuote, setShowQuote] = useState(false);
 	const isDark = useSelector(appearance, (s) => s.isDark);
 	const theme = useSelector(appearance, (s) => s.active);
 	// Each load (showing images reloads the frame) brings a new document to listen to.
@@ -296,12 +431,31 @@ function HtmlBody({ src, onLink }: { src: string; /** Gets each link click first
 		return () => doc.removeEventListener("click", onClick);
 	}, [doc]);
 
+	const measure = (doc: Document) => {
+		const frame = ref.current;
+		if (!frame) return;
+		// Mail without a doctype renders in quirks mode, where the body stretches to fill the frame: shrink the frame
+		// first, or it could only ever grow (and hiding a quote again wouldn't give its space back).
+		frame.style.height = "0px";
+		// The document's own height, margins included, in either mode.
+		const next = (doc.scrollingElement ?? doc.documentElement).scrollHeight + 4;
+		frame.style.height = `${next}px`;
+		setHeight(next);
+	};
 	const onLoad = () => {
 		const doc = ref.current?.contentDocument;
 		if (!doc) return;
-		// documentElement.scrollHeight never drops below the iframe's own height; measure the body.
-		const margin = Number.parseFloat(getComputedStyle(doc.body).marginTop) + Number.parseFloat(getComputedStyle(doc.body).marginBottom);
-		setHeight(Math.ceil(doc.body.scrollHeight + margin) + 4);
+		// The quote is marked and hidden by a rule keyed on the root, so showing it is one attribute.
+		const quote = fold ? findQuote(doc) : [];
+		if (quote.length > 0) {
+			const style = doc.createElement("style");
+			style.textContent = "html:not([data-magnus-show-quote]) [data-magnus-quote] { display: none !important; }";
+			doc.head.append(style);
+			for (const el of quote) el.setAttribute("data-magnus-quote", "");
+			doc.documentElement.toggleAttribute("data-magnus-show-quote", showQuote);
+		}
+		setHasQuote(quote.length > 0);
+		measure(doc);
 		setHasBlocked(doc.querySelector("img[data-blocked-src]") !== null);
 		setPlain(!setsColors(doc));
 		setDoc(doc);
@@ -332,6 +486,16 @@ function HtmlBody({ src, onLink }: { src: string; /** Gets each link click first
 				// Hidden until loaded, so a dark theme doesn't flash a white sheet at plain mail.
 				className={cn("w-full border-0", !doc && "invisible", !plain && "rounded-md bg-white")}
 			/>
+			{hasQuote && doc ? (
+				<QuoteToggle
+					open={showQuote}
+					onToggle={() => {
+						doc.documentElement.toggleAttribute("data-magnus-show-quote", !showQuote);
+						setShowQuote(!showQuote);
+						measure(doc);
+					}}
+				/>
+			) : null}
 		</div>
 	);
 }

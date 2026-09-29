@@ -21,6 +21,7 @@ import {
 	normalizeAddress,
 	normalizeSubject,
 	r2Keys,
+	replyParents,
 	RETRYABLE,
 	type SendAttachmentRef,
 	type SendInput,
@@ -78,6 +79,7 @@ interface MessageRow extends Row {
 	thread_id: string;
 	direction: "in" | "out";
 	message_id_header: string | null;
+	in_reply_to: string;
 	refs: string;
 	from_json: string;
 	to_json: string;
@@ -486,7 +488,7 @@ export class Mailbox extends DurableObject<Env> {
 		const messages = this.sql
 			.exec<MessageRow>(
 				`SELECT m.*, (SELECT json_group_array(label) FROM message_labels l WHERE l.message_id = m.id) AS labels
-				 FROM messages m WHERE m.thread_id = ?1 ORDER BY m.date`,
+				 FROM messages m WHERE m.thread_id = ?1 ORDER BY m.date, m.id`,
 				threadId,
 			)
 			.toArray();
@@ -503,15 +505,34 @@ export class Mailbox extends DurableObject<Env> {
 				threadId,
 			)
 			.toArray();
+		// A reply can name any send of a retried message, not just the latest one in message_id_header.
+		const sends = this.sql
+			.exec<{ message_id: string; provider_message_id: string }>(
+				`SELECT s.message_id, s.provider_message_id FROM sends s JOIN messages m ON m.id = s.message_id WHERE m.thread_id = ?1`,
+				threadId,
+			)
+			.toArray();
+		const parents = replyParents(
+			messages.map((m) => ({
+				id: m.id,
+				messageIds: [
+					...(m.message_id_header ? [m.message_id_header] : []),
+					...sends.filter((s) => s.message_id === m.id).map((s) => s.provider_message_id),
+				],
+				inReplyTo: JSON.parse(m.in_reply_to),
+				references: JSON.parse(m.refs),
+			})),
+		);
 		return {
 			thread: toThreadSummary(thread),
-			messages: messages.map((m) =>
-				toMessageDetail(
+			messages: messages.map((m) => ({
+				...toMessageDetail(
 					m,
 					attachments.filter((a) => a.message_id === m.id),
 					refused.filter((d) => d.message_id === m.id).map((d) => d.recipient),
 				),
-			),
+				parentId: parents.get(m.id) ?? null,
+			})),
 		};
 	}
 
