@@ -9,6 +9,9 @@ export const configQuery = queryOptions({ queryKey: ["config"], queryFn: api.con
 
 export const meQuery = queryOptions({ queryKey: ["me"], queryFn: api.me });
 
+/** Recipient suggestions. Up to a thousand, so it's kept for a while rather than refetched on every mail event. */
+export const contactsQuery = queryOptions({ queryKey: ["contacts"], queryFn: api.contacts, staleTime: 5 * 60_000, select: (r) => r.contacts });
+
 /** A label's threads, or search results when the view is "search". */
 export const listQuery = (scope: string[], view: string, q: string) =>
 	queryOptions({

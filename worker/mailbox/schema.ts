@@ -124,4 +124,34 @@ export const MIGRATIONS: string[] = [
 	ALTER TABLE attachments ADD COLUMN link_stopped INTEGER NOT NULL DEFAULT 0;
 	CREATE UNIQUE INDEX attachments_link_token ON attachments(link_token);
 	`,
+	`
+	-- People this mailbox has written to or heard from, for recipient suggestions (GET /api/contacts).
+	-- ingest() and enqueueSend() keep it current; this fills it from the mail already here.
+	CREATE TABLE contacts (
+		address TEXT PRIMARY KEY,
+		-- The newest display name seen with it.
+		name TEXT,
+		-- Messages sent to it: people you've written to are suggested first.
+		sent INTEGER NOT NULL DEFAULT 0,
+		last_at INTEGER NOT NULL
+	);
+	INSERT INTO contacts (address, name, sent, last_at)
+	WITH seen AS (
+		-- Everyone we've written to…
+		SELECT p.value AS person, 1 AS sent, m.date FROM messages m, json_each(m.to_json) p WHERE m.direction = 'out'
+		UNION ALL SELECT p.value, 1, m.date FROM messages m, json_each(m.cc_json) p WHERE m.direction = 'out'
+		UNION ALL SELECT p.value, 1, m.date FROM messages m, json_each(m.bcc_json) p WHERE m.direction = 'out'
+		-- …and everyone who's written to us, spam aside.
+		UNION ALL SELECT m.from_json, 0, m.date FROM messages m WHERE m.direction = 'in'
+			AND NOT EXISTS (SELECT 1 FROM message_labels l WHERE l.message_id = m.id AND l.label = 'spam')
+	),
+	people AS (
+		SELECT lower(trim(json_extract(person, '$.address'))) AS address, nullif(trim(json_extract(person, '$.name')), '') AS name, sent, date
+		FROM seen
+	),
+	-- The newest name each was seen with (SQLite takes a bare column from the max() row).
+	named AS (SELECT address, name, max(date) FROM people WHERE name IS NOT NULL GROUP BY address)
+	SELECT p.address, n.name, sum(p.sent), max(p.date) FROM people p LEFT JOIN named n USING (address)
+	WHERE p.address LIKE '_%@_%' GROUP BY p.address;
+	`,
 ];

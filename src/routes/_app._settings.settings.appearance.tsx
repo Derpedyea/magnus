@@ -1,9 +1,10 @@
 import { Radio } from "@base-ui/react/radio";
+import { createFileRoute } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
 import { CheckIcon, MonitorIcon, MoonIcon, SunIcon } from "lucide-react";
 import { useId } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { RadioGroup } from "@/components/ui/radio-group";
+import { SettingsPage } from "../components/SettingsPage";
 import { appearance, MODES, setMode, setTheme, THEMES, type Theme } from "../theme";
 
 const MODE_ITEMS = [
@@ -12,20 +13,19 @@ const MODE_ITEMS = [
 	{ value: "dark", label: "Dark", icon: MoonIcon },
 ] as const;
 
+export const Route = createFileRoute("/_app/_settings/settings/appearance")({ component: Appearance });
+
 /**
- * For everyone: the mode, then a theme for each side the mode shows, after Zed, VS Code, and T3 Code.
- * Everything applies as it's picked, so arrowing through a theme grid previews each one on the whole app.
+ * The mode, then a theme for each side the mode shows, after Zed, VS Code, and T3 Code. Per device, and applied
+ * as it's picked, so arrowing through a theme grid previews each one on the whole app.
  */
-export function SettingsDialog(props: { open: boolean; onOpenChange: (open: boolean) => void }) {
+function Appearance() {
 	const mode = useSelector(appearance, (s) => s.mode);
 	const light = useSelector(appearance, (s) => s.light);
 	const dark = useSelector(appearance, (s) => s.dark);
 	return (
-		<Dialog open={props.open} onOpenChange={props.onOpenChange}>
-			<DialogContent className="max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl">
-				<DialogHeader>
-					<DialogTitle>Settings</DialogTitle>
-				</DialogHeader>
+		<SettingsPage title="Appearance">
+			<div className="flex max-w-xl flex-col gap-6">
 				<RadioGroup
 					aria-label="Mode"
 					value={mode}
@@ -45,8 +45,8 @@ export function SettingsDialog(props: { open: boolean; onOpenChange: (open: bool
 				</RadioGroup>
 				{mode !== "dark" ? <ThemeGrid label={mode === "system" ? "Light theme" : "Theme"} dark={false} value={light} /> : null}
 				{mode !== "light" ? <ThemeGrid label={mode === "system" ? "Dark theme" : "Theme"} dark value={dark} /> : null}
-			</DialogContent>
-		</Dialog>
+			</div>
+		</SettingsPage>
 	);
 }
 
@@ -54,9 +54,9 @@ function ThemeGrid(props: { label: string; dark: boolean; value: Theme["id"] }) 
 	const labelId = useId();
 	return (
 		<section className="flex flex-col gap-2">
-			<h3 id={labelId} className="font-medium">
+			<h2 id={labelId} className="font-medium">
 				{props.label}
-			</h3>
+			</h2>
 			<RadioGroup
 				aria-labelledby={labelId}
 				value={props.value}

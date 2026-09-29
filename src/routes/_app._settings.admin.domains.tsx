@@ -23,7 +23,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { adminApi, errorMessage } from "../api";
-import { AdminPage } from "../components/AdminPage";
+import { SettingsPage } from "../components/SettingsPage";
 import { ConnectChecklist } from "../components/ConnectChecklist";
 import { MailHostLabel } from "../components/MailHostLabel";
 import { OnOff } from "../components/OnOff";
@@ -31,7 +31,7 @@ import { TokenForm } from "../components/TokenForm";
 import { useDomainConnect } from "../connect";
 import { directoryQuery } from "../queries";
 
-export const Route = createFileRoute("/_app/admin/domains")({ component: Domains });
+export const Route = createFileRoute("/_app/_settings/admin/domains")({ component: Domains });
 
 /** Unknown addresses at a domain are rejected unless a mailbox catches them. */
 const REJECT = "reject";
@@ -53,7 +53,7 @@ function Domains() {
 	};
 
 	return (
-		<AdminPage
+		<SettingsPage
 			title="Domains"
 			action={
 				<Button onClick={() => setAdding(true)}>
@@ -136,7 +136,7 @@ function Domains() {
 					)}
 				</DialogContent>
 			</Dialog>
-		</AdminPage>
+		</SettingsPage>
 	);
 }
 

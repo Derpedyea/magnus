@@ -44,7 +44,6 @@ export function Sidebar(props: {
 	/** Shows the way to the admin pages. */
 	isAdmin: boolean;
 	onCompose: () => void;
-	onSettings: () => void;
 }) {
 	const { addresses } = props;
 	const scope = useScope();
@@ -222,23 +221,14 @@ export function Sidebar(props: {
 					) : null}
 				</nav>
 			</SidebarContent>
-			{/* Icon bar, after T3 Code's: Settings for everyone, Admin for admins. Stacks in the rail. */}
+			{/* Icon bar, after T3 Code's: Settings for everyone, Admin for admins, both in the settings sidebar. Stacks in the rail. */}
 			<SidebarFooter className="flex-row gap-1 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:items-center">
 				<Tooltip>
 					<TooltipTrigger
 						render={
-							<Button
-								variant="ghost"
-								size="icon-sm"
-								aria-label="Settings"
-								className="text-muted-foreground"
-								onClick={() => {
-									setOpenMobile(false);
-									props.onSettings();
-								}}
-							>
+							<Link to="/settings" aria-label="Settings" className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "text-muted-foreground")}>
 								<SettingsIcon />
-							</Button>
+							</Link>
 						}
 					/>
 					<TooltipContent side={iconsOnly ? "right" : "top"}>Settings</TooltipContent>

@@ -14,7 +14,7 @@ function toAccount(me: Me) {
 	// Views are per address, so an address routed to two of the user's mailboxes is listed once.
 	const addresses = [...new Set(me.mailboxes.flatMap((m) => m.addresses.map((a) => a.address)))];
 	const identities: Identity[] = me.mailboxes.flatMap((m) =>
-		m.addresses.filter((a) => a.canSend).map((a) => ({ mailboxId: m.id, address: a.address, displayName: a.displayName })),
+		m.addresses.filter((a) => a.canSend).map((a) => ({ mailboxId: m.id, address: a.address, displayName: a.displayName, signature: a.signature })),
 	);
 	return {
 		...me,

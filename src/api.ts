@@ -10,6 +10,7 @@ export interface Identity {
 	mailboxId: string;
 	address: string;
 	displayName: string | null;
+	signature: string | null;
 }
 
 export class ApiError extends Error {
@@ -69,6 +70,8 @@ const mailbox = client.mailboxes[":mailboxId"];
 export const api = {
 	config: () => parseResponse(client.config.$get()),
 	me: () => parseResponse(client.me.$get()),
+	saveSignature: (address: string, text: string) => parseResponse(client.signatures.$put({ json: { address, text } })),
+	contacts: () => parseResponse(client.contacts.$get()),
 	threads: (scope: string[], label: string) => parseResponse(client.threads.$get({ query: { in: scoped(scope), label } })),
 	search: (scope: string[], q: string) => parseResponse(client.search.$get({ query: { in: scoped(scope), q } })),
 	counts: (scope: string[]) => parseResponse(client.counts.$get({ query: { in: scoped(scope) } })),
@@ -119,10 +122,10 @@ export const adminApi = {
 
 export const messageUrl = (mb: string, messageId: string) => `/api/mailboxes/${mb}/messages/${messageId}`;
 
-/** "Jane <jane@x.com>, bob@y.com" → Address[] (quoted names containing commas aren't supported). */
+/** "Jane <jane@x.com>, bob@y.com" → Address[], one per line works too (quoted names containing commas aren't supported). */
 export function parseAddressList(input: string): Address[] {
 	return input
-		.split(/[,;]/)
+		.split(/[,;\n]/)
 		.map((part) => part.trim())
 		.filter(Boolean)
 		.map((part) => {

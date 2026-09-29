@@ -8,6 +8,7 @@ import {
 	type MailboxThread,
 	MAX_UPLOAD_BYTES,
 	mergeByRecency,
+	mergeContacts,
 	mergeCounts,
 	normalizeAddress,
 	planAttachments,
@@ -17,14 +18,14 @@ import {
 	type ThreadSummary,
 	type User,
 } from "#shared";
-import { ComposeSchema, MarkReadSchema, ModifyThreadsSchema, ShareLinkSchema } from "#shared/schemas";
+import { ComposeSchema, MarkReadSchema, ModifyThreadsSchema, ShareLinkSchema, SignatureSchema } from "#shared/schemas";
 import { isAPIError } from "better-auth/api";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import { admin } from "./admin";
 import { auth, currentUser, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
-import { getSendIdentities, getUserMailboxes, isMailboxMember, resolveRecipient } from "./directory";
+import { getSendIdentities, getUserMailboxes, isMailboxMember, resolveRecipient, setSignature } from "./directory";
 import { fileHeaders, renderEmailHtml, serveFile } from "./html";
 import type { Mailbox } from "./mailbox/mailbox";
 import { getInstall } from "./settings";
@@ -57,6 +58,8 @@ app.on(["GET", "POST"], "/auth/*", async (c) => (await auth(c.req.raw)).handler(
 // narrows them to some of the user's addresses. Everything else stays mailbox-scoped below.
 
 const PAGE = 50;
+/** Enough to find anyone by typing, small enough to send whole so matching needs no round trip. */
+const CONTACTS = 1000;
 
 const ScopeQuery = z.object({ in: z.string().optional() });
 const ThreadsQuery = ScopeQuery.extend({ label: z.string().default("inbox"), before: z.coerce.number().optional() });
@@ -102,6 +105,13 @@ const views = new Hono<AppEnv>()
 		const queries = await planRequest(c, c.req.valid("query").in);
 		const parts = await Promise.all(queries.map((q) => c.env.MAILBOX.getByName(q.mailboxId).counts({ addresses: q.addresses })));
 		return c.json(mergeCounts(parts));
+	})
+
+	/** Everyone the user's mailboxes have written to or heard from, best first, for the composer to suggest. */
+	.get("/contacts", async (c) => {
+		const queries = await planRequest(c);
+		const lists = await Promise.all(queries.map((q) => c.env.MAILBOX.getByName(q.mailboxId).contacts(CONTACTS)));
+		return c.json({ contacts: mergeContacts(lists, CONTACTS) });
 	});
 
 // ─── Mailbox-scoped routes ──────────────────────────────────────────────────
@@ -279,6 +289,15 @@ const routes = app
 	.get("/me", async (c) => {
 		const user = c.var.user;
 		return c.json({ user, mailboxes: await getUserMailboxes(c.env.DIRECTORY, user.id) });
+	})
+
+	/** Your signature for one of the addresses you send as. /me returns them. */
+	.put("/signatures", zValidator("json", SignatureSchema), async (c) => {
+		const { text } = c.req.valid("json");
+		const address = normalizeAddress(c.req.valid("json").address);
+		const mailboxes = await getUserMailboxes(c.env.DIRECTORY, c.var.user.id);
+		if (!mailboxes.some((m) => m.addresses.some((a) => a.address === address && a.canSend))) return c.json({ error: `You can't send as ${address}` }, 403);
+		return c.json({ signature: await setSignature(c.env.DIRECTORY, c.var.user.id, address, text) });
 	})
 
 	.route("/", views)

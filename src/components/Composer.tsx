@@ -1,9 +1,9 @@
-import { formatBytes, isValidAddress, MAX_UPLOAD_BYTES, planAttachments, type SendAttachmentRef } from "#shared";
+import { type Address, formatBytes, isValidAddress, MAX_UPLOAD_BYTES, planAttachments, type SendAttachmentRef } from "#shared";
 import { useForm, useSelector } from "@tanstack/react-form";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { shallow } from "@tanstack/react-store";
 import { LinkIcon, PaperclipIcon, XIcon } from "lucide-react";
-import { useRef, useState } from "react";
-import { cn } from "@/lib/utils";
+import { type ReactNode, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FieldError } from "@/components/ui/field";
@@ -12,16 +12,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api, type Identity, parseAddressList } from "../api";
+import { api, type Identity } from "../api";
+import { withSignature } from "../compose";
+import { RecipientField } from "./RecipientField";
 import { toastUndoSend } from "./UndoToast";
 
 export interface Draft {
 	/** Mailbox that uploads, sends, and (for replies) owns the thread. Follows the chosen From identity. */
 	mailboxId: string;
 	from: string;
-	to: string;
-	cc: string;
-	bcc: string;
+	to: Address[];
+	cc: Address[];
+	bcc: Address[];
 	subject: string;
 	text: string;
 	attachments: SendAttachmentRef[];
@@ -41,9 +43,9 @@ export function Composer(props: {
 		mutationFn: (draft: Draft) =>
 			api.send(draft.mailboxId, {
 				from: draft.from,
-				to: parseAddressList(draft.to),
-				cc: parseAddressList(draft.cc),
-				bcc: parseAddressList(draft.bcc),
+				to: draft.to,
+				cc: draft.cc,
+				bcc: draft.bcc,
 				subject: draft.subject,
 				text: draft.text,
 				replyToMessageId: draft.replyToMessageId,
@@ -53,6 +55,8 @@ export function Composer(props: {
 		onSuccess: (queued, draft) => {
 			// The live socket reports this too, but it may be reconnecting.
 			void qc.invalidateQueries({ queryKey: ["mail"] });
+			// Whoever this went to is suggested next time.
+			void qc.invalidateQueries({ queryKey: ["contacts"] });
 			props.onClose();
 			toastUndoSend(queued, draft, qc);
 		},
@@ -68,7 +72,7 @@ export function Composer(props: {
 		},
 		onSuccess: (refs) => form.setFieldValue("attachments", (prev) => [...prev, ...refs]),
 	});
-	const [showCc, setShowCc] = useState(Boolean(props.initial.cc || props.initial.bcc));
+	const [showCc, setShowCc] = useState(props.initial.cc.length + props.initial.bcc.length > 0);
 	const filePicker = useRef<HTMLInputElement>(null);
 	const mailboxId = useSelector(form.store, (s) => s.values.mailboxId);
 	// Replies and uploads belong to one mailbox, so From can't move them to another.
@@ -82,22 +86,32 @@ export function Composer(props: {
 	const fromOptions = pinned ? props.identities.filter((i) => i.mailboxId === mailboxId) : props.identities;
 	const key = (mailboxId: string, address: string) => `${mailboxId}/${address}`;
 	const error = send.error ?? upload.error;
+	// Anyone in To, Cc, or Bcc isn't suggested for another.
+	const recipients = useSelector(form.store, (s) => [...s.values.to, ...s.values.cc, ...s.values.bcc], { compare: shallow });
+	const taken = new Set(recipients.map((a) => a.address.toLowerCase()));
 
-	const addressField = (name: "to" | "cc" | "bcc", placeholder: string, after?: React.ReactNode) => (
-		<form.Field name={name} validators={{ onBlur: ({ value }) => invalidAddresses(value) }}>
+	const recipientField = (name: "to" | "cc" | "bcc", label: string, after?: ReactNode) => (
+		<form.Field
+			name={name}
+			validators={{
+				onChange: ({ value }) => invalidAddresses(value),
+				onSubmit: ({ value }) => (name === "to" && value.length === 0 ? "Add a recipient" : invalidAddresses(value)),
+			}}
+		>
 			{(f) => (
 				<>
-					<div className="flex items-center border-b pr-2">
-						<Input
-							value={f.state.value}
-							onChange={(e) => f.handleChange(e.target.value)}
-							onBlur={f.handleBlur}
-							placeholder={placeholder}
-							aria-invalid={!f.state.meta.isValid}
-							className={cn(FIELD, "border-b-0")}
-						/>
+					<RecipientField
+						label={label}
+						value={f.state.value}
+						onChange={f.handleChange}
+						onBlur={f.handleBlur}
+						taken={taken}
+						invalid={!f.state.meta.isValid}
+						// A new message starts at To; one reopened by Undo, at its text.
+						autoFocus={name === "to" && !props.initial.replyToMessageId && props.initial.to.length === 0}
+					>
 						{after}
-					</div>
+					</RecipientField>
 					{f.state.meta.isValid ? null : <FieldError className="border-b px-3 py-1 text-xs">{f.state.meta.errors.join(", ")}</FieldError>}
 				</>
 			)}
@@ -120,42 +134,47 @@ export function Composer(props: {
 			</div>
 			<form.Field name="from">
 				{(f) => (
-					<Select
-						items={fromOptions.map((i) => ({ value: key(i.mailboxId, i.address), label: identityLabel(i) }))}
-						value={key(mailboxId, f.state.value)}
-						onValueChange={(value) => {
-							const picked = fromOptions.find((i) => key(i.mailboxId, i.address) === value);
-							if (!picked) return;
-							form.setFieldValue("mailboxId", picked.mailboxId);
-							f.handleChange(picked.address);
-						}}
-					>
-						<SelectTrigger aria-label="From" className={cn(FIELD, "w-full pr-3 data-[size=default]:h-9")}>
-							<SelectValue />
-						</SelectTrigger>
-						<SelectContent>
-							{fromOptions.map((i) => (
-								<SelectItem key={key(i.mailboxId, i.address)} value={key(i.mailboxId, i.address)}>
-									{identityLabel(i)}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
+					<div className="flex items-center border-b pl-3 focus-within:border-ring">
+						<span className="w-9 shrink-0 text-muted-foreground">From</span>
+						<Select
+							items={fromOptions.map((i) => ({ value: key(i.mailboxId, i.address), label: identityLabel(i) }))}
+							value={key(mailboxId, f.state.value)}
+							onValueChange={(value) => {
+								const picked = fromOptions.find((i) => key(i.mailboxId, i.address) === value);
+								if (!picked) return;
+								const current = props.identities.find((i) => i.mailboxId === mailboxId && i.address === f.state.value);
+								form.setFieldValue("text", (text) => withSignature(text, current?.signature ?? null, picked.signature));
+								form.setFieldValue("mailboxId", picked.mailboxId);
+								f.handleChange(picked.address);
+							}}
+						>
+							<SelectTrigger aria-label="From" className="h-9 flex-1 rounded-none border-0 pr-3 pl-0 focus-visible:ring-0 data-[size=default]:h-9 dark:bg-transparent">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{fromOptions.map((i) => (
+									<SelectItem key={key(i.mailboxId, i.address)} value={key(i.mailboxId, i.address)}>
+										{identityLabel(i)}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+					</div>
 				)}
 			</form.Field>
-			{addressField(
+			{recipientField(
 				"to",
 				"To",
 				showCc ? null : (
-					<Button variant="ghost" size="xs" onClick={() => setShowCc(true)} className="text-muted-foreground">
+					<Button variant="ghost" size="xs" onClick={() => setShowCc(true)} className="mt-1.5 text-muted-foreground">
 						Cc/Bcc
 					</Button>
 				),
 			)}
 			{showCc ? (
 				<>
-					{addressField("cc", "Cc")}
-					{addressField("bcc", "Bcc")}
+					{recipientField("cc", "Cc")}
+					{recipientField("bcc", "Bcc")}
 				</>
 			) : null}
 			<form.Field name="subject">
@@ -169,7 +188,7 @@ export function Composer(props: {
 						rows={14}
 						aria-label="Message"
 						className="resize-none rounded-none border-0 px-3 py-2.5 field-sizing-fixed focus-visible:ring-0 dark:bg-transparent"
-						autoFocus={!props.initial.replyToMessageId}
+						autoFocus={!props.initial.replyToMessageId && props.initial.to.length > 0}
 					/>
 				)}
 			</form.Field>
@@ -194,7 +213,7 @@ export function Composer(props: {
 			</form.Field>
 			{error ? <p className="px-3 pb-2 text-destructive">{error.message}</p> : null}
 			<div className="flex items-center gap-1 border-t px-3 py-2">
-				<form.Subscribe selector={(s) => s.values.to.trim() !== "" && s.values.from !== ""}>
+				<form.Subscribe selector={(s) => s.values.from !== ""}>
 					{(ready) => (
 						<Button type="submit" disabled={!ready || send.isPending || upload.isPending} className="mr-1 px-4">
 							{send.isPending ? <Spinner data-icon="inline-start" /> : null}
@@ -229,8 +248,8 @@ const identityLabel = (i: Identity) => (i.displayName ? `${i.displayName} <${i.a
 /** Borderless rows split by rules, so the header fields read as one sheet. */
 const FIELD = "h-9 rounded-none border-0 border-b px-3 focus-visible:border-ring focus-visible:ring-0 aria-invalid:ring-0 dark:bg-transparent";
 
-/** Field error for a comma-separated address list, or undefined when every entry is an address. */
-function invalidAddresses(value: string): string | undefined {
-	const bad = parseAddressList(value).filter((a) => !isValidAddress(a.address));
+/** Field error for a recipient list, or undefined when every entry is an address. */
+function invalidAddresses(list: Address[]): string | undefined {
+	const bad = list.filter((a) => !isValidAddress(a.address));
 	return bad.length ? `Not an email address: ${bad.map((a) => a.address).join(", ")}` : undefined;
 }

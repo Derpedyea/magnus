@@ -1,5 +1,6 @@
 export * from "./address";
 export * from "./cloudflare";
+export * from "./contacts";
 export * from "./directory";
 export * from "./files";
 export * from "./ids";

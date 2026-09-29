@@ -5,10 +5,12 @@ import {
 	ALL_MAIL,
 	type AttachmentMeta,
 	buildReferences,
+	type Contact,
 	type Counts,
 	type DeliveryEventInput,
 	type DeliveryStatus,
 	type IngestInput,
+	isValidAddress,
 	type LiveEvent,
 	type LocalRecipient,
 	type MessageBlobs,
@@ -88,6 +90,8 @@ interface MessageRow extends Row {
 	delivery_detail: string | null;
 	labels: string;
 }
+
+interface ContactRow extends Row, Contact {}
 
 interface AttachmentRow extends Row {
 	id: string;
@@ -256,6 +260,7 @@ export class Mailbox extends DurableObject<Env> {
 			if (input.messageIdHeader) this.registerRef(input.messageIdHeader, threadId);
 			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc], input.text);
 			this.touchThread(threadId, input.date, snippet, [input.from, ...input.to, ...input.cc]);
+			if (!input.labels.includes("spam")) this.recordContacts([input.from], false, input.date);
 			return threadId;
 		});
 
@@ -369,6 +374,27 @@ export class Mailbox extends DurableObject<Env> {
 		}
 	}
 
+	/**
+	 * Remembers who this mailbox writes to (`sent`) and hears from, for recipient suggestions. An undone send still
+	 * counts: the address was typed on purpose.
+	 */
+	private recordContacts(people: Address[], sent: boolean, at: number): void {
+		for (const p of people) {
+			if (!isValidAddress(p.address)) continue;
+			this.sql.exec(
+				`INSERT INTO contacts (address, name, sent, last_at) VALUES (?1, ?2, ?3, ?4)
+				 ON CONFLICT (address) DO UPDATE SET
+					name = CASE WHEN excluded.name IS NOT NULL AND excluded.last_at >= last_at THEN excluded.name ELSE name END,
+					sent = sent + excluded.sent,
+					last_at = max(last_at, excluded.last_at)`,
+				normalizeAddress(p.address),
+				p.name?.trim() || null,
+				sent ? 1 : 0,
+				at,
+			);
+		}
+	}
+
 	private addAddress(messageId: string, address: string): void {
 		this.sql.exec(`INSERT OR IGNORE INTO message_addresses (message_id, address) VALUES (?1, ?2)`, messageId, address);
 	}
@@ -466,6 +492,13 @@ export class Mailbox extends DurableObject<Env> {
 			)
 			.toArray()[0];
 		return row ? { file: toStoredAttachment(row), from: JSON.parse(row.from_json) } : null;
+	}
+
+	/** People written to first, then newest first: mergeContacts() keeps the same order across mailboxes. */
+	async contacts(limit: number): Promise<Contact[]> {
+		return this.sql
+			.exec<ContactRow>(`SELECT address, name, sent, last_at AS lastAt FROM contacts ORDER BY sent > 0 DESC, last_at DESC LIMIT ?1`, limit)
+			.toArray();
 	}
 
 	async counts(query: AddressFilter): Promise<Counts> {
@@ -627,6 +660,7 @@ export class Mailbox extends DurableObject<Env> {
 			for (const a of attachments) this.insertAttachment(id, a);
 			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc, ...input.bcc], text);
 			this.touchThread(threadId, sendAt, snippet, [input.from, ...input.to, ...input.cc]);
+			this.recordContacts([...input.to, ...input.cc, ...input.bcc], true, now);
 			this.sql.exec(`INSERT INTO outbox (message_id, send_at, payload) VALUES (?1, ?2, ?3)`, id, sendAt, JSON.stringify(payload));
 			return threadId;
 		});

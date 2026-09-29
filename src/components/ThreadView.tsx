@@ -12,7 +12,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, formatList, type Identity, messageUrl } from "../api";
-import { openDraft } from "../compose";
+import { openDraft, quote, withSignature } from "../compose";
 import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
 import { appearance } from "../theme";
@@ -350,18 +350,15 @@ function replyDraft(
 			"");
 	const primary = ctx.outgoing ? m.to : m.replyTo.length ? m.replyTo : [m.from];
 	const extra = all ? recipients.filter((a) => !isOurs(a) && !primary.some((p) => p.address === a.address)) : [];
-	const quoted = (m.text ?? "")
-		.split("\n")
-		.map((l) => `> ${l}`)
-		.join("\n");
+	const signature = ctx.identities.find((i) => i.address === from.toLowerCase())?.signature ?? null;
 	return {
 		mailboxId: ctx.mailboxId,
 		from: from.toLowerCase(),
-		to: formatList(primary),
-		cc: formatList(extra),
-		bcc: "",
+		to: primary,
+		cc: extra,
+		bcc: [],
 		subject: /^re:/i.test(m.subject) ? m.subject : `Re: ${m.subject}`,
-		text: `\n\nOn ${new Date(m.date).toLocaleString()}, ${m.from.name || m.from.address} wrote:\n${quoted}`,
+		text: withSignature(quote(m), null, signature),
 		attachments: [],
 		replyToMessageId: m.id,
 	};
