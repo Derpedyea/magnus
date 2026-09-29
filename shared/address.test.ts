@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatAddress, localRecipients, stripSubaddress } from "./address";
+import { blockPattern, formatAddress, localRecipients, stripSubaddress } from "./address";
 
 describe("stripSubaddress", () => {
 	it("splits +tags", () => {
@@ -7,6 +7,16 @@ describe("stripSubaddress", () => {
 	});
 	it("passes plain addresses through", () => {
 		expect(stripSubaddress("me@example.com")).toEqual({ base: "me@example.com", tag: null });
+	});
+});
+
+describe("blockPattern", () => {
+	it("keeps an address, and turns a domain however it's typed into *@domain", () => {
+		expect(blockPattern(" Spam@Example.com ")).toBe("spam@example.com");
+		expect(["example.com", "@example.com", "*@Example.com"].map(blockPattern)).toEqual(["*@example.com", "*@example.com", "*@example.com"]);
+	});
+	it("refuses anything else", () => {
+		expect(["", "*", "example", "a@b", "a b@example.com"].map(blockPattern)).toEqual([null, null, null, null, null]);
 	});
 });
 

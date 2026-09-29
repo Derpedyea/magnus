@@ -16,6 +16,7 @@ import { openDraft, quote, withSignature } from "../compose";
 import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
 import { appearance } from "../theme";
+import { BlockSender } from "./BlockSender";
 import type { Draft } from "./Composer";
 import { FileViewer } from "./FileViewer";
 
@@ -209,7 +210,7 @@ function Message(props: {
 						onOpenChange={(open) => setViewing({ ...viewing, open })}
 					/>
 				) : null}
-				<div className="mt-4 flex items-center gap-2">
+				<div className="mt-4 flex flex-wrap items-center gap-2">
 					<Button variant="outline" size="sm" onClick={() => props.onReply(false)}>
 						<ReplyIcon />
 						Reply
@@ -218,9 +219,12 @@ function Message(props: {
 						<ReplyAllIcon />
 						Reply all
 					</Button>
-					<a href={`${messageUrl(props.mailboxId, m.id)}/raw`} className={cn(buttonVariants({ variant: "link", size: "xs" }), "ml-auto text-muted-foreground")}>
-						Download .eml
-					</a>
+					<div className="ml-auto flex items-center">
+						{m.direction === "in" ? <BlockSender address={m.from.address} /> : null}
+						<a href={`${messageUrl(props.mailboxId, m.id)}/raw`} className={cn(buttonVariants({ variant: "link", size: "xs" }), "text-muted-foreground")}>
+							Download .eml
+						</a>
+					</div>
 				</div>
 			</CollapsibleContent>
 		</Collapsible>

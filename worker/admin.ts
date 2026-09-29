@@ -1,12 +1,25 @@
 import { zValidator } from "@hono/zod-validator";
-import { normalizeAddress, STEP_IDS } from "#shared";
+import { blockPattern, normalizeAddress, STEP_IDS } from "#shared";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "./api";
 import { auth } from "./auth";
 import { type Cloudflare, cloudflare, CloudflareError, findInstall, getZone, listZones } from "./cloudflare";
 import { type DomainContext, domainStatus, runStep } from "./connect";
-import { addAddress, addDomain, createMailbox, deleteMailboxes, getDirectory, getDomain, removeAddress, removeDomain, setCatchAll, soleMailboxes } from "./directory";
+import {
+	addAddress,
+	addDomain,
+	blockSender,
+	createMailbox,
+	deleteMailboxes,
+	getDirectory,
+	getDomain,
+	removeAddress,
+	removeDomain,
+	setCatchAll,
+	soleMailboxes,
+	unblockSender,
+} from "./directory";
 import { forgetCloudflareToken, getInstall, loadCloudflareToken, saveCloudflareToken } from "./settings";
 import { LocalPartSchema, NOT_THIS_INSTALL, TokenSchema } from "./setup";
 
@@ -31,9 +44,15 @@ async function domainContext(c: Context<AppEnv>): Promise<DomainContext | null> 
 
 const AddressInput = z.object({ localPart: LocalPartSchema, domain: z.string().min(1) });
 
+const BlockPatternSchema = z.string().transform((input, ctx) => {
+	const pattern = blockPattern(input);
+	if (!pattern) ctx.addIssue({ code: "custom", message: "Enter an address or a domain." });
+	return pattern ?? z.NEVER;
+});
+
 /**
- * Domains, people, and addresses, for admins. Role changes and suspensions go straight from the browser to
- * Better Auth's admin plugin (/api/auth/admin/*); what's here also touches mailboxes or Cloudflare.
+ * Domains, people, addresses, and blocked senders, for admins. Role changes and suspensions go straight from the
+ * browser to Better Auth's admin plugin (/api/auth/admin/*); what's here also touches mailboxes or Cloudflare.
  */
 export const admin = new Hono<AppEnv>()
 	.use("*", async (c, next) => {
@@ -158,5 +177,18 @@ export const admin = new Hono<AppEnv>()
 
 	.delete("/addresses/:address", async (c) => {
 		await removeAddress(c.env.DIRECTORY, c.req.param("address"));
+		return c.body(null, 204);
+	})
+
+	// ─── Blocked senders ──────────────────────────────────────────────────────────
+
+	/** Refused at SMTP time from now on, for every mailbox. Mail already received stays. */
+	.post("/blocked-senders", zValidator("json", z.object({ pattern: BlockPatternSchema })), async (c) => {
+		await blockSender(c.env.DIRECTORY, c.req.valid("json").pattern);
+		return c.body(null, 204);
+	})
+
+	.delete("/blocked-senders/:pattern", async (c) => {
+		await unblockSender(c.env.DIRECTORY, c.req.param("pattern"));
 		return c.body(null, 204);
 	});
