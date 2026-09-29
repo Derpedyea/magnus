@@ -23,7 +23,7 @@ import {
 	type User,
 	withForward,
 } from "#shared";
-import { ComposeSchema, MarkReadSchema, ModifyThreadsSchema, ShareLinkSchema, SignatureSchema } from "#shared/schemas";
+import { ComposeSchema, MarkReadSchema, MAX_ATTACHMENTS, ModifyThreadsSchema, ShareLinkSchema, SignatureSchema } from "#shared/schemas";
 import { isAPIError } from "better-auth/api";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
@@ -243,24 +243,25 @@ const mb = new Hono<AppEnv>()
 
 		// A forward carries the original below the note, with the files picked from it and the images its HTML shows.
 		let forward: MessageBody | undefined;
-		let embedded: SendAttachmentRef[] = [];
+		const embedded: SendAttachmentRef[] = [];
 		if (req.forward) {
 			const original = await c.var.mailbox.getMessage(req.forward.messageId);
 			if (!original) return c.json({ error: "The message to forward is gone" }, 404);
-			// Its files are still uploads, which move when it sends.
-			if (original.message.labels.includes("outbox")) return c.json({ error: "Forward it once it's sent" }, 409);
+			const files = original.blobs.attachments;
+			if (req.forward.attachmentIds.some((id) => !files.some((a) => a.id === id && !a.inline))) return c.json({ error: "Unknown attachment" }, 400);
+			const kept = new Set(req.forward.attachmentIds);
 			const html = original.blobs.htmlKey ? ((await (await c.env.MAIL.get(original.blobs.htmlKey))?.text()) ?? null) : null;
-			for (const id of req.forward.attachmentIds) {
-				const a = original.blobs.attachments.find((x) => x.id === id && !x.inline);
-				if (!a) return c.json({ error: "Unknown attachment" }, 400);
-				attachments.push({ r2Key: a.r2Key, filename: a.filename, contentType: a.contentType, size: a.size });
-			}
 			const cids = html?.toLowerCase() ?? "";
-			embedded = original.blobs.attachments.flatMap((a) =>
-				a.inline && a.contentId && cids.includes(`cid:${a.contentId.toLowerCase()}`)
-					? [{ r2Key: a.r2Key, filename: a.filename, contentType: a.contentType, size: a.size, contentId: a.contentId }]
-					: [],
-			);
+			for (const a of files) {
+				// The renderer resolves cid: against every part, whatever its disposition, so the HTML can show a listed file too.
+				const shown = a.contentId !== null && cids.includes(`cid:${a.contentId.toLowerCase()}`);
+				if (!(a.inline ? shown : kept.has(a.id))) continue;
+				// A message keeps its files in uploads/ until its send copies them out and deletes the uploads, which would break this forward.
+				if (a.r2Key.startsWith(uploadPrefix)) return c.json({ error: "Its files are still being sent. Try again in a moment." }, 409);
+				const ref = { r2Key: a.r2Key, filename: a.filename, contentType: a.contentType, size: a.size };
+				if (a.contentId && shown) embedded.push({ ...ref, contentId: a.contentId });
+				else attachments.push(ref);
+			}
 			forward = forwardedPart({ ...original.message, html }, req.forward.timeZone);
 		}
 
@@ -269,6 +270,10 @@ const mb = new Hono<AppEnv>()
 		const embeddedBytes = embedded.reduce((n, a) => n + a.size, 0);
 		const { attached, linked, fits } = planAttachments(attachments, body, linkBase, embeddedBytes);
 		if (!fits) return c.json({ error: "Message is too long to send" }, 413);
+		// The schema counts uploads and kept files; a forward's images add parts that can't become links.
+		if (attached.length + embedded.length > MAX_ATTACHMENTS) {
+			return c.json({ error: `At most ${MAX_ATTACHMENTS} attachments, counting the forwarded message's images` }, 400);
+		}
 
 		const recipients = [...new Set([...req.to, ...req.cc, ...req.bcc].map((a) => normalizeAddress(a.address)))];
 		const local = await localTo(c, identity.address, recipients);
