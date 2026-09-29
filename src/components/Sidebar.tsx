@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { SettingsIcon, ShieldIcon, SquarePenIcon } from "lucide-react";
-import { useEffect, useEffectEvent } from "react";
+import { ClockIcon, InboxIcon, MailsIcon, OctagonAlertIcon, SendIcon, SettingsIcon, ShieldIcon, SquarePenIcon, StarIcon, TagIcon, Trash2Icon, type LucideIcon } from "lucide-react";
+import { useEffect, useEffectEvent, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
@@ -25,13 +25,13 @@ import { formatScope, parseScope, useScope } from "../hooks";
 import { countsQuery } from "../queries";
 
 const SYSTEM_VIEWS = [
-	{ label: "inbox", name: "Inbox" },
-	{ label: "starred", name: "Starred" },
-	{ label: "sent", name: "Sent" },
-	{ label: "outbox", name: "Outbox" },
-	{ label: "all", name: "All mail" },
-	{ label: "spam", name: "Spam" },
-	{ label: "trash", name: "Trash" },
+	{ label: "inbox", name: "Inbox", icon: InboxIcon },
+	{ label: "starred", name: "Starred", icon: StarIcon },
+	{ label: "sent", name: "Sent", icon: SendIcon },
+	{ label: "outbox", name: "Outbox", icon: ClockIcon },
+	{ label: "all", name: "All mail", icon: MailsIcon },
+	{ label: "spam", name: "Spam", icon: OctagonAlertIcon },
+	{ label: "trash", name: "Trash", icon: Trash2Icon },
 ];
 const SYSTEM = new Set(SYSTEM_VIEWS.map((v) => v.label));
 
@@ -50,7 +50,9 @@ export function Sidebar(props: {
 	const scope = useScope();
 	const navigate = useNavigate();
 	// On phones the sidebar is a sheet over the page: close it once you've picked somewhere to go.
-	const { setOpenMobile } = useSidebar();
+	const { setOpenMobile, isMobile, state } = useSidebar();
+	// Desktop only: the phone sheet always shows names.
+	const iconsOnly = state === "collapsed" && !isMobile;
 	// Stays lit while a thread from this view is open.
 	const view = useParams({ strict: false, select: (p) => p.view });
 	const counts = useQuery(countsQuery(scope));
@@ -94,6 +96,14 @@ export function Sidebar(props: {
 		return () => window.removeEventListener("keydown", onKey);
 	}, []);
 
+	/** Collapsed to a dot, an address row's tooltip leads with the address it hides. */
+	const scopeTip = (name: string, hint: string) => (
+		<TooltipContent side="right" className={iconsOnly ? "flex-col items-start gap-0.5" : undefined}>
+			{iconsOnly ? <span className="font-medium">{name}</span> : null}
+			{hint}
+		</TooltipContent>
+	);
+
 	const scopeRow = (address: string) => {
 		const index = addresses.indexOf(address);
 		const unread = unreadByAddress.get(address) ?? 0;
@@ -101,32 +111,36 @@ export function Sidebar(props: {
 			<SidebarMenuItem key={address}>
 				<Tooltip>
 					<TooltipTrigger
-						delay={600}
+						delay={iconsOnly ? 0 : 600}
 						render={
 							<SidebarMenuButton isActive={scope.includes(address)} onClick={(e) => pick(address, e.shiftKey || e.metaKey || e.ctrlKey)} className="select-none">
-								<span className={`size-2 shrink-0 rounded-full ${props.colors.get(address)}`} />
+								<RowIcon unread={unread}>
+									<span className={`size-2 rounded-full ${props.colors.get(address)}`} />
+								</RowIcon>
 								<span>{address}</span>
 							</SidebarMenuButton>
 						}
 					/>
-					<TooltipContent side="right">
-						{index < 9 ? `Press ${index + 1} · ` : ""}Shift-click to combine
-					</TooltipContent>
+					{scopeTip(address, `${index < 9 ? `Press ${index + 1} · ` : ""}Shift-click to combine`)}
 				</Tooltip>
 				{unread > 0 ? <SidebarMenuBadge>{unread}</SidebarMenuBadge> : null}
 			</SidebarMenuItem>
 		);
 	};
 
-	const viewRow = (label: string, name: string) => {
+	const viewRow = (label: string, name: string, Icon: LucideIcon) => {
 		const unread = label === "inbox" || !SYSTEM.has(label) ? (byLabel.get(label)?.unread ?? 0) : 0;
 		return (
 			<SidebarMenuItem key={label}>
 				<SidebarMenuButton
 					isActive={view === label}
+					tooltip={name}
 					onClick={() => setOpenMobile(false)}
 					render={<Link to="/$view" params={{ view: label }} activeOptions={{ includeSearch: false }} />}
 				>
+					<RowIcon unread={unread}>
+						<Icon />
+					</RowIcon>
 					<span>{name}</span>
 				</SidebarMenuButton>
 				{unread > 0 ? <SidebarMenuBadge>{unread}</SidebarMenuBadge> : null}
@@ -135,23 +149,35 @@ export function Sidebar(props: {
 	};
 
 	return (
-		<SidebarRoot>
+		// Collapses to an icon rail: the header's toggle or Ctrl/⌘+B.
+		<SidebarRoot collapsible="icon">
 			<SidebarHeader>
-				<div className="flex h-8 items-center gap-2 px-2 font-semibold">
-					<img src="/favicon.svg" alt="" className="size-5" />
-					Magnus Mail
+				{/* The logo sits on the icon column below, so it stays centred in the rail. */}
+				<div className="flex h-8 items-center gap-1.5 px-1.5 font-semibold">
+					<img src="/favicon.svg" alt="" className="size-5 shrink-0" />
+					<span className="truncate group-data-[collapsible=icon]:hidden">Magnus Mail</span>
 				</div>
-				<Button
-					onClick={() => {
-						setOpenMobile(false);
-						props.onCompose();
-					}}
-				>
-					<SquarePenIcon data-icon="inline-start" />
-					Compose
-				</Button>
+				<Tooltip disabled={!iconsOnly}>
+					<TooltipTrigger
+						render={
+							<Button
+								aria-label="Compose"
+								className="group-data-[collapsible=icon]:px-0!"
+								onClick={() => {
+									setOpenMobile(false);
+									props.onCompose();
+								}}
+							>
+								<SquarePenIcon data-icon="inline-start" />
+								<span className="group-data-[collapsible=icon]:hidden">Compose</span>
+							</Button>
+						}
+					/>
+					<TooltipContent side="right">Compose</TooltipContent>
+				</Tooltip>
 			</SidebarHeader>
-			<SidebarContent>
+			{/* The rail scrolls too, or a short window would cut off the last rows. */}
+			<SidebarContent className="group-data-[collapsible=icon]:overflow-x-hidden group-data-[collapsible=icon]:overflow-y-auto">
 				<nav aria-label="Mail">
 					{addresses.length > 1 ? (
 						<>
@@ -160,15 +186,15 @@ export function Sidebar(props: {
 									<SidebarMenuItem>
 										<Tooltip>
 											<TooltipTrigger
-												delay={600}
+												delay={iconsOnly ? 0 : 600}
 												render={
 													<SidebarMenuButton isActive={scope.length === 0} onClick={() => pick(null, false)} className="select-none">
-														<span className="size-2 shrink-0 rounded-full border border-muted-foreground" />
+														<span className="mx-1 size-2 shrink-0 rounded-full border border-muted-foreground" />
 														<span>All addresses</span>
 													</SidebarMenuButton>
 												}
 											/>
-											<TooltipContent side="right">Press 0</TooltipContent>
+											{scopeTip("All addresses", "Press 0")}
 										</Tooltip>
 									</SidebarMenuItem>
 									{props.mailboxes.length > 1 ? null : addresses.map(scopeRow)}
@@ -186,18 +212,18 @@ export function Sidebar(props: {
 						</>
 					) : null}
 					<SidebarGroup>
-						<SidebarMenu>{SYSTEM_VIEWS.map((v) => viewRow(v.label, v.name))}</SidebarMenu>
+						<SidebarMenu>{SYSTEM_VIEWS.map((v) => viewRow(v.label, v.name, v.icon))}</SidebarMenu>
 					</SidebarGroup>
 					{userLabels.length > 0 ? (
 						<SidebarGroup>
 							<SidebarGroupLabel>Labels</SidebarGroupLabel>
-							<SidebarMenu>{userLabels.map((l) => viewRow(l, l))}</SidebarMenu>
+							<SidebarMenu>{userLabels.map((l) => viewRow(l, l, TagIcon))}</SidebarMenu>
 						</SidebarGroup>
 					) : null}
 				</nav>
 			</SidebarContent>
-			{/* Icon bar, after T3 Code's: Settings for everyone, Admin for admins. */}
-			<SidebarFooter className="flex-row gap-1">
+			{/* Icon bar, after T3 Code's: Settings for everyone, Admin for admins. Stacks in the rail. */}
+			<SidebarFooter className="flex-row gap-1 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:items-center">
 				<Tooltip>
 					<TooltipTrigger
 						render={
@@ -215,7 +241,7 @@ export function Sidebar(props: {
 							</Button>
 						}
 					/>
-					<TooltipContent side="top">Settings</TooltipContent>
+					<TooltipContent side={iconsOnly ? "right" : "top"}>Settings</TooltipContent>
 				</Tooltip>
 				{props.isAdmin ? (
 					<Tooltip>
@@ -226,11 +252,21 @@ export function Sidebar(props: {
 								</Link>
 							}
 						/>
-						<TooltipContent side="top">Admin</TooltipContent>
+						<TooltipContent side={iconsOnly ? "right" : "top"}>Admin</TooltipContent>
 					</Tooltip>
 				) : null}
 			</SidebarFooter>
 		</SidebarRoot>
+	);
+}
+
+/** A row's icon. Collapsed, the unread count is hidden, so a dot on the icon stands in for it. */
+function RowIcon(props: { unread: number; children: ReactNode }) {
+	return (
+		<span className="relative flex size-4 shrink-0 items-center justify-center">
+			{props.children}
+			{props.unread > 0 ? <span className="absolute -top-0.5 -right-0.5 hidden size-1.5 rounded-full bg-sidebar-primary group-data-[collapsible=icon]:block" /> : null}
+		</span>
 	);
 }
 
