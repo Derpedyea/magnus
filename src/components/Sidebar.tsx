@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { SettingsIcon, SquarePenIcon } from "lucide-react";
+import { SettingsIcon, ShieldIcon, SquarePenIcon } from "lucide-react";
 import { useEffect, useEffectEvent } from "react";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
 import {
 	SidebarContent,
 	SidebarFooter,
@@ -42,6 +44,7 @@ export function Sidebar(props: {
 	/** Shows the way to the admin pages. */
 	isAdmin: boolean;
 	onCompose: () => void;
+	onSettings: () => void;
 }) {
 	const { addresses } = props;
 	const scope = useScope();
@@ -193,18 +196,40 @@ export function Sidebar(props: {
 					) : null}
 				</nav>
 			</SidebarContent>
-			{props.isAdmin ? (
-				<SidebarFooter>
-					<SidebarMenu>
-						<SidebarMenuItem>
-							<SidebarMenuButton render={<Link to="/admin" />}>
+			{/* Icon bar, after T3 Code's: Settings for everyone, Admin for admins. */}
+			<SidebarFooter className="flex-row gap-1">
+				<Tooltip>
+					<TooltipTrigger
+						render={
+							<Button
+								variant="ghost"
+								size="icon-sm"
+								aria-label="Settings"
+								className="text-muted-foreground"
+								onClick={() => {
+									setOpenMobile(false);
+									props.onSettings();
+								}}
+							>
 								<SettingsIcon />
-								<span>Admin</span>
-							</SidebarMenuButton>
-						</SidebarMenuItem>
-					</SidebarMenu>
-				</SidebarFooter>
-			) : null}
+							</Button>
+						}
+					/>
+					<TooltipContent side="top">Settings</TooltipContent>
+				</Tooltip>
+				{props.isAdmin ? (
+					<Tooltip>
+						<TooltipTrigger
+							render={
+								<Link to="/admin" aria-label="Admin" className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "text-muted-foreground")}>
+									<ShieldIcon />
+								</Link>
+							}
+						/>
+						<TooltipContent side="top">Admin</TooltipContent>
+					</Tooltip>
+				) : null}
+			</SidebarFooter>
 		</SidebarRoot>
 	);
 }

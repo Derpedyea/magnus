@@ -3,10 +3,10 @@ import { useNavigate } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { authClient } from "../api";
 
-export function SignOutButton() {
+export function useSignOut() {
 	const qc = useQueryClient();
 	const navigate = useNavigate();
-	const signOut = useMutation({
+	return useMutation({
 		mutationFn: () => authClient.signOut(),
 		onSuccess: () => {
 			// Nothing of this account's mail should outlive the session.
@@ -14,6 +14,10 @@ export function SignOutButton() {
 			void navigate({ to: "/login" });
 		},
 	});
+}
+
+export function SignOutButton() {
+	const signOut = useSignOut();
 	return (
 		<Button variant="ghost" size="sm" onClick={() => signOut.mutate()} disabled={signOut.isPending} className="text-muted-foreground">
 			Sign out

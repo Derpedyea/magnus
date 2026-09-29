@@ -6,6 +6,15 @@
 		<meta name="referrer" content="no-referrer" />
 		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 		<title>Magnus Mail</title>
+		<script>
+			// The theme picked on this device (src/theme.ts), applied before first paint so it never flashes the default.
+			{
+				const mode = localStorage.getItem("theme");
+				const dark = mode === "dark" || (mode !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+				document.documentElement.classList.toggle("dark", dark);
+				document.documentElement.dataset.theme = localStorage.getItem(dark ? "theme-dark" : "theme-light") || (dark ? "dark" : "light");
+			}
+		</script>
 	</head>
 	<body>
 		<div id="root"></div>

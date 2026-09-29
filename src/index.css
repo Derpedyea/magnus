@@ -55,6 +55,42 @@ body,
 }
 
 :root {
+	--radius: 0.625rem;
+	--chart-1: oklch(0.87 0 0);
+	--chart-2: oklch(0.556 0 0);
+	--chart-3: oklch(0.439 0 0);
+	--chart-4: oklch(0.371 0 0);
+	--chart-5: oklch(0.269 0 0);
+}
+
+/*
+ * Themes, listed in src/theme.ts. index.html puts the active one on <html> as data-theme, and a preview puts one
+ * on its own element. Each sets background, foreground, card, sidebar, muted(-foreground), border,
+ * primary(-foreground), and destructive; the rest derive from those unless it sets them too. They derive on the
+ * element that has data-theme, not :root, so a preview derives from its own colours.
+ */
+[data-theme] {
+	--card-foreground: var(--foreground);
+	--popover: var(--card);
+	--popover-foreground: var(--foreground);
+	--secondary: var(--muted);
+	--secondary-foreground: var(--foreground);
+	--accent: var(--muted);
+	--accent-foreground: var(--foreground);
+	--input: var(--border);
+	--ring: var(--muted-foreground);
+	--sidebar-foreground: var(--foreground);
+	--sidebar-primary: var(--primary);
+	--sidebar-primary-foreground: var(--primary-foreground);
+	--sidebar-accent: var(--accent);
+	--sidebar-accent-foreground: var(--accent-foreground);
+	--sidebar-border: var(--border);
+	--sidebar-ring: var(--ring);
+}
+
+/* Magnus Light, the default. The Magnus themes set every colour. */
+[data-theme="light"] {
+	color-scheme: light;
 	--background: oklch(1 0 0);
 	--foreground: oklch(0.145 0 0);
 	--card: oklch(1 0 0);
@@ -73,12 +109,6 @@ body,
 	--border: oklch(0.922 0 0);
 	--input: oklch(0.922 0 0);
 	--ring: oklch(0.708 0 0);
-	--chart-1: oklch(0.87 0 0);
-	--chart-2: oklch(0.556 0 0);
-	--chart-3: oklch(0.439 0 0);
-	--chart-4: oklch(0.371 0 0);
-	--chart-5: oklch(0.269 0 0);
-	--radius: 0.625rem;
 	--sidebar: oklch(0.985 0 0);
 	--sidebar-foreground: oklch(0.145 0 0);
 	--sidebar-primary: oklch(0.205 0 0);
@@ -89,7 +119,9 @@ body,
 	--sidebar-ring: oklch(0.708 0 0);
 }
 
-.dark {
+/* Magnus Dark */
+[data-theme="dark"] {
+	color-scheme: dark;
 	--background: oklch(0.145 0 0);
 	--foreground: oklch(0.985 0 0);
 	--card: oklch(0.205 0 0);
@@ -108,11 +140,6 @@ body,
 	--border: oklch(1 0 0 / 10%);
 	--input: oklch(1 0 0 / 15%);
 	--ring: oklch(0.556 0 0);
-	--chart-1: oklch(0.87 0 0);
-	--chart-2: oklch(0.556 0 0);
-	--chart-3: oklch(0.439 0 0);
-	--chart-4: oklch(0.371 0 0);
-	--chart-5: oklch(0.269 0 0);
 	--sidebar: oklch(0.205 0 0);
 	--sidebar-foreground: oklch(0.985 0 0);
 	--sidebar-primary: oklch(0.488 0.243 264.376);
@@ -121,6 +148,186 @@ body,
 	--sidebar-accent-foreground: oklch(0.985 0 0);
 	--sidebar-border: oklch(1 0 0 / 10%);
 	--sidebar-ring: oklch(0.556 0 0);
+}
+
+/* One Light */
+[data-theme="one-light"] {
+	color-scheme: light;
+	--background: #fafafa;
+	--foreground: #383a42;
+	--card: #ffffff;
+	--sidebar: #f0f0f1;
+	--muted: #e8e8ea;
+	--muted-foreground: #696c77;
+	--border: #dcdcdf;
+	--primary: #2f69e0;
+	--primary-foreground: #ffffff;
+	--destructive: #ca4034;
+}
+
+/* Catppuccin Latte */
+[data-theme="catppuccin-latte"] {
+	color-scheme: light;
+	--background: #eff1f5;
+	--foreground: #4c4f69;
+	--card: #f7f8fa;
+	--sidebar: #e6e9ef;
+	--muted: #dce0e8;
+	--muted-foreground: #5c5f77;
+	--border: #ccd0da;
+	--primary: #8839ef;
+	--primary-foreground: #eff1f5;
+	--destructive: #d20f39;
+}
+
+/* Rosé Pine Dawn */
+[data-theme="rose-pine-dawn"] {
+	color-scheme: light;
+	--background: #faf4ed;
+	--foreground: #575279;
+	--card: #fffaf3;
+	--sidebar: #fffaf3;
+	--muted: #f2e9e1;
+	--muted-foreground: #6e6a86;
+	--border: #dfdad9;
+	--primary: #286983;
+	--primary-foreground: #faf4ed;
+	--destructive: #a8546c;
+}
+
+/* Solarized Light */
+[data-theme="solarized-light"] {
+	color-scheme: light;
+	--background: #fdf6e3;
+	--foreground: #073642;
+	--card: #fffbf0;
+	--sidebar: #eee8d5;
+	--muted: #eee8d5;
+	--muted-foreground: #4f6368;
+	--border: #e1dac4;
+	--primary: #1c70ad;
+	--primary-foreground: #fdf6e3;
+	--destructive: #dc322f;
+}
+
+/* Gruvbox Light */
+[data-theme="gruvbox-light"] {
+	color-scheme: light;
+	--background: #fbf1c7;
+	--foreground: #3c3836;
+	--card: #fdf6d8;
+	--sidebar: #f2e5bc;
+	--muted: #ebdbb2;
+	--muted-foreground: #665c54;
+	--border: #e0cfa5;
+	--primary: #af3a03;
+	--primary-foreground: #fbf1c7;
+	--destructive: #9d0006;
+}
+
+/* One Dark */
+[data-theme="one-dark"] {
+	color-scheme: dark;
+	--background: #282c34;
+	--foreground: #abb2bf;
+	--card: #2f343d;
+	--sidebar: #21252b;
+	--muted: #3a3f4b;
+	--muted-foreground: #9aa1ad;
+	--border: #3b4048;
+	--primary: #61afef;
+	--primary-foreground: #1e2227;
+	--destructive: #e86f79;
+}
+
+/* Catppuccin Mocha */
+[data-theme="catppuccin-mocha"] {
+	color-scheme: dark;
+	--background: #1e1e2e;
+	--foreground: #cdd6f4;
+	--card: #262637;
+	--sidebar: #181825;
+	--muted: #313244;
+	--muted-foreground: #a6adc8;
+	--border: #313244;
+	--primary: #cba6f7;
+	--primary-foreground: #11111b;
+	--destructive: #f38ba8;
+}
+
+/* Rosé Pine */
+[data-theme="rose-pine"] {
+	color-scheme: dark;
+	--background: #191724;
+	--foreground: #e0def4;
+	--card: #1f1d2e;
+	--sidebar: #1f1d2e;
+	--muted: #26233a;
+	--muted-foreground: #908caa;
+	--border: #2a273f;
+	--primary: #c4a7e7;
+	--primary-foreground: #191724;
+	--destructive: #eb6f92;
+}
+
+/* Solarized Dark */
+[data-theme="solarized-dark"] {
+	color-scheme: dark;
+	--background: #002b36;
+	--foreground: #b8c4c4;
+	--card: #073642;
+	--sidebar: #00212b;
+	--muted: #073642;
+	--muted-foreground: #8a9da2;
+	--border: #0b4250;
+	--primary: #3597df;
+	--primary-foreground: #002b36;
+	--destructive: #e0525f;
+}
+
+/* Gruvbox Dark */
+[data-theme="gruvbox-dark"] {
+	color-scheme: dark;
+	--background: #282828;
+	--foreground: #ebdbb2;
+	--card: #32302f;
+	--sidebar: #1d2021;
+	--muted: #3c3836;
+	--muted-foreground: #a89984;
+	--border: #3c3836;
+	--primary: #fe8019;
+	--primary-foreground: #1d2021;
+	--destructive: #fb4934;
+}
+
+/* Nord */
+[data-theme="nord"] {
+	color-scheme: dark;
+	--background: #2e3440;
+	--foreground: #d8dee9;
+	--card: #353c4a;
+	--sidebar: #292e39;
+	--muted: #3b4252;
+	--muted-foreground: #a3acbd;
+	--border: #3b4252;
+	--primary: #88c0d0;
+	--primary-foreground: #2e3440;
+	--destructive: #d8737c;
+}
+
+/* Dracula */
+[data-theme="dracula"] {
+	color-scheme: dark;
+	--background: #282a36;
+	--foreground: #f8f8f2;
+	--card: #2f3241;
+	--sidebar: #21222c;
+	--muted: #44475a;
+	--muted-foreground: #a3aacc;
+	--border: #393c4e;
+	--primary: #bd93f9;
+	--primary-foreground: #21222c;
+	--destructive: #ff5555;
 }
 
 @layer base {
