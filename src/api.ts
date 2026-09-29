@@ -118,6 +118,9 @@ export const adminApi = {
 	addAddress: (json: Json<typeof admin.addresses.$post>) => parseResponse(admin.addresses.$post({ json })),
 	// hc puts params into the path as given.
 	removeAddress: (address: string) => parseResponse(admin.addresses[":address"].$delete({ param: { address: encodeURIComponent(address) } })),
+	/** An address, or `*@domain` for everyone there (see blockPattern). */
+	blockSender: (pattern: string) => parseResponse(admin["blocked-senders"].$post({ json: { pattern } })),
+	unblockSender: (pattern: string) => parseResponse(admin["blocked-senders"][":pattern"].$delete({ param: { pattern: encodeURIComponent(pattern) } })),
 };
 
 export const messageUrl = (mb: string, messageId: string) => `/api/mailboxes/${mb}/messages/${messageId}`;

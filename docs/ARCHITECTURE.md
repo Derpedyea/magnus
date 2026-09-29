@@ -99,7 +99,7 @@ mailboxes(id, name)                                          ← id = Durable Ob
 mailbox_members(mailbox_id, user_id, role)                   ← user_id → auth_users; everyone gets their own
 addresses(address, domain, display_name, enabled)            ← normalized, no +tag
 address_routes(address, mailbox_id, can_send)                ← >1 row = group alias (e.g. family@)
-sender_blocks(pattern)                                       ← 'x@y.com' or '*@y.com', rejected at SMTP time
+sender_blocks(pattern)                                       ← 'x@y.com' or '*@y.com', matched against the envelope sender and From header at SMTP time
 signatures(user_id, address, text)                           ← per person and address they send as; the composer adds it
 ```
 
@@ -149,6 +149,9 @@ means any parsing bug can be fixed by re-queuing `InboundJob`s. Ingest is idempo
    invokes the Worker's `email()` once per recipient.
 2. `resolveRecipient()` makes one D1 batch covering the exact address, the domain catch-all, and sender blocks.
    Unknown recipients get `setReject("5.1.1 …")` **during the SMTP session**, so we never send backscatter.
+   A block matches the envelope sender or any address in the From header: bulk mail carries its sending service's
+   bounce address on the envelope, and the header is what the app shows. Admins block from a message
+   (the sender or their whole domain) or from Admin › Blocked senders.
 3. The raw bytes are buffered once and written to R2. Then one `InboundJob` per target mailbox is enqueued
    (group aliases fan out here). Returning ends the SMTP transaction. If R2 or the queue fails, the handler
    throws instead of returning, so the message is never silently accepted (see §7 for the exact SMTP reply).

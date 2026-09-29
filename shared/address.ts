@@ -6,6 +6,7 @@ export interface Address {
 }
 
 const ADDRESS_RE = /^[^\s@<>()",;:]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
+const DOMAIN_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
 
 /** Lowercase and trim. Local parts are technically case-sensitive, but no real mailbox relies on it. */
 export function normalizeAddress(address: string): string {
@@ -20,6 +21,16 @@ export function splitAddress(address: string): { local: string; domain: string }
 	const at = address.lastIndexOf("@");
 	if (at <= 0) throw new Error(`Invalid address: ${address}`);
 	return { local: address.slice(0, at), domain: address.slice(at + 1) };
+}
+
+/**
+ * A sender to block, as sender_blocks stores it: an address, or `*@domain` for everyone there. Takes
+ * `x@y.com`, `*@y.com`, `@y.com`, or `y.com`; null when it's neither an address nor a domain.
+ */
+export function blockPattern(input: string): string | null {
+	const value = normalizeAddress(input).replace(/^\*?@/, "");
+	if (DOMAIN_RE.test(value)) return `*@${value}`;
+	return isValidAddress(value) ? value : null;
 }
 
 /**

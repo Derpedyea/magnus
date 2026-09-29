@@ -1,4 +1,5 @@
 import { type EmailSendingEvent, type InboundJob, r2Keys, ulid } from "#shared";
+import { addressParser } from "postal-mime";
 import { resolveRecipient } from "../directory";
 import { handleDeliveryEvent } from "./events";
 import { ingest } from "./ingest";
@@ -8,7 +9,9 @@ import { ingest } from "./ingest";
  * persist the raw bytes, enqueue. Parsing happens in queue() where it can retry.
  */
 export async function email(message: ForwardableEmailMessage, env: Env): Promise<void> {
-	const resolution = await resolveRecipient(env.DIRECTORY, message.from, message.to);
+	// Every mailbox in the From header, parsed the way ingest() parses it (it shows the first).
+	const fromHeader = addressParser(message.headers.get("from") ?? "", { flatten: true }).flatMap((a) => a.address ?? []);
+	const resolution = await resolveRecipient(env.DIRECTORY, [message.from, ...fromHeader], message.to);
 	if (resolution.kind === "reject") {
 		console.log(JSON.stringify({ msg: "rejected", from: message.from, to: message.to, reason: resolution.reason }));
 		message.setReject(resolution.reason);

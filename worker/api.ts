@@ -225,7 +225,7 @@ const mb = new Hono<AppEnv>()
 
 		const recipients = [...new Set([...req.to, ...req.cc, ...req.bcc].map((a) => normalizeAddress(a.address)))];
 		const routed = await Promise.all(
-			recipients.map(async (address) => ({ address, route: await resolveRecipient(c.env.DIRECTORY, identity.address, address) })),
+			recipients.map(async (address) => ({ address, route: await resolveRecipient(c.env.DIRECTORY, [identity.address], address) })),
 		);
 		const local = localRecipients(routed, c.var.mailboxId);
 

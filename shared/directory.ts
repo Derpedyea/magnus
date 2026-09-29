@@ -85,6 +85,8 @@ export interface Directory {
 	people: Person[];
 	mailboxes: DirectoryMailbox[];
 	addresses: DirectoryAddress[];
+	/** Refused at SMTP time, newest first: addresses, and `*@domain` for everyone at a domain. */
+	blockedSenders: string[];
 	/** A Cloudflare token is saved, so turning domains on doesn't ask for one. */
 	cloudflareTokenSaved: boolean;
 }

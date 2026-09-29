@@ -19,12 +19,15 @@ export type RecipientResolution =
 /**
  * Decide at SMTP time what happens to an envelope recipient.
  * Rejecting here (instead of accepting and bouncing later) avoids backscatter.
+ * `senders` are the envelope sender and the From header's addresses, and a block on any refuses the message:
+ * bulk mail carries its sending service's bounce address on the envelope, so only the header (which the app
+ * shows and blocks) names who it's from.
  */
-export async function resolveRecipient(db: D1Database, envelopeFrom: string, envelopeTo: string): Promise<RecipientResolution> {
+export async function resolveRecipient(db: D1Database, senders: string[], envelopeTo: string): Promise<RecipientResolution> {
 	const { base, tag } = stripSubaddress(envelopeTo);
 	const { domain } = splitAddress(base);
-	const sender = normalizeAddress(envelopeFrom);
-	const senderDomain = sender.includes("@") ? splitAddress(sender).domain : "";
+	// Each sender, and everyone at its domain. A bounce's envelope sender is empty.
+	const blocks = senders.map(normalizeAddress).filter((s) => s.includes("@")).flatMap((s) => [s, `*@${splitAddress(s).domain}`]);
 
 	const [routes, dom, blocked] = await Promise.all([
 		db
@@ -36,7 +39,7 @@ export async function resolveRecipient(db: D1Database, envelopeFrom: string, env
 			.bind(base)
 			.all<{ mailbox_id: string }>(),
 		db.prepare(`SELECT receiving, catch_all_mailbox_id FROM domains WHERE name = ?1`).bind(domain).first<{ receiving: number; catch_all_mailbox_id: string | null }>(),
-		db.prepare(`SELECT 1 AS hit FROM sender_blocks WHERE pattern IN (?1, ?2) LIMIT 1`).bind(sender, `*@${senderDomain}`).first(),
+		db.prepare(`SELECT 1 AS hit FROM sender_blocks WHERE pattern IN (SELECT value FROM json_each(?1)) LIMIT 1`).bind(JSON.stringify(blocks)).first(),
 	]);
 
 	if (blocked) return { kind: "reject", reason: "5.7.1 Sender blocked" };
@@ -149,7 +152,7 @@ export async function loginCodeSender(db: D1Database): Promise<string | null> {
 
 /** Everything the admin pages show. Small enough to read whole. */
 export async function getDirectory(db: D1Database): Promise<Directory> {
-	const [domains, people, mailboxes, members, addresses, routes, cloudflareTokenSaved] = await Promise.all([
+	const [domains, people, mailboxes, members, addresses, routes, blocks, cloudflareTokenSaved] = await Promise.all([
 		db
 			.prepare(`SELECT name, zone_id, receiving, sending, catch_all_mailbox_id FROM domains ORDER BY created_at`)
 			.all<{ name: string; zone_id: string | null; receiving: number; sending: number; catch_all_mailbox_id: string | null }>(),
@@ -158,6 +161,7 @@ export async function getDirectory(db: D1Database): Promise<Directory> {
 		db.prepare(`SELECT mailbox_id, user_id FROM mailbox_members`).all<{ mailbox_id: string; user_id: string }>(),
 		db.prepare(`SELECT address, domain, display_name FROM addresses ORDER BY domain, address`).all<{ address: string; domain: string; display_name: string | null }>(),
 		db.prepare(`SELECT address, mailbox_id FROM address_routes`).all<{ address: string; mailbox_id: string }>(),
+		db.prepare(`SELECT pattern FROM sender_blocks ORDER BY created_at DESC`).all<{ pattern: string }>(),
 		hasCloudflareToken(db),
 	]);
 	return {
@@ -176,6 +180,7 @@ export async function getDirectory(db: D1Database): Promise<Directory> {
 				mailboxIds: routes.results.filter((r) => r.address === a.address).map((r) => r.mailbox_id),
 			}),
 		),
+		blockedSenders: blocks.results.map((b) => b.pattern),
 		cloudflareTokenSaved,
 	};
 }
@@ -226,6 +231,15 @@ export function addAddress(db: D1Database, address: string, displayName: string 
 
 export async function removeAddress(db: D1Database, address: string): Promise<void> {
 	await db.prepare(`DELETE FROM addresses WHERE address = ?1`).bind(address).run();
+}
+
+/** `pattern` comes from blockPattern(). Blocking twice is fine. */
+export async function blockSender(db: D1Database, pattern: string): Promise<void> {
+	await db.prepare(`INSERT INTO sender_blocks (pattern) VALUES (?1) ON CONFLICT DO NOTHING`).bind(pattern).run();
+}
+
+export async function unblockSender(db: D1Database, pattern: string): Promise<void> {
+	await db.prepare(`DELETE FROM sender_blocks WHERE pattern = ?1`).bind(pattern).run();
 }
 
 /** Mailboxes only this person can read: they go when the person does. */

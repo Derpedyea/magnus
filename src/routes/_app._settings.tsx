@@ -1,5 +1,5 @@
 import { createFileRoute, Link, Outlet, useLocation } from "@tanstack/react-router";
-import { ArrowLeftIcon, AtSignIcon, GlobeIcon, PaletteIcon, SignatureIcon, UsersIcon } from "lucide-react";
+import { ArrowLeftIcon, AtSignIcon, BanIcon, GlobeIcon, PaletteIcon, SignatureIcon, UsersIcon } from "lucide-react";
 import {
 	Sidebar,
 	SidebarContent,
@@ -34,6 +34,7 @@ const GROUPS = [
 			{ to: "/admin/domains", label: "Domains", icon: GlobeIcon },
 			{ to: "/admin/people", label: "People", icon: UsersIcon },
 			{ to: "/admin/addresses", label: "Addresses", icon: AtSignIcon },
+			{ to: "/admin/blocked-senders", label: "Blocked senders", icon: BanIcon },
 		],
 	},
 ] as const;

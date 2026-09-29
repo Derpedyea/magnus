@@ -20,6 +20,7 @@ import { Route as AppSettingsAdminRouteImport } from './routes/_app._settings.ad
 import { Route as AppMailViewIndexRouteImport } from './routes/_app._mail.$view.index'
 import { Route as AppSettingsAdminIndexRouteImport } from './routes/_app._settings.admin.index'
 import { Route as AppSettingsAdminAddressesRouteImport } from './routes/_app._settings.admin.addresses'
+import { Route as AppSettingsAdminBlockedSendersRouteImport } from './routes/_app._settings.admin.blocked-senders'
 import { Route as AppSettingsAdminDomainsRouteImport } from './routes/_app._settings.admin.domains'
 import { Route as AppSettingsAdminPeopleRouteImport } from './routes/_app._settings.admin.people'
 import { Route as AppSettingsSettingsIndexRouteImport } from './routes/_app._settings.settings.index'
@@ -80,6 +81,12 @@ const AppSettingsAdminAddressesRoute =
     path: '/addresses',
     getParentRoute: () => AppSettingsAdminRoute,
   } as any)
+const AppSettingsAdminBlockedSendersRoute =
+  AppSettingsAdminBlockedSendersRouteImport.update({
+    id: '/blocked-senders',
+    path: '/blocked-senders',
+    getParentRoute: () => AppSettingsAdminRoute,
+  } as any)
 const AppSettingsAdminDomainsRoute = AppSettingsAdminDomainsRouteImport.update({
   id: '/domains',
   path: '/domains',
@@ -122,6 +129,7 @@ export interface FileRoutesByFullPath {
   '/$view': typeof AppMailViewRouteWithChildren
   '/admin': typeof AppSettingsAdminRouteWithChildren
   '/admin/addresses': typeof AppSettingsAdminAddressesRoute
+  '/admin/blocked-senders': typeof AppSettingsAdminBlockedSendersRoute
   '/admin/domains': typeof AppSettingsAdminDomainsRoute
   '/admin/people': typeof AppSettingsAdminPeopleRoute
   '/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
@@ -136,6 +144,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/setup': typeof SetupRoute
   '/admin/addresses': typeof AppSettingsAdminAddressesRoute
+  '/admin/blocked-senders': typeof AppSettingsAdminBlockedSendersRoute
   '/admin/domains': typeof AppSettingsAdminDomainsRoute
   '/admin/people': typeof AppSettingsAdminPeopleRoute
   '/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
@@ -156,6 +165,7 @@ export interface FileRoutesById {
   '/_app/_settings/admin': typeof AppSettingsAdminRouteWithChildren
   '/_app/_mail/': typeof AppMailIndexRoute
   '/_app/_settings/admin/addresses': typeof AppSettingsAdminAddressesRoute
+  '/_app/_settings/admin/blocked-senders': typeof AppSettingsAdminBlockedSendersRoute
   '/_app/_settings/admin/domains': typeof AppSettingsAdminDomainsRoute
   '/_app/_settings/admin/people': typeof AppSettingsAdminPeopleRoute
   '/_app/_settings/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
@@ -174,6 +184,7 @@ export interface FileRouteTypes {
     | '/$view'
     | '/admin'
     | '/admin/addresses'
+    | '/admin/blocked-senders'
     | '/admin/domains'
     | '/admin/people'
     | '/settings/appearance'
@@ -188,6 +199,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/setup'
     | '/admin/addresses'
+    | '/admin/blocked-senders'
     | '/admin/domains'
     | '/admin/people'
     | '/settings/appearance'
@@ -207,6 +219,7 @@ export interface FileRouteTypes {
     | '/_app/_settings/admin'
     | '/_app/_mail/'
     | '/_app/_settings/admin/addresses'
+    | '/_app/_settings/admin/blocked-senders'
     | '/_app/_settings/admin/domains'
     | '/_app/_settings/admin/people'
     | '/_app/_settings/settings/appearance'
@@ -302,6 +315,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsAdminAddressesRouteImport
       parentRoute: typeof AppSettingsAdminRoute
     }
+    '/_app/_settings/admin/blocked-senders': {
+      id: '/_app/_settings/admin/blocked-senders'
+      path: '/blocked-senders'
+      fullPath: '/admin/blocked-senders'
+      preLoaderRoute: typeof AppSettingsAdminBlockedSendersRouteImport
+      parentRoute: typeof AppSettingsAdminRoute
+    }
     '/_app/_settings/admin/domains': {
       id: '/_app/_settings/admin/domains'
       path: '/domains'
@@ -376,6 +396,7 @@ const AppMailRouteWithChildren =
 
 interface AppSettingsAdminRouteChildren {
   AppSettingsAdminAddressesRoute: typeof AppSettingsAdminAddressesRoute
+  AppSettingsAdminBlockedSendersRoute: typeof AppSettingsAdminBlockedSendersRoute
   AppSettingsAdminDomainsRoute: typeof AppSettingsAdminDomainsRoute
   AppSettingsAdminPeopleRoute: typeof AppSettingsAdminPeopleRoute
   AppSettingsAdminIndexRoute: typeof AppSettingsAdminIndexRoute
@@ -383,6 +404,7 @@ interface AppSettingsAdminRouteChildren {
 
 const AppSettingsAdminRouteChildren: AppSettingsAdminRouteChildren = {
   AppSettingsAdminAddressesRoute: AppSettingsAdminAddressesRoute,
+  AppSettingsAdminBlockedSendersRoute: AppSettingsAdminBlockedSendersRoute,
   AppSettingsAdminDomainsRoute: AppSettingsAdminDomainsRoute,
   AppSettingsAdminPeopleRoute: AppSettingsAdminPeopleRoute,
   AppSettingsAdminIndexRoute: AppSettingsAdminIndexRoute,
