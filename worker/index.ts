@@ -4,6 +4,7 @@ import { email, queue } from "./mail/inbound";
 import { migrate } from "./migrate";
 
 export { Mailbox } from "./mailbox/mailbox";
+export { Vault } from "./vault";
 
 /** The whole of Magnus: the app and its API, linked-file downloads, mail in at SMTP time, and the queues in between. */
 export default {

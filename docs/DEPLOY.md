@@ -55,10 +55,11 @@ Then you're in. Everything else happens under **Admin** in the sidebar.
 | Zone · DNS · Edit | Read MX records, and remove another provider's when you move a domain |
 | Zone · Email Routing Rules · Edit | Point the catch-all at this Worker |
 
-The token is saved encrypted: its ciphertext in D1 and the key in R2, so a copy of either alone doesn't reveal
-it. Adding and turning on domains use it without asking. *Use a different token* in the Turn on dialog
-replaces it, and *Forget it* under the domain list deletes it. If you revoke it in Cloudflare, Magnus says so the
-next time it needs it, and *Use a different token* takes a new one.
+The token is saved encrypted. A Durable Object holds the key and D1 holds only the ciphertext, so a D1 backup
+or an R2 or D1 API token reveals nothing. Adding and turning on domains use it without asking. *Use a different
+token* in the Turn on dialog replaces it, and *Forget it* under the domain list deletes it. Cloudflare's 30-day
+recovery can still bring a forgotten one back, so to end a token for certain, revoke it in Cloudflare. Magnus
+then says so the next time it needs one, and *Use a different token* takes a new one.
 
 ## 3. Admin
 
