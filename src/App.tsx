@@ -37,7 +37,8 @@ export function App() {
 	};
 
 	return (
-		<SidebarProvider className="h-full text-sm">
+		// The sidebar saves its open state in this cookie; read it back so a collapsed rail stays collapsed.
+		<SidebarProvider defaultOpen={!document.cookie.includes("sidebar_state=false")} className="h-full text-sm">
 			<Sidebar mailboxes={mailboxes} addresses={addresses} colors={colors} isAdmin={user.isAdmin} onCompose={newDraft} onSettings={() => setSettingsOpen(true)} />
 			<SidebarInset className="min-w-0">
 				<header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
