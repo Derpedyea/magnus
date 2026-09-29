@@ -17,7 +17,9 @@ the Worker. Every push to that copy redeploys it.
 git clone https://github.com/Derpedyea/magnus && cd magnus
 pnpm install
 npx wrangler login
-pnpm run deploy        # creates the database, bucket, and queues on first run
+npx wrangler queues create magnus-inbound       # once; wrangler doesn't create queues itself
+npx wrangler queues create magnus-email-events
+pnpm run deploy        # creates the database and bucket on first run
 ```
 
 Either way, nothing needs configuring: the D1 schema is applied by the Worker itself, and the session secret
@@ -28,10 +30,10 @@ is generated on first run.
 Open the Worker's URL, `https://magnus.<your-subdomain>.workers.dev`. Until someone finishes setup, every
 page leads to `/setup`:
 
-1. **Connect Cloudflare.** *Create a token* opens Cloudflare's token page with most permissions filled in.
-   Add the two it can't pre-select, create the token, and paste it. The token must belong to the account
-   Magnus is deployed to: setup looks for this exact deployment in it, which is how it knows you own this
-   install and aren't a stranger who found the URL first. The token is used for that request and never stored.
+1. **Connect Cloudflare.** *Create a token* opens Cloudflare's token page with every permission filled in.
+   Create the token and paste it. It must belong to the account Magnus is deployed to: setup looks for this
+   exact deployment in it, which is how it knows you own this install and aren't a stranger who found the URL
+   first. Magnus keeps the token encrypted, so nobody has to paste one again.
 2. **Pick your domain.** Each one shows who receives its mail today.
 3. **Create your account:** your name, your new address, and a *sign-in email* somewhere else (your current
    inbox), where sign-in codes go.
@@ -47,13 +49,16 @@ Then you're in. Everything else happens under **Admin** in the sidebar.
 | --- | --- |
 | Account · Workers Scripts · Read | Find this install in your account |
 | Account · Queues · Edit | Subscribe the delivery-events queue to Email Sending |
-| Account · Email Sending · Edit | Turn on sending for a domain (add by hand) |
+| Account · Email Sending · Edit | Turn on sending for a domain |
 | Zone · Zone · Read | List your domains |
 | Zone · Zone Settings · Edit | Turn on Email Routing |
 | Zone · DNS · Edit | Read MX records, and remove another provider's when you move a domain |
-| Zone · Email Routing Rules · Edit | Point the catch-all at this Worker (add by hand) |
+| Zone · Email Routing Rules · Edit | Point the catch-all at this Worker |
 
-Admins paste a token again whenever they add or turn on a domain. It's kept in that tab's memory only.
+The token is saved encrypted: its ciphertext in D1 and the key in R2, so a copy of either alone doesn't reveal
+it. Adding and turning on domains use it without asking. *Use a different token* in the Turn on dialog
+replaces it, and *Forget it* under the domain list deletes it. If you revoke it in Cloudflare, Magnus says so the
+next time it needs it, and *Use a different token* takes a new one.
 
 ## 3. Admin
 

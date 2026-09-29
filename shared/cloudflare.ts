@@ -1,8 +1,8 @@
 // Shared by setup/admin in the browser and the Worker's Cloudflare API calls.
 
 /**
- * What the Cloudflare API token needs. `key` pre-selects it on the token page; Cloudflare hasn't published
- * keys for the email permissions yet, so those are added by hand.
+ * What the Cloudflare API token needs. `key` pre-selects it on the token page. Cloudflare's docs don't list the
+ * email keys; they follow its OAuth scope names (email-routing-rule, email-sending) like the documented ones do.
  */
 export const PERMISSIONS = {
 	scripts: { label: "Workers Scripts · Read", key: { key: "workers_scripts", type: "read" } },
@@ -10,15 +10,15 @@ export const PERMISSIONS = {
 	zone: { label: "Zone · Read", key: { key: "zone", type: "read" } },
 	zoneSettings: { label: "Zone Settings · Edit", key: { key: "zone_settings", type: "edit" } },
 	dns: { label: "DNS · Edit", key: { key: "dns", type: "edit" } },
-	routingRules: { label: "Email Routing Rules · Edit", key: null },
-	sending: { label: "Email Sending · Edit", key: null },
+	routingRules: { label: "Email Routing Rules · Edit", key: { key: "email_routing_rule", type: "edit" } },
+	sending: { label: "Email Sending · Edit", key: { key: "email_sending", type: "edit" } },
 } as const;
 
 export type Permission = keyof typeof PERMISSIONS;
 
-/** Opens Cloudflare's account token page with every permission it can pre-select. */
+/** Opens Cloudflare's account token page with every permission filled in. */
 export function tokenTemplateUrl(): string {
-	const keys = Object.values(PERMISSIONS).flatMap((p) => (p.key ? [p.key] : []));
+	const keys = Object.values(PERMISSIONS).map((p) => p.key);
 	const params = new URLSearchParams({ permissionGroupKeys: JSON.stringify(keys), name: "Magnus" });
 	return `https://dash.cloudflare.com/?to=/:account/api-tokens&${params}`;
 }

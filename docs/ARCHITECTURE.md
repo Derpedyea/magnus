@@ -92,7 +92,7 @@ Each store holds one kind of data:
 ```
 auth_users(id, name, email, role, banned, …)                  ← Better Auth + admin plugin; email = where codes go
 auth_sessions, auth_accounts, auth_verifications, …          ← Better Auth's own
-settings(key, value)                                         ← install (account, Worker name), session secret
+settings(key, value)                                         ← install (account, Worker name), session secret, saved Cloudflare token (encrypted)
 domains(name, zone_id, receiving, sending, catch_all_mailbox_id)
 mailboxes(id, name)                                          ← id = Durable Object name
 mailbox_members(mailbox_id, user_id, role)                   ← user_id → auth_users; everyone gets their own
@@ -129,6 +129,7 @@ raw/2026/09/26/<ingestId>.eml          raw inbound, shared across fan-out, kept 
 m/<mailboxId>/<messageId>/body.html     HTML body (served through the sanitizer)
 m/<mailboxId>/<messageId>/att/<attId>   attachments (inbound, and outbound once sent)
 uploads/<mailboxId>/<uuid>              composer uploads; a lifecycle rule (DEPLOY.md) can reap abandoned ones
+keys/<uuid>                             the key to the saved Cloudflare token, apart from its ciphertext in D1
 ```
 
 Everything a mailbox owns sits under `m/<mailboxId>/`, so deleting a mailbox (removing a person) is a prefix delete. The raw archive
@@ -270,7 +271,12 @@ Email Routing on the zone (removing another provider's MX records only after the
 rule sending every address to this Worker, Email Sending on the domain, and an event subscription from Email
 Sending to the queue this Worker consumes but doesn't produce to. The directory's `receiving` and `sending`
 flags follow what Cloudflare reports after every step. Setup and the admin Domains page run the same steps.
-Tokens are used for the request they arrive with and never stored.
+
+The token setup is given is saved, so admins don't paste one again: AES-GCM-encrypted in `settings`, under a
+fresh key per save kept in R2 (`keys/<uuid>`), so neither store alone reveals it (`worker/settings.ts`). The
+browser never holds it after that; admin endpoints read it server-side, and replacing it first checks that the
+new one can see this install. Setup never reads the saved token, since pasting one is how setup proves
+ownership.
 
 ### 5.3 Rendering untrusted HTML
 

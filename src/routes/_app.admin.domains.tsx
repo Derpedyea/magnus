@@ -1,6 +1,5 @@
 import type { DirectoryDomain, DirectoryMailbox } from "#shared";
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { useSelector } from "@tanstack/react-store";
 import { createFileRoute } from "@tanstack/react-router";
 import { EllipsisIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
@@ -24,7 +23,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { adminApi, errorMessage } from "../api";
-import { cloudflareToken, setCloudflareToken } from "../cloudflare-token";
 import { AdminPage } from "../components/AdminPage";
 import { ConnectChecklist } from "../components/ConnectChecklist";
 import { MailHostLabel } from "../components/MailHostLabel";
@@ -39,16 +37,19 @@ export const Route = createFileRoute("/_app/admin/domains")({ component: Domains
 const REJECT = "reject";
 
 function Domains() {
-	const { domains, mailboxes } = useSuspenseQuery(directoryQuery).data;
-	const token = useSelector(cloudflareToken, (t) => t);
+	const { domains, mailboxes, cloudflareTokenSaved } = useSuspenseQuery(directoryQuery).data;
 	const connect = useDomainConnect();
 	const [connecting, setConnecting] = useState<{ domain: string; moveMail: boolean } | null>(null);
+	/** "Use a different token": ask again even though one is saved. */
+	const [replacing, setReplacing] = useState(false);
 	const [adding, setAdding] = useState(false);
+	const qc = useQueryClient();
+	const forget = useMutation({ mutationFn: adminApi.forgetToken, onSuccess: () => qc.invalidateQueries({ queryKey: ["admin"] }) });
 
 	/** Opens the checklist for a domain and, if there's a token to do it with, starts turning it on. */
 	const turnOn = (domain: string, moveMail: boolean) => {
 		setConnecting({ domain, moveMail });
-		if (token) connect.run({ token, domain, moveMail });
+		if (cloudflareTokenSaved) connect.run({ domain, moveMail });
 	};
 
 	return (
@@ -82,29 +83,43 @@ function Domains() {
 				</Table>
 			)}
 
+			{cloudflareTokenSaved ? (
+				<p className="flex items-center gap-2 text-muted-foreground">
+					Cloudflare token saved.
+					<Button variant="link" className="h-auto p-0 font-normal text-foreground underline" onClick={() => forget.mutate()} disabled={forget.isPending}>
+						Forget it
+					</Button>
+				</p>
+			) : null}
+
 			<AddDomainDialog
 				open={adding}
 				onOpenChange={setAdding}
 				existing={domains.map((d) => d.name)}
+				tokenSaved={cloudflareTokenSaved}
 				onAdded={(domain, moveMail) => {
 					setAdding(false);
 					turnOn(domain, moveMail);
 				}}
 			/>
 
-			<Dialog open={connecting !== null} onOpenChange={(open) => !open && setConnecting(null)}>
+			<Dialog
+				open={connecting !== null}
+				onOpenChange={(open) => {
+					if (open) return;
+					setConnecting(null);
+					setReplacing(false);
+				}}
+			>
 				<DialogContent>
 					<DialogHeader>
 						<DialogTitle>Turn on {connecting?.domain}</DialogTitle>
 					</DialogHeader>
-					{!connecting ? null : !token ? (
-						<TokenForm
-							pending={false}
-							error={undefined}
-							submitLabel="Continue"
-							onSubmit={(value) => {
-								setCloudflareToken(value);
-								connect.run({ token: value, ...connecting });
+					{!connecting ? null : !cloudflareTokenSaved || replacing ? (
+						<SaveTokenForm
+							onSaved={() => {
+								setReplacing(false);
+								connect.run(connecting);
 							}}
 						/>
 					) : (
@@ -113,8 +128,9 @@ function Domains() {
 							connect={connect}
 							onRun={(moveMail) => {
 								setConnecting({ ...connecting, moveMail });
-								connect.run({ token, domain: connecting.domain, moveMail });
+								connect.run({ domain: connecting.domain, moveMail });
 							}}
+							onReplaceToken={() => setReplacing(true)}
 							moveMail={connecting.moveMail}
 						/>
 					)}
@@ -124,7 +140,26 @@ function Domains() {
 	);
 }
 
-function ConnectBody(props: { domain: string; moveMail: boolean; connect: ReturnType<typeof useDomainConnect>; onRun: (moveMail: boolean) => void }) {
+/** Paste a token; once it's saved (and the directory knows), carry on. */
+function SaveTokenForm(props: { onSaved?: () => void }) {
+	const qc = useQueryClient();
+	const save = useMutation({
+		mutationFn: adminApi.saveToken,
+		onSuccess: async () => {
+			await qc.invalidateQueries({ queryKey: ["admin"] });
+			props.onSaved?.();
+		},
+	});
+	return <TokenForm pending={save.isPending} error={save.error ? errorMessage(save.error) : undefined} submitLabel="Continue" onSubmit={save.mutate} />;
+}
+
+function ConnectBody(props: {
+	domain: string;
+	moveMail: boolean;
+	connect: ReturnType<typeof useDomainConnect>;
+	onRun: (moveMail: boolean) => void;
+	onReplaceToken: () => void;
+}) {
 	const { steps, running, done, started } = props.connect;
 	const blocked = steps.routing?.state === "failed" && "needsMoveMail" in steps.routing && steps.routing.needsMoveMail;
 	return (
@@ -139,7 +174,7 @@ function ConnectBody(props: { domain: string; moveMail: boolean; connect: Return
 							Check again
 						</Button>
 					)}
-					<Button variant="ghost" onClick={() => setCloudflareToken("")}>
+					<Button variant="ghost" onClick={props.onReplaceToken}>
 						Use a different token
 					</Button>
 				</DialogFooter>
@@ -235,12 +270,17 @@ function DomainRow(props: { domain: DirectoryDomain; mailboxes: DirectoryMailbox
 	);
 }
 
-function AddDomainDialog(props: { open: boolean; onOpenChange: (open: boolean) => void; existing: string[]; onAdded: (domain: string, moveMail: boolean) => void }) {
-	const token = useSelector(cloudflareToken, (t) => t);
+function AddDomainDialog(props: {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+	existing: string[];
+	tokenSaved: boolean;
+	onAdded: (domain: string, moveMail: boolean) => void;
+}) {
 	const zones = useQuery({
-		queryKey: ["admin", "zones", token],
-		queryFn: () => adminApi.zones(token),
-		enabled: props.open && token !== "",
+		queryKey: ["admin", "zones"],
+		queryFn: adminApi.zones,
+		enabled: props.open && props.tokenSaved,
 		select: (data) => data.zones.filter((z) => !props.existing.includes(z.name)),
 	});
 	const [picked, setPicked] = useState("");
@@ -250,7 +290,7 @@ function AddDomainDialog(props: { open: boolean; onOpenChange: (open: boolean) =
 	const elsewhere = zone?.mail.kind === "other" ? zone.mail.provider : null;
 	const qc = useQueryClient();
 	const add = useMutation({
-		mutationFn: (zoneId: string) => adminApi.addDomain(token, zoneId),
+		mutationFn: adminApi.addDomain,
 		onSuccess: async ({ name }) => {
 			await qc.invalidateQueries({ queryKey: ["admin"] });
 			props.onAdded(name, moveMail);
@@ -264,8 +304,8 @@ function AddDomainDialog(props: { open: boolean; onOpenChange: (open: boolean) =
 					<DialogTitle>Add a domain</DialogTitle>
 				</DialogHeader>
 				<div className="flex flex-col gap-4 text-sm">
-					{!token ? (
-						<TokenForm pending={false} error={undefined} submitLabel="Continue" onSubmit={setCloudflareToken} />
+					{!props.tokenSaved ? (
+						<SaveTokenForm />
 					) : zones.isPending ? (
 						<Spinner className="text-muted-foreground" />
 					) : zones.isError ? (
@@ -299,7 +339,7 @@ function AddDomainDialog(props: { open: boolean; onOpenChange: (open: boolean) =
 						</>
 					)}
 				</div>
-				{token && zones.data?.length ? (
+				{props.tokenSaved && zones.data?.length ? (
 					<DialogFooter>
 						<Button onClick={() => zone && add.mutate(zone.id)} disabled={!zone || add.isPending || (Boolean(elsewhere) && !moveMail)}>
 							{add.isPending ? <Spinner data-icon="inline-start" /> : null}

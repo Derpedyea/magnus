@@ -3,8 +3,8 @@ import { z } from "zod";
 import { optional } from "./optional";
 import type { Install } from "./settings";
 
-// The few Cloudflare API calls setup and the admin pages make, with the token someone pasted. The token is used
-// for the request it arrived with and never stored.
+// The few Cloudflare API calls setup and the admin pages make: setup with the token just pasted, admin pages with
+// the one saved encrypted (settings.ts).
 
 const API = "https://api.cloudflare.com/client/v4";
 

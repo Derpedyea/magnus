@@ -4,11 +4,11 @@ import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "./api";
 import { auth } from "./auth";
-import { cloudflare, getZone, listZones } from "./cloudflare";
+import { type Cloudflare, cloudflare, CloudflareError, findInstall, getZone, listZones } from "./cloudflare";
 import { type DomainContext, domainStatus, runStep } from "./connect";
 import { addAddress, addDomain, createMailbox, deleteMailboxes, getDirectory, getDomain, removeAddress, removeDomain, setCatchAll, soleMailboxes } from "./directory";
-import { getInstall } from "./settings";
-import { LocalPartSchema, TokenSchema } from "./setup";
+import { forgetCloudflareToken, getInstall, loadCloudflareToken, saveCloudflareToken } from "./settings";
+import { LocalPartSchema, NOT_THIS_INSTALL, TokenSchema } from "./setup";
 
 /**
  * Domains, people, and addresses, for admins. Role changes and suspensions go straight from the browser to
@@ -23,7 +23,7 @@ admin.use("*", async (c, next) => {
 
 admin.get("/directory", async (c) => c.json(await getDirectory(c.env.DIRECTORY)));
 
-// ─── Domains (Cloudflare calls carry the pasted token) ────────────────────────
+// ─── Domains (Cloudflare calls use the saved token) ───────────────────────────
 
 async function install(c: Context<AppEnv>) {
 	const found = await getInstall(c.env.DIRECTORY);
@@ -31,38 +31,57 @@ async function install(c: Context<AppEnv>) {
 	return found;
 }
 
-admin.post("/zones", zValidator("json", TokenSchema), async (c) => {
-	const { accountId } = await install(c);
-	return c.json({ zones: await listZones(cloudflare(c.req.valid("json").token), accountId) });
+/** The page asks for a token when the directory says none is saved, so this only fails if it was just forgotten. */
+async function savedCloudflare(c: Context<AppEnv>): Promise<Cloudflare> {
+	const token = await loadCloudflareToken(c.env);
+	if (!token) throw new CloudflareError("Paste a Cloudflare API token first.");
+	return cloudflare(token);
+}
+
+/** Saves a token once it's shown to belong to the account this install runs in, replacing any saved before. */
+admin.put("/cloudflare-token", zValidator("json", TokenSchema), async (c) => {
+	const { token } = c.req.valid("json");
+	const found = await findInstall(cloudflare(token), c.env.CF_VERSION_METADATA.id);
+	if (found?.accountId !== (await install(c)).accountId) return c.json({ error: NOT_THIS_INSTALL }, 403);
+	await saveCloudflareToken(c.env, token);
+	return c.body(null, 204);
 });
 
-admin.post("/domains", zValidator("json", TokenSchema.extend({ zoneId: z.string().min(1) })), async (c) => {
-	const { token, zoneId } = c.req.valid("json");
-	const zone = await getZone(cloudflare(token), (await install(c)).accountId, zoneId);
+admin.delete("/cloudflare-token", async (c) => {
+	await forgetCloudflareToken(c.env);
+	return c.body(null, 204);
+});
+
+admin.get("/zones", async (c) => {
+	const { accountId } = await install(c);
+	return c.json({ zones: await listZones(await savedCloudflare(c), accountId) });
+});
+
+admin.post("/domains", zValidator("json", z.object({ zoneId: z.string().min(1) })), async (c) => {
+	const zone = await getZone(await savedCloudflare(c), (await install(c)).accountId, c.req.valid("json").zoneId);
 	if (!zone) return c.json({ error: "That domain isn't in this Cloudflare account." }, 404);
 	await addDomain(c.env.DIRECTORY, zone.name, zone.id);
 	return c.json({ name: zone.name }, 201);
 });
 
-async function domainContext(c: Context<AppEnv>, token: string): Promise<DomainContext | null> {
+async function domainContext(c: Context<AppEnv>): Promise<DomainContext | null> {
 	const domain = await getDomain(c.env.DIRECTORY, c.req.param("domain") ?? "");
 	if (!domain?.zoneId) return null;
-	return { cf: cloudflare(token), db: c.env.DIRECTORY, install: await install(c), domain: domain.name, zoneId: domain.zoneId };
+	return { cf: await savedCloudflare(c), db: c.env.DIRECTORY, install: await install(c), domain: domain.name, zoneId: domain.zoneId };
 }
 
-admin.post("/domains/:domain/status", zValidator("json", TokenSchema), async (c) => {
-	const ctx = await domainContext(c, c.req.valid("json").token);
+admin.post("/domains/:domain/status", async (c) => {
+	const ctx = await domainContext(c);
 	return ctx ? c.json(await domainStatus(ctx)) : c.json({ error: "Not found" }, 404);
 });
 
 admin.post(
 	"/domains/:domain/steps/:step",
 	zValidator("param", z.object({ domain: z.string(), step: z.enum(STEP_IDS) })),
-	zValidator("json", TokenSchema.extend({ moveMail: z.boolean().optional() })),
+	zValidator("json", z.object({ moveMail: z.boolean().optional() })),
 	async (c) => {
-		const { token, moveMail } = c.req.valid("json");
-		const ctx = await domainContext(c, token);
-		return ctx ? c.json(await runStep(ctx, c.req.valid("param").step, { moveMail })) : c.json({ error: "Not found" }, 404);
+		const ctx = await domainContext(c);
+		return ctx ? c.json(await runStep(ctx, c.req.valid("param").step, { moveMail: c.req.valid("json").moveMail })) : c.json({ error: "Not found" }, 404);
 	},
 );
 

@@ -1,4 +1,4 @@
-import { PERMISSIONS, tokenTemplateUrl } from "#shared";
+import { tokenTemplateUrl } from "#shared";
 import { ExternalLinkIcon } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -6,12 +6,7 @@ import { FieldError } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 
-/** Permissions Cloudflare's token page can't pre-select, so people add them by hand. */
-const BY_HAND = Object.values(PERMISSIONS)
-	.filter((p) => !p.key)
-	.map((p) => p.label);
-
-/** Create a Cloudflare API token with the right permissions, then paste it. */
+/** Create a Cloudflare API token (the link fills in every permission), then paste it. */
 export function TokenForm(props: { onSubmit: (token: string) => void; pending: boolean; error: string | undefined; submitLabel?: string }) {
 	const [token, setToken] = useState("");
 	return (
@@ -27,7 +22,7 @@ export function TokenForm(props: { onSubmit: (token: string) => void; pending: b
 					Create a token
 					<ExternalLinkIcon data-icon="inline-end" />
 				</Button>
-				<p className="text-muted-foreground">Before creating it, also add {BY_HAND.join(" and ")}.</p>
+				<p className="text-pretty text-muted-foreground">Magnus keeps it encrypted, so you only do this once.</p>
 			</div>
 			<div className="flex gap-2">
 				<Input

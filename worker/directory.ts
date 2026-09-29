@@ -7,6 +7,7 @@ import {
 	ulid,
 	type User,
 } from "#shared";
+import { hasCloudflareToken } from "./settings";
 
 // Typed queries over the D1 directory (migrations/0001_init.sql): who can sign in, which domains and addresses
 // exist, and which mailbox each address delivers to. People are Better Auth's auth_users.
@@ -134,7 +135,7 @@ export async function loginCodeSender(db: D1Database): Promise<string | null> {
 
 /** Everything the admin pages show. Small enough to read whole. */
 export async function getDirectory(db: D1Database): Promise<Directory> {
-	const [domains, people, mailboxes, members, addresses, routes] = await Promise.all([
+	const [domains, people, mailboxes, members, addresses, routes, cloudflareTokenSaved] = await Promise.all([
 		db
 			.prepare(`SELECT name, zone_id, receiving, sending, catch_all_mailbox_id FROM domains ORDER BY created_at`)
 			.all<{ name: string; zone_id: string | null; receiving: number; sending: number; catch_all_mailbox_id: string | null }>(),
@@ -143,6 +144,7 @@ export async function getDirectory(db: D1Database): Promise<Directory> {
 		db.prepare(`SELECT mailbox_id, user_id FROM mailbox_members`).all<{ mailbox_id: string; user_id: string }>(),
 		db.prepare(`SELECT address, domain, display_name FROM addresses ORDER BY domain, address`).all<{ address: string; domain: string; display_name: string | null }>(),
 		db.prepare(`SELECT address, mailbox_id FROM address_routes`).all<{ address: string; mailbox_id: string }>(),
+		hasCloudflareToken(db),
 	]);
 	return {
 		domains: domains.results.map(
@@ -160,6 +162,7 @@ export async function getDirectory(db: D1Database): Promise<Directory> {
 				mailboxIds: routes.results.filter((r) => r.address === a.address).map((r) => r.mailbox_id),
 			}),
 		),
+		cloudflareTokenSaved,
 	};
 }
 
