@@ -5,11 +5,10 @@ import { lazy, Suspense, useState } from "react";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { closeDraft, compose, openDraft } from "./compose";
+import { closeDraft, compose, openDraft, withSignature } from "./compose";
 import { AccountMenu } from "./components/AccountMenu";
 import { Centered } from "./components/Centered";
 import { Composer } from "./components/Composer";
-import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { useAccount, useLive, useScope } from "./hooks";
 
@@ -23,7 +22,6 @@ export function App() {
 	const q = useSearch({ strict: false, select: (s) => s.q });
 	const [search, setSearch] = useState(q ?? "");
 	const draft = useSelector(compose, (s) => s);
-	const [settingsOpen, setSettingsOpen] = useState(false);
 	const live = useLive(mailboxes.map((m) => m.id));
 	const status = live ? "Live updates connected" : "Reconnecting…";
 
@@ -33,13 +31,22 @@ export function App() {
 	const newDraft = () => {
 		const selected = new Set(scope);
 		const from = identities.find((i) => selected.has(i.address)) ?? identities[0];
-		openDraft({ mailboxId: from?.mailboxId ?? firstMailbox.id, from: from?.address ?? "", to: "", cc: "", bcc: "", subject: "", text: "", attachments: [] });
+		openDraft({
+			mailboxId: from?.mailboxId ?? firstMailbox.id,
+			from: from?.address ?? "",
+			to: [],
+			cc: [],
+			bcc: [],
+			subject: "",
+			text: withSignature("", null, from?.signature ?? null),
+			attachments: [],
+		});
 	};
 
 	return (
 		// The sidebar saves its open state in this cookie; read it back so a collapsed rail stays collapsed.
 		<SidebarProvider defaultOpen={!document.cookie.includes("sidebar_state=false")} className="h-full text-sm">
-			<Sidebar mailboxes={mailboxes} addresses={addresses} colors={colors} isAdmin={user.isAdmin} onCompose={newDraft} onSettings={() => setSettingsOpen(true)} />
+			<Sidebar mailboxes={mailboxes} addresses={addresses} colors={colors} isAdmin={user.isAdmin} onCompose={newDraft} />
 			<SidebarInset className="min-w-0">
 				<header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
 					<SidebarTrigger />
@@ -72,7 +79,6 @@ export function App() {
 			</SidebarInset>
 
 			{draft ? <Composer identities={identities} initial={draft} onClose={closeDraft} /> : null}
-			<SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
 
 			<Suspense>
 				<Devtools />

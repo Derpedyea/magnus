@@ -69,22 +69,36 @@ export async function getUserMailboxes(db: D1Database, userId: string): Promise<
 			.all<Omit<MailboxMembership, "addresses">>(),
 		db
 			.prepare(
-				`SELECT r.mailbox_id, a.address, a.display_name, r.can_send AND d.sending AS can_send
+				`SELECT r.mailbox_id, a.address, a.display_name, r.can_send AND d.sending AS can_send, s.text AS signature
 				 FROM mailbox_members mm
 				 JOIN address_routes r ON r.mailbox_id = mm.mailbox_id
 				 JOIN addresses a ON a.address = r.address
 				 JOIN domains d ON d.name = a.domain
+				 LEFT JOIN signatures s ON s.user_id = mm.user_id AND s.address = a.address
 				 WHERE mm.user_id = ?1 AND a.enabled = 1 ORDER BY a.created_at, a.rowid`,
 			)
 			.bind(userId)
-			.all<{ mailbox_id: string; address: string; display_name: string | null; can_send: number }>(),
+			.all<{ mailbox_id: string; address: string; display_name: string | null; can_send: number; signature: string | null }>(),
 	]);
 	return mailboxes.results.map((m) => ({
 		...m,
 		addresses: addresses.results
 			.filter((a) => a.mailbox_id === m.id)
-			.map((a) => ({ address: a.address, displayName: a.display_name, canSend: a.can_send === 1 })),
+			.map((a) => ({ address: a.address, displayName: a.display_name, canSend: a.can_send === 1, signature: a.signature })),
 	}));
+}
+
+/** Blank clears it. Returns what was saved. */
+export async function setSignature(db: D1Database, userId: string, address: string, text: string): Promise<string | null> {
+	// The composer adds the "-- " delimiter itself, so one pasted from another client would show twice.
+	const signature = text.trim().replace(/^--[ \t]*\n/, "").trim() || null;
+	await (signature
+		? db
+				.prepare(`INSERT INTO signatures (user_id, address, text) VALUES (?1, ?2, ?3) ON CONFLICT (user_id, address) DO UPDATE SET text = excluded.text`)
+				.bind(userId, address, signature)
+		: db.prepare(`DELETE FROM signatures WHERE user_id = ?1 AND address = ?2`).bind(userId, address)
+	).run();
+	return signature;
 }
 
 export async function isMailboxMember(db: D1Database, userId: string, mailboxId: string): Promise<boolean> {

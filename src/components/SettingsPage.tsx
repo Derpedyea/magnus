@@ -1,5 +1,5 @@
-/** An admin page: its title, the one action that adds things, and the list. */
-export function AdminPage(props: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
+/** A settings or admin page: its title, the one action that adds things, and the page itself. */
+export function SettingsPage(props: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
 	return (
 		<div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-6">
 			<div className="flex min-h-8 items-center justify-between gap-4">

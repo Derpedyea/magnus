@@ -22,10 +22,10 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { adminApi, errorMessage } from "../api";
 import { AddressInput } from "../components/AddressInput";
-import { AdminPage } from "../components/AdminPage";
+import { SettingsPage } from "../components/SettingsPage";
 import { directoryQuery } from "../queries";
 
-export const Route = createFileRoute("/_app/admin/addresses")({ component: Addresses });
+export const Route = createFileRoute("/_app/_settings/admin/addresses")({ component: Addresses });
 
 function Addresses() {
 	const { addresses, mailboxes, domains } = useSuspenseQuery(directoryQuery).data;
@@ -33,7 +33,7 @@ function Addresses() {
 	const names = new Map(mailboxes.map((m) => [m.id, m.name]));
 
 	return (
-		<AdminPage
+		<SettingsPage
 			title="Addresses"
 			action={
 				<Button onClick={() => setAdding(true)} disabled={domains.length === 0}>
@@ -61,7 +61,7 @@ function Addresses() {
 				</Table>
 			)}
 			<AddAddressDialog open={adding} onOpenChange={setAdding} domains={domains} mailboxes={mailboxes} />
-		</AdminPage>
+		</SettingsPage>
 	);
 }
 

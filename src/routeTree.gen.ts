@@ -13,14 +13,18 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SetupRouteImport } from './routes/setup'
 import { Route as AppMailRouteImport } from './routes/_app._mail'
-import { Route as AppAdminRouteImport } from './routes/_app.admin'
+import { Route as AppSettingsRouteImport } from './routes/_app._settings'
 import { Route as AppMailIndexRouteImport } from './routes/_app._mail.index'
 import { Route as AppMailViewRouteImport } from './routes/_app._mail.$view'
-import { Route as AppAdminIndexRouteImport } from './routes/_app.admin.index'
-import { Route as AppAdminAddressesRouteImport } from './routes/_app.admin.addresses'
-import { Route as AppAdminDomainsRouteImport } from './routes/_app.admin.domains'
-import { Route as AppAdminPeopleRouteImport } from './routes/_app.admin.people'
+import { Route as AppSettingsAdminRouteImport } from './routes/_app._settings.admin'
 import { Route as AppMailViewIndexRouteImport } from './routes/_app._mail.$view.index'
+import { Route as AppSettingsAdminIndexRouteImport } from './routes/_app._settings.admin.index'
+import { Route as AppSettingsAdminAddressesRouteImport } from './routes/_app._settings.admin.addresses'
+import { Route as AppSettingsAdminDomainsRouteImport } from './routes/_app._settings.admin.domains'
+import { Route as AppSettingsAdminPeopleRouteImport } from './routes/_app._settings.admin.people'
+import { Route as AppSettingsSettingsIndexRouteImport } from './routes/_app._settings.settings.index'
+import { Route as AppSettingsSettingsAppearanceRouteImport } from './routes/_app._settings.settings.appearance'
+import { Route as AppSettingsSettingsSignaturesRouteImport } from './routes/_app._settings.settings.signatures'
 import { Route as AppMailViewMailboxIdThreadIdRouteImport } from './routes/_app._mail.$view.$mailboxId.$threadId'
 
 const AppRoute = AppRouteImport.update({
@@ -41,9 +45,8 @@ const AppMailRoute = AppMailRouteImport.update({
   id: '/_mail',
   getParentRoute: () => AppRoute,
 } as any)
-const AppAdminRoute = AppAdminRouteImport.update({
-  id: '/admin',
-  path: '/admin',
+const AppSettingsRoute = AppSettingsRouteImport.update({
+  id: '/_settings',
   getParentRoute: () => AppRoute,
 } as any)
 const AppMailIndexRoute = AppMailIndexRouteImport.update({
@@ -56,31 +59,55 @@ const AppMailViewRoute = AppMailViewRouteImport.update({
   path: '/$view',
   getParentRoute: () => AppMailRoute,
 } as any)
-const AppAdminIndexRoute = AppAdminIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => AppAdminRoute,
-} as any)
-const AppAdminAddressesRoute = AppAdminAddressesRouteImport.update({
-  id: '/addresses',
-  path: '/addresses',
-  getParentRoute: () => AppAdminRoute,
-} as any)
-const AppAdminDomainsRoute = AppAdminDomainsRouteImport.update({
-  id: '/domains',
-  path: '/domains',
-  getParentRoute: () => AppAdminRoute,
-} as any)
-const AppAdminPeopleRoute = AppAdminPeopleRouteImport.update({
-  id: '/people',
-  path: '/people',
-  getParentRoute: () => AppAdminRoute,
+const AppSettingsAdminRoute = AppSettingsAdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
+  getParentRoute: () => AppSettingsRoute,
 } as any)
 const AppMailViewIndexRoute = AppMailViewIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AppMailViewRoute,
 } as any)
+const AppSettingsAdminIndexRoute = AppSettingsAdminIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppSettingsAdminRoute,
+} as any)
+const AppSettingsAdminAddressesRoute =
+  AppSettingsAdminAddressesRouteImport.update({
+    id: '/addresses',
+    path: '/addresses',
+    getParentRoute: () => AppSettingsAdminRoute,
+  } as any)
+const AppSettingsAdminDomainsRoute = AppSettingsAdminDomainsRouteImport.update({
+  id: '/domains',
+  path: '/domains',
+  getParentRoute: () => AppSettingsAdminRoute,
+} as any)
+const AppSettingsAdminPeopleRoute = AppSettingsAdminPeopleRouteImport.update({
+  id: '/people',
+  path: '/people',
+  getParentRoute: () => AppSettingsAdminRoute,
+} as any)
+const AppSettingsSettingsIndexRoute =
+  AppSettingsSettingsIndexRouteImport.update({
+    id: '/settings/',
+    path: '/settings/',
+    getParentRoute: () => AppSettingsRoute,
+  } as any)
+const AppSettingsSettingsAppearanceRoute =
+  AppSettingsSettingsAppearanceRouteImport.update({
+    id: '/settings/appearance',
+    path: '/settings/appearance',
+    getParentRoute: () => AppSettingsRoute,
+  } as any)
+const AppSettingsSettingsSignaturesRoute =
+  AppSettingsSettingsSignaturesRouteImport.update({
+    id: '/settings/signatures',
+    path: '/settings/signatures',
+    getParentRoute: () => AppSettingsRoute,
+  } as any)
 const AppMailViewMailboxIdThreadIdRoute =
   AppMailViewMailboxIdThreadIdRouteImport.update({
     id: '/$mailboxId/$threadId',
@@ -92,24 +119,30 @@ export interface FileRoutesByFullPath {
   '/': typeof AppMailIndexRoute
   '/login': typeof LoginRoute
   '/setup': typeof SetupRoute
-  '/admin': typeof AppAdminRouteWithChildren
   '/$view': typeof AppMailViewRouteWithChildren
-  '/admin/addresses': typeof AppAdminAddressesRoute
-  '/admin/domains': typeof AppAdminDomainsRoute
-  '/admin/people': typeof AppAdminPeopleRoute
-  '/admin/': typeof AppAdminIndexRoute
+  '/admin': typeof AppSettingsAdminRouteWithChildren
+  '/admin/addresses': typeof AppSettingsAdminAddressesRoute
+  '/admin/domains': typeof AppSettingsAdminDomainsRoute
+  '/admin/people': typeof AppSettingsAdminPeopleRoute
+  '/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
+  '/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
   '/$view/': typeof AppMailViewIndexRoute
+  '/admin/': typeof AppSettingsAdminIndexRoute
+  '/settings/': typeof AppSettingsSettingsIndexRoute
   '/$view/$mailboxId/$threadId': typeof AppMailViewMailboxIdThreadIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof AppMailIndexRoute
   '/login': typeof LoginRoute
   '/setup': typeof SetupRoute
-  '/admin/addresses': typeof AppAdminAddressesRoute
-  '/admin/domains': typeof AppAdminDomainsRoute
-  '/admin/people': typeof AppAdminPeopleRoute
-  '/admin': typeof AppAdminIndexRoute
+  '/admin/addresses': typeof AppSettingsAdminAddressesRoute
+  '/admin/domains': typeof AppSettingsAdminDomainsRoute
+  '/admin/people': typeof AppSettingsAdminPeopleRoute
+  '/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
+  '/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
   '/$view': typeof AppMailViewIndexRoute
+  '/admin': typeof AppSettingsAdminIndexRoute
+  '/settings': typeof AppSettingsSettingsIndexRoute
   '/$view/$mailboxId/$threadId': typeof AppMailViewMailboxIdThreadIdRoute
 }
 export interface FileRoutesById {
@@ -118,14 +151,18 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/setup': typeof SetupRoute
   '/_app/_mail': typeof AppMailRouteWithChildren
-  '/_app/admin': typeof AppAdminRouteWithChildren
+  '/_app/_settings': typeof AppSettingsRouteWithChildren
   '/_app/_mail/$view': typeof AppMailViewRouteWithChildren
-  '/_app/admin/addresses': typeof AppAdminAddressesRoute
-  '/_app/admin/domains': typeof AppAdminDomainsRoute
-  '/_app/admin/people': typeof AppAdminPeopleRoute
+  '/_app/_settings/admin': typeof AppSettingsAdminRouteWithChildren
   '/_app/_mail/': typeof AppMailIndexRoute
-  '/_app/admin/': typeof AppAdminIndexRoute
+  '/_app/_settings/admin/addresses': typeof AppSettingsAdminAddressesRoute
+  '/_app/_settings/admin/domains': typeof AppSettingsAdminDomainsRoute
+  '/_app/_settings/admin/people': typeof AppSettingsAdminPeopleRoute
+  '/_app/_settings/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
+  '/_app/_settings/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
   '/_app/_mail/$view/': typeof AppMailViewIndexRoute
+  '/_app/_settings/admin/': typeof AppSettingsAdminIndexRoute
+  '/_app/_settings/settings/': typeof AppSettingsSettingsIndexRoute
   '/_app/_mail/$view/$mailboxId/$threadId': typeof AppMailViewMailboxIdThreadIdRoute
 }
 export interface FileRouteTypes {
@@ -134,13 +171,16 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/setup'
-    | '/admin'
     | '/$view'
+    | '/admin'
     | '/admin/addresses'
     | '/admin/domains'
     | '/admin/people'
-    | '/admin/'
+    | '/settings/appearance'
+    | '/settings/signatures'
     | '/$view/'
+    | '/admin/'
+    | '/settings/'
     | '/$view/$mailboxId/$threadId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -150,8 +190,11 @@ export interface FileRouteTypes {
     | '/admin/addresses'
     | '/admin/domains'
     | '/admin/people'
-    | '/admin'
+    | '/settings/appearance'
+    | '/settings/signatures'
     | '/$view'
+    | '/admin'
+    | '/settings'
     | '/$view/$mailboxId/$threadId'
   id:
     | '__root__'
@@ -159,14 +202,18 @@ export interface FileRouteTypes {
     | '/login'
     | '/setup'
     | '/_app/_mail'
-    | '/_app/admin'
+    | '/_app/_settings'
     | '/_app/_mail/$view'
-    | '/_app/admin/addresses'
-    | '/_app/admin/domains'
-    | '/_app/admin/people'
+    | '/_app/_settings/admin'
     | '/_app/_mail/'
-    | '/_app/admin/'
+    | '/_app/_settings/admin/addresses'
+    | '/_app/_settings/admin/domains'
+    | '/_app/_settings/admin/people'
+    | '/_app/_settings/settings/appearance'
+    | '/_app/_settings/settings/signatures'
     | '/_app/_mail/$view/'
+    | '/_app/_settings/admin/'
+    | '/_app/_settings/settings/'
     | '/_app/_mail/$view/$mailboxId/$threadId'
   fileRoutesById: FileRoutesById
 }
@@ -206,11 +253,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppMailRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/admin': {
-      id: '/_app/admin'
-      path: '/admin'
-      fullPath: '/admin'
-      preLoaderRoute: typeof AppAdminRouteImport
+    '/_app/_settings': {
+      id: '/_app/_settings'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/_mail/': {
@@ -227,33 +274,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppMailViewRouteImport
       parentRoute: typeof AppMailRoute
     }
-    '/_app/admin/': {
-      id: '/_app/admin/'
-      path: '/'
-      fullPath: '/admin/'
-      preLoaderRoute: typeof AppAdminIndexRouteImport
-      parentRoute: typeof AppAdminRoute
-    }
-    '/_app/admin/addresses': {
-      id: '/_app/admin/addresses'
-      path: '/addresses'
-      fullPath: '/admin/addresses'
-      preLoaderRoute: typeof AppAdminAddressesRouteImport
-      parentRoute: typeof AppAdminRoute
-    }
-    '/_app/admin/domains': {
-      id: '/_app/admin/domains'
-      path: '/domains'
-      fullPath: '/admin/domains'
-      preLoaderRoute: typeof AppAdminDomainsRouteImport
-      parentRoute: typeof AppAdminRoute
-    }
-    '/_app/admin/people': {
-      id: '/_app/admin/people'
-      path: '/people'
-      fullPath: '/admin/people'
-      preLoaderRoute: typeof AppAdminPeopleRouteImport
-      parentRoute: typeof AppAdminRoute
+    '/_app/_settings/admin': {
+      id: '/_app/_settings/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AppSettingsAdminRouteImport
+      parentRoute: typeof AppSettingsRoute
     }
     '/_app/_mail/$view/': {
       id: '/_app/_mail/$view/'
@@ -261,6 +287,55 @@ declare module '@tanstack/react-router' {
       fullPath: '/$view/'
       preLoaderRoute: typeof AppMailViewIndexRouteImport
       parentRoute: typeof AppMailViewRoute
+    }
+    '/_app/_settings/admin/': {
+      id: '/_app/_settings/admin/'
+      path: '/'
+      fullPath: '/admin/'
+      preLoaderRoute: typeof AppSettingsAdminIndexRouteImport
+      parentRoute: typeof AppSettingsAdminRoute
+    }
+    '/_app/_settings/admin/addresses': {
+      id: '/_app/_settings/admin/addresses'
+      path: '/addresses'
+      fullPath: '/admin/addresses'
+      preLoaderRoute: typeof AppSettingsAdminAddressesRouteImport
+      parentRoute: typeof AppSettingsAdminRoute
+    }
+    '/_app/_settings/admin/domains': {
+      id: '/_app/_settings/admin/domains'
+      path: '/domains'
+      fullPath: '/admin/domains'
+      preLoaderRoute: typeof AppSettingsAdminDomainsRouteImport
+      parentRoute: typeof AppSettingsAdminRoute
+    }
+    '/_app/_settings/admin/people': {
+      id: '/_app/_settings/admin/people'
+      path: '/people'
+      fullPath: '/admin/people'
+      preLoaderRoute: typeof AppSettingsAdminPeopleRouteImport
+      parentRoute: typeof AppSettingsAdminRoute
+    }
+    '/_app/_settings/settings/': {
+      id: '/_app/_settings/settings/'
+      path: '/settings'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof AppSettingsSettingsIndexRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
+    '/_app/_settings/settings/appearance': {
+      id: '/_app/_settings/settings/appearance'
+      path: '/settings/appearance'
+      fullPath: '/settings/appearance'
+      preLoaderRoute: typeof AppSettingsSettingsAppearanceRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
+    '/_app/_settings/settings/signatures': {
+      id: '/_app/_settings/settings/signatures'
+      path: '/settings/signatures'
+      fullPath: '/settings/signatures'
+      preLoaderRoute: typeof AppSettingsSettingsSignaturesRouteImport
+      parentRoute: typeof AppSettingsRoute
     }
     '/_app/_mail/$view/$mailboxId/$threadId': {
       id: '/_app/_mail/$view/$mailboxId/$threadId'
@@ -299,32 +374,49 @@ const AppMailRouteChildren: AppMailRouteChildren = {
 const AppMailRouteWithChildren =
   AppMailRoute._addFileChildren(AppMailRouteChildren)
 
-interface AppAdminRouteChildren {
-  AppAdminAddressesRoute: typeof AppAdminAddressesRoute
-  AppAdminDomainsRoute: typeof AppAdminDomainsRoute
-  AppAdminPeopleRoute: typeof AppAdminPeopleRoute
-  AppAdminIndexRoute: typeof AppAdminIndexRoute
+interface AppSettingsAdminRouteChildren {
+  AppSettingsAdminAddressesRoute: typeof AppSettingsAdminAddressesRoute
+  AppSettingsAdminDomainsRoute: typeof AppSettingsAdminDomainsRoute
+  AppSettingsAdminPeopleRoute: typeof AppSettingsAdminPeopleRoute
+  AppSettingsAdminIndexRoute: typeof AppSettingsAdminIndexRoute
 }
 
-const AppAdminRouteChildren: AppAdminRouteChildren = {
-  AppAdminAddressesRoute: AppAdminAddressesRoute,
-  AppAdminDomainsRoute: AppAdminDomainsRoute,
-  AppAdminPeopleRoute: AppAdminPeopleRoute,
-  AppAdminIndexRoute: AppAdminIndexRoute,
+const AppSettingsAdminRouteChildren: AppSettingsAdminRouteChildren = {
+  AppSettingsAdminAddressesRoute: AppSettingsAdminAddressesRoute,
+  AppSettingsAdminDomainsRoute: AppSettingsAdminDomainsRoute,
+  AppSettingsAdminPeopleRoute: AppSettingsAdminPeopleRoute,
+  AppSettingsAdminIndexRoute: AppSettingsAdminIndexRoute,
 }
 
-const AppAdminRouteWithChildren = AppAdminRoute._addFileChildren(
-  AppAdminRouteChildren,
+const AppSettingsAdminRouteWithChildren =
+  AppSettingsAdminRoute._addFileChildren(AppSettingsAdminRouteChildren)
+
+interface AppSettingsRouteChildren {
+  AppSettingsAdminRoute: typeof AppSettingsAdminRouteWithChildren
+  AppSettingsSettingsAppearanceRoute: typeof AppSettingsSettingsAppearanceRoute
+  AppSettingsSettingsSignaturesRoute: typeof AppSettingsSettingsSignaturesRoute
+  AppSettingsSettingsIndexRoute: typeof AppSettingsSettingsIndexRoute
+}
+
+const AppSettingsRouteChildren: AppSettingsRouteChildren = {
+  AppSettingsAdminRoute: AppSettingsAdminRouteWithChildren,
+  AppSettingsSettingsAppearanceRoute: AppSettingsSettingsAppearanceRoute,
+  AppSettingsSettingsSignaturesRoute: AppSettingsSettingsSignaturesRoute,
+  AppSettingsSettingsIndexRoute: AppSettingsSettingsIndexRoute,
+}
+
+const AppSettingsRouteWithChildren = AppSettingsRoute._addFileChildren(
+  AppSettingsRouteChildren,
 )
 
 interface AppRouteChildren {
   AppMailRoute: typeof AppMailRouteWithChildren
-  AppAdminRoute: typeof AppAdminRouteWithChildren
+  AppSettingsRoute: typeof AppSettingsRouteWithChildren
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppMailRoute: AppMailRouteWithChildren,
-  AppAdminRoute: AppAdminRouteWithChildren,
+  AppSettingsRoute: AppSettingsRouteWithChildren,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

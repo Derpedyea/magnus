@@ -100,12 +100,13 @@ mailbox_members(mailbox_id, user_id, role)                   ← user_id → aut
 addresses(address, domain, display_name, enabled)            ← normalized, no +tag
 address_routes(address, mailbox_id, can_send)                ← >1 row = group alias (e.g. family@)
 sender_blocks(pattern)                                       ← 'x@y.com' or '*@y.com', rejected at SMTP time
+signatures(user_id, address, text)                           ← per person and address they send as; the composer adds it
 ```
 
 ### Mailbox DO schema (`worker/mailbox/schema.ts`)
 
 `threads`, `messages`, `message_labels`, `message_addresses`, `attachments`, `thread_refs`, `outbox`, `deliveries`,
-`messages_fts` (FTS5, porter + unicode61). Migrations are an append-only array applied in `blockConcurrencyWhile`.
+`contacts`, `messages_fts` (FTS5, porter + unicode61). Migrations are an append-only array applied in `blockConcurrencyWhile`.
 
 Labels follow the Gmail model: they live on messages, and a thread appears in a view if any of its messages
 has the label. System labels are `inbox`, `sent`, `outbox`, `spam`, `trash`, `starred`. "Archive" means
@@ -122,6 +123,11 @@ sent from. List, search, and count reads take an optional address filter.
 `GET /api/threads`, `/api/search`, and `/api/counts` span every mailbox the user belongs to. The API fans
 out to each Mailbox DO and merges the results (`shared/scope.ts`); `?in=a@x,b@y` narrows the view
 to some addresses. Reads and writes on a single thread stay under `/api/mailboxes/:id/…`.
+
+`GET /api/contacts` fans out the same way. Each mailbox's `contacts` table remembers who it has written to
+(counted on send) and heard from (on ingest, spam aside), and the API merges them into one list of up to a
+thousand, people written to first (`shared/contacts.ts`). The composer fetches it once and matches what's typed
+locally, so suggestions need no round trip.
 
 ### R2 layout (`shared/keys.ts`)
 
@@ -379,19 +385,18 @@ The web app is the only client, so it has to be good on phones and good enough t
 3. **Drafts** (autosave into the DO), **forward** (with attachments), **retry failed sends**.
 4. **Keyboard shortcuts** (j/k, e archive, r reply, c compose, / search), **bulk select**, **infinite scroll**
    (the API already pages with `before`).
-5. **Contacts/autocomplete** built from sent and received addresses. **Signatures** per identity.
-6. **Mailbox import** from your previous provider (export to `.eml`, e.g. Proton's Import-Export app). Upload
+5. **Mailbox import** from your previous provider (export to `.eml`, e.g. Proton's Import-Export app). Upload
    the raw files to R2 and enqueue `InboundJob`s; the existing ingest path does the rest.
 
 **Later**
 
-7. **Rules and filters** per mailbox (from/to/subject → labels, skip inbox, auto-archive), evaluated in ingest.
-8. **Image proxy** through the Worker so "Show images" doesn't leak your IP.
-9. **Rich-text compose** (the composer is text-first today).
-10. **Workers AI**: spam and phishing scoring, category labels, thread summaries. Use **Vectorize** for
-    semantic search next to FTS5.
-11. **Vacation responder** via `env.EMAIL.send` (skip auto-submitted and list mail; honor `Auto-Submitted`).
-12. **DMARC aggregate report parsing** from the `rua` mailbox into a dashboard.
-13. **Retention/export**: per-label retention, full mailbox export (raw `.eml` is already in R2).
+6. **Rules and filters** per mailbox (from/to/subject → labels, skip inbox, auto-archive), evaluated in ingest.
+7. **Image proxy** through the Worker so "Show images" doesn't leak your IP.
+8. **Rich-text compose** (the composer is text-first today).
+9. **Workers AI**: spam and phishing scoring, category labels, thread summaries. Use **Vectorize** for
+   semantic search next to FTS5.
+10. **Vacation responder** via `env.EMAIL.send` (skip auto-submitted and list mail; honor `Auto-Submitted`).
+11. **DMARC aggregate report parsing** from the `rua` mailbox into a dashboard.
+12. **Retention/export**: per-label retention, full mailbox export (raw `.eml` is already in R2).
 
 **Decided against:** IMAP and JMAP servers (see §1).

@@ -24,11 +24,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { adminApi, authClient, errorMessage } from "../api";
 import { AddressInput } from "../components/AddressInput";
-import { AdminPage } from "../components/AdminPage";
+import { SettingsPage } from "../components/SettingsPage";
 import { useAccount } from "../hooks";
 import { directoryQuery } from "../queries";
 
-export const Route = createFileRoute("/_app/admin/people")({ component: People });
+export const Route = createFileRoute("/_app/_settings/admin/people")({ component: People });
 
 function People() {
 	const { people, mailboxes, addresses, domains } = useSuspenseQuery(directoryQuery).data;
@@ -42,7 +42,7 @@ function People() {
 	};
 
 	return (
-		<AdminPage
+		<SettingsPage
 			title="People"
 			action={
 				<Button onClick={() => setAdding(true)}>
@@ -67,7 +67,7 @@ function People() {
 				</TableBody>
 			</Table>
 			<AddPersonDialog open={adding} onOpenChange={setAdding} domains={domains} />
-		</AdminPage>
+		</SettingsPage>
 	);
 }
 

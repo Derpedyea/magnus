@@ -24,6 +24,8 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
 - **Real threading** by `Message-ID`/`References`, with a careful subject fallback. Replies thread in Gmail,
   Apple Mail, and Outlook too.
 - **Full-text search**, undo send, and a delivery badge on every sent message (delivered, bounced, …).
+- **Recipients autocomplete** from everyone you've written to or heard from, and each address you send as
+  can have its own signature.
 - **Previews** for photos, video, audio, and PDFs, in the app and on the page a file link opens. Video
   streams, so it plays and seeks without downloading first.
 - **Big files go as links.** Whatever doesn't fit in a message is sent as a download link, like Gmail's Drive

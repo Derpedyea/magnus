@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_SIGNATURE } from "./directory";
 
 /** Email Service: to + cc + bcc combined. */
 export const MAX_RECIPIENTS = 50;
@@ -45,6 +46,12 @@ export const ModifyThreadsSchema = z.object({
 
 /** Stops or resumes sharing a file sent as a link. The link itself never changes. */
 export const ShareLinkSchema = z.object({ shared: z.boolean() });
+
+/** Empty clears it. */
+export const SignatureSchema = z.object({
+	address: z.email(),
+	text: z.string().max(MAX_SIGNATURE),
+});
 
 export const MarkReadSchema = z.object({
 	threadIds: z.array(z.string()).min(1).max(500),

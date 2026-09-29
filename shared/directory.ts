@@ -11,11 +11,16 @@ export interface User {
 	isAdmin: boolean;
 }
 
+/** Characters. Room for a few lines, not a letterhead. */
+export const MAX_SIGNATURE = 2000;
+
 export interface MailboxAddress {
 	address: string;
 	displayName: string | null;
 	/** Routed here with can_send, on a domain that can send. */
 	canSend: boolean;
+	/** What the composer adds when you send as it. Yours alone, even on a shared address. */
+	signature: string | null;
 }
 
 export interface MailboxMembership {
