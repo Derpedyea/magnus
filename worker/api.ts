@@ -2,16 +2,17 @@ import { zValidator } from "@hono/zod-validator";
 import {
 	canMatch,
 	formatBytes,
-	interleave,
+	type ListCursor,
+	type ListPage,
 	type LocalRecipient,
 	localRecipients,
 	type MailboxQuery,
-	type MailboxThread,
 	MAX_UPLOAD_BYTES,
-	mergeByRecency,
 	mergeContacts,
 	mergeCounts,
+	mergePage,
 	normalizeAddress,
+	parseCursor,
 	planAttachments,
 	planScope,
 	r2Keys,
@@ -63,8 +64,10 @@ const PAGE = 50;
 const CONTACTS = 1000;
 
 const ScopeQuery = z.object({ in: z.string().optional() });
-const ThreadsQuery = ScopeQuery.extend({ label: z.string().default("inbox"), before: z.coerce.number().optional() });
-const SearchQuery = ScopeQuery.extend({ q: z.string().trim().default("") });
+/** `cursor` is a previous page's `next`; without one (or with a malformed one) a list starts at the top. */
+const PageQuery = ScopeQuery.extend({ cursor: z.string().optional().transform(parseCursor) });
+const ThreadsQuery = PageQuery.extend({ label: z.string().default("inbox") });
+const SearchQuery = PageQuery.extend({ q: z.string().trim().default("") });
 
 async function planRequest(c: Context<AppEnv>, scope = ""): Promise<MailboxQuery[]> {
 	const mailboxes = await getUserMailboxes(c.env.DIRECTORY, c.var.user.id);
@@ -75,30 +78,31 @@ async function planRequest(c: Context<AppEnv>, scope = ""): Promise<MailboxQuery
 	);
 }
 
-/** Reads threads from every mailbox the request can match, tagging each with where it lives. */
-async function readThreads(
+/** A page of threads from every mailbox the request can match, each tagged with where it lives. */
+async function readPage(
 	c: Context<AppEnv>,
 	scope: string | undefined,
-	read: (stub: MailboxStub, q: MailboxQuery) => Promise<ThreadSummary[]>,
-): Promise<MailboxThread[][]> {
+	before: ListCursor | undefined,
+	read: (stub: MailboxStub, q: MailboxQuery, page: ListPage) => Promise<ThreadSummary[]>,
+) {
+	const page = { before, limit: PAGE + 1 };
 	const queries = (await planRequest(c, scope)).filter(canMatch);
-	return Promise.all(
-		queries.map(async (q) => (await read(c.env.MAILBOX.getByName(q.mailboxId), q)).map((t) => ({ ...t, mailboxId: q.mailboxId }))),
+	const lists = await Promise.all(
+		queries.map(async (q) => (await read(c.env.MAILBOX.getByName(q.mailboxId), q, page)).map((t) => ({ ...t, mailboxId: q.mailboxId }))),
 	);
+	return mergePage(lists, PAGE);
 }
 
 const views = new Hono<AppEnv>()
 	.get("/threads", zValidator("query", ThreadsQuery), async (c) => {
-		const { label, before, in: scope } = c.req.valid("query");
-		const lists = await readThreads(c, scope, (stub, q) => stub.listThreads({ label, before, limit: PAGE, addresses: q.addresses }));
-		return c.json({ threads: mergeByRecency(lists, PAGE) });
+		const { label, cursor, in: scope } = c.req.valid("query");
+		return c.json(await readPage(c, scope, cursor, (stub, q, page) => stub.listThreads({ label, ...page, addresses: q.addresses })));
 	})
 
 	.get("/search", zValidator("query", SearchQuery), async (c) => {
-		const { q: query, in: scope } = c.req.valid("query");
-		if (!query) return c.json({ threads: [] });
-		const lists = await readThreads(c, scope, (stub, q) => stub.search({ query, limit: PAGE, addresses: q.addresses }));
-		return c.json({ threads: interleave(lists, PAGE) });
+		const { q: query, cursor, in: scope } = c.req.valid("query");
+		if (!query) return c.json({ threads: [], next: null });
+		return c.json(await readPage(c, scope, cursor, (stub, q, page) => stub.search({ query, ...page, addresses: q.addresses })));
 	})
 
 	// Every mailbox, not just matching ones: per-address unread counts cover all of the user's addresses.
