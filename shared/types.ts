@@ -164,6 +164,15 @@ export interface Counts {
  */
 export type AddressFilter = { addresses?: string[] };
 
+/** Where a page of a list ended. Lists run newest first, ties broken by id, so the next page starts just past this thread. */
+export interface ListCursor {
+	at: number;
+	id: string;
+}
+
+/** At most `limit` threads, starting after `before` (or from the top). */
+export type ListPage = { before?: ListCursor; limit?: number };
+
 // ─── Mailbox RPC inputs ─────────────────────────────────────────────────────
 export interface IngestInput {
 	id: string;

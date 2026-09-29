@@ -9,7 +9,7 @@ import { listQuery } from "../queries";
 export const Route = createFileRoute("/_app/_mail/$view")({
 	validateSearch: (search: Record<string, unknown>): { q?: string } => ({ q: typeof search.q === "string" ? search.q : undefined }),
 	loaderDeps: ({ search }) => ({ scope: parseScope(search.in), q: search.q ?? "" }),
-	loader: ({ context, params, deps }) => context.queryClient.ensureQueryData(listQuery(deps.scope, params.view, deps.q)),
+	loader: ({ context, params, deps }) => context.queryClient.ensureInfiniteQueryData(listQuery(deps.scope, params.view, deps.q)),
 	component: () => (
 		<>
 			<ThreadList />

@@ -11,6 +11,7 @@ import {
 	type DeliveryStatus,
 	type IngestInput,
 	isValidAddress,
+	type ListPage,
 	type LiveEvent,
 	type LocalRecipient,
 	type MessageBlobs,
@@ -442,46 +443,40 @@ export class Mailbox extends DurableObject<Env> {
 	// ─── Reads ──────────────────────────────────────────────────────────────
 
 	/** A thread is listed when one of its messages carries the label and belongs to the filtered addresses. */
-	async listThreads(query: { label: string; before?: number; limit?: number } & AddressFilter): Promise<ThreadSummary[]> {
-		const limit = Math.min(query.limit ?? 50, 200);
-		const before = query.before ?? Number.MAX_SAFE_INTEGER;
+	async listThreads(query: { label: string } & ListPage & AddressFilter): Promise<ThreadSummary[]> {
 		const filter =
 			query.label === ALL_MAIL
-				? `EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id AND ${IN_ADDRESSES("?4")} AND NOT EXISTS (
+				? `EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id AND ${IN_ADDRESSES("?2")} AND NOT EXISTS (
 						SELECT 1 FROM message_labels l WHERE l.message_id = m.id AND l.label IN ('trash', 'spam')))`
 				: `EXISTS (SELECT 1 FROM messages m JOIN message_labels l ON l.message_id = m.id
-						WHERE m.thread_id = t.id AND l.label = ?1 AND ${IN_ADDRESSES("?4")})`;
-		const rows = this.sql
-			.exec<ThreadRow>(
-				`${THREAD_SELECT} WHERE ${filter} AND t.last_message_at < ?2 ORDER BY t.last_message_at DESC LIMIT ?3`,
-				query.label,
-				before,
-				limit,
-				addressParam(query),
-			)
-			.toArray();
-		return rows.map(toThreadSummary);
+						WHERE m.thread_id = t.id AND l.label = ?1 AND ${IN_ADDRESSES("?2")})`;
+		return this.page(filter, query.label, query);
 	}
 
-	async search(query: { query: string; limit?: number } & AddressFilter): Promise<ThreadSummary[]> {
+	/** Threads with a matching message, in list order like any other view so they page the same way. */
+	async search(query: { query: string } & ListPage & AddressFilter): Promise<ThreadSummary[]> {
 		const match = toFtsQuery(query.query);
 		if (!match) return [];
-		const limit = Math.min(query.limit ?? 50, 200);
-		const rows = this.sql
+		const filter = `t.id IN (SELECT m.thread_id FROM messages_fts f JOIN messages m ON m.rowid = f.rowid
+			WHERE messages_fts MATCH ?1 AND ${IN_ADDRESSES("?2")})`;
+		return this.page(filter, match, query);
+	}
+
+	/** One page of threads passing `filter`, which reads its own parameter as ?1 and the address filter as ?2. */
+	private page(filter: string, param: string, query: ListPage & AddressFilter): ThreadSummary[] {
+		const before = query.before ?? { at: Number.MAX_SAFE_INTEGER, id: "" };
+		return this.sql
 			.exec<ThreadRow>(
-				`WITH hits AS (
-					SELECT m.thread_id, min(f.rank) AS score FROM messages_fts f
-					JOIN messages m ON m.rowid = f.rowid
-					WHERE messages_fts MATCH ?1 AND ${IN_ADDRESSES("?3")}
-					GROUP BY m.thread_id ORDER BY score LIMIT ?2
-				)
-				${THREAD_SELECT} JOIN hits h ON h.thread_id = t.id ORDER BY h.score`,
-				match,
-				limit,
+				`${THREAD_SELECT} WHERE ${filter} AND (t.last_message_at, t.id) < (?3, ?4)
+				 ORDER BY t.last_message_at DESC, t.id DESC LIMIT ?5`,
+				param,
 				addressParam(query),
+				before.at,
+				before.id,
+				Math.min(query.limit ?? 50, 200),
 			)
-			.toArray();
-		return rows.map(toThreadSummary);
+			.toArray()
+			.map(toThreadSummary);
 	}
 
 	async getThread(threadId: string): Promise<ThreadDetail | null> {

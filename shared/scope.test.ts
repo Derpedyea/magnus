@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { interleave, mergeCounts, planScope } from "./scope";
+import { mergeCounts, mergePage, parseCursor, planScope } from "./scope";
+import type { ListCursor, ThreadSummary } from "./types";
 
 const mailboxes = [
 	{ id: "mbx_main", addresses: ["me@example.com", "me@example.net"] },
@@ -18,9 +19,36 @@ describe("planScope", () => {
 	});
 });
 
-describe("interleave", () => {
-	it("alternates between lists so no mailbox's best hits are buried", () => {
-		expect(interleave([["a1", "a2", "a3"], ["b1"]], 3)).toEqual(["a1", "b1", "a2"]);
+describe("mergePage", () => {
+	const thread = (id: string, lastMessageAt: number): ThreadSummary => ({
+		id,
+		lastMessageAt,
+		subject: "",
+		snippet: "",
+		messageCount: 1,
+		unreadCount: 0,
+		participants: [],
+		labels: [],
+		addresses: [],
+	});
+	// Two mailboxes in list order, with timestamps tied within and across them.
+	const mailboxes = [
+		[thread("A3", 30), thread("A2", 20), thread("A1", 20), thread("A0", 10)],
+		[thread("B2", 30), thread("B1", 20), thread("B0", 5)],
+	];
+	/** What a Mailbox DO answers: threads past the cursor, up to the limit. */
+	const read = (list: ThreadSummary[], before: ListCursor | undefined, limit: number) =>
+		list.filter((t) => !before || t.lastMessageAt < before.at || (t.lastMessageAt === before.at && t.id < before.id)).slice(0, limit);
+
+	it("pages through every mailbox without skipping or repeating tied threads", () => {
+		const pages: string[][] = [];
+		let cursor: string | undefined;
+		do {
+			const page = mergePage(mailboxes.map((list) => read(list, parseCursor(cursor), 3)), 2);
+			pages.push(page.threads.map((t) => t.id));
+			cursor = page.next ?? undefined;
+		} while (cursor);
+		expect(pages).toEqual([["B2", "A3"], ["B1", "A2"], ["A1", "A0"], ["B0"]]);
 	});
 });
 

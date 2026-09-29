@@ -122,7 +122,9 @@ sent from. List, search, and count reads take an optional address filter.
 
 `GET /api/threads`, `/api/search`, and `/api/counts` span every mailbox the user belongs to. The API fans
 out to each Mailbox DO and merges the results (`shared/scope.ts`); `?in=a@x,b@y` narrows the view
-to some addresses. Reads and writes on a single thread stay under `/api/mailboxes/:id/…`.
+to some addresses. Lists and search both run newest first (ties broken by thread id) and come 50 threads at a
+time: each page's `next` goes back as `?cursor=` and resumes every mailbox just past the last thread shown.
+Reads and writes on a single thread stay under `/api/mailboxes/:id/…`.
 
 `GET /api/contacts` fans out the same way. Each mailbox's `contacts` table remembers who it has written to
 (counted on send) and heard from (on ingest, spam aside), and the API merges them into one list of up to a
@@ -396,8 +398,7 @@ The web app is the only client, so it has to be good on phones and good enough t
 2. **Push notifications** (Web Push, VAPID): the Mailbox DO already knows the moment mail lands. iOS only
    delivers web push to home-screen apps, which item 1 covers.
 3. **Drafts** (autosave into the DO), **forward** (with attachments).
-4. **Keyboard shortcuts** (j/k, e archive, r reply, c compose, / search), **bulk select**, **infinite scroll**
-   (the API already pages with `before`).
+4. **Keyboard shortcuts** (j/k, e archive, r reply, c compose, / search), **bulk select**.
 5. **Mailbox import** from your previous provider (export to `.eml`, e.g. Proton's Import-Export app). Upload
    the raw files to R2 and enqueue `InboundJob`s; the existing ingest path does the rest.
 

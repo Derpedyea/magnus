@@ -72,8 +72,11 @@ export const api = {
 	me: () => parseResponse(client.me.$get()),
 	saveSignature: (address: string, text: string) => parseResponse(client.signatures.$put({ json: { address, text } })),
 	contacts: () => parseResponse(client.contacts.$get()),
-	threads: (scope: string[], label: string) => parseResponse(client.threads.$get({ query: { in: scoped(scope), label } })),
-	search: (scope: string[], q: string) => parseResponse(client.search.$get({ query: { in: scoped(scope), q } })),
+	/** One page of a list; `cursor` is the previous page's `next`, or "" for the first. */
+	threads: (scope: string[], label: string, cursor: string) =>
+		parseResponse(client.threads.$get({ query: { in: scoped(scope), label, cursor: cursor || undefined } })),
+	search: (scope: string[], q: string, cursor: string) =>
+		parseResponse(client.search.$get({ query: { in: scoped(scope), q, cursor: cursor || undefined } })),
 	counts: (scope: string[]) => parseResponse(client.counts.$get({ query: { in: scoped(scope) } })),
 	thread: (mailboxId: string, threadId: string) => parseResponse(mailbox.threads[":threadId"].$get({ param: { mailboxId, threadId } })),
 	modify: (mailboxId: string, threadIds: string[], add: string[], remove: string[]) =>
