@@ -84,6 +84,7 @@ Each store holds one kind of data:
 | --- | --- | --- |
 | **D1 `magnus-directory`** | people and sessions (Better Auth), domains, mailboxes, memberships, addresses, address→mailbox routes, sender blocks, install settings | Small, global, read on every inbound message and every API call |
 | **Durable Object `Mailbox`** (SQLite, one per mailbox) | threads, messages, labels, attachment metadata, Message-ID→thread index, FTS5 index, outbox, per-recipient delivery state | Strongly consistent per-mailbox transactions, a natural isolation boundary, alarms for scheduled send, hibernatable WebSockets for live push, 10 GB each |
+| **Durable Object `Vault`** (one instance) | the key to the saved Cloudflare token | Its storage can only be read from outside with edit access to this Worker, which could read any secret anyway. D1 and R2 can be read with much narrower tokens |
 | **R2 `magnus-mail`** | raw `.eml`, HTML bodies, attachments, composer uploads | Blobs. Cheap, no egress fees |
 | **Queues** | `magnus-inbound`, `magnus-email-events` | Durable hand-off with retries. Parsing never blocks the SMTP session |
 
@@ -129,7 +130,6 @@ raw/2026/09/26/<ingestId>.eml          raw inbound, shared across fan-out, kept 
 m/<mailboxId>/<messageId>/body.html     HTML body (served through the sanitizer)
 m/<mailboxId>/<messageId>/att/<attId>   attachments (inbound, and outbound once sent)
 uploads/<mailboxId>/<uuid>              composer uploads; a lifecycle rule (DEPLOY.md) can reap abandoned ones
-keys/<uuid>                             the key to the saved Cloudflare token, apart from its ciphertext in D1
 ```
 
 Everything a mailbox owns sits under `m/<mailboxId>/`, so deleting a mailbox (removing a person) is a prefix delete. The raw archive
@@ -272,11 +272,17 @@ rule sending every address to this Worker, Email Sending on the domain, and an e
 Sending to the queue this Worker consumes but doesn't produce to. The directory's `receiving` and `sending`
 flags follow what Cloudflare reports after every step. Setup and the admin Domains page run the same steps.
 
-The token setup is given is saved, so admins don't paste one again: AES-GCM-encrypted in `settings`, under a
-fresh key per save kept in R2 (`keys/<uuid>`), so neither store alone reveals it (`worker/settings.ts`). The
-browser never holds it after that; admin endpoints read it server-side, and replacing it first checks that the
-new one can see this install. Setup never reads the saved token, since pasting one is how setup proves
-ownership.
+The token setup is given is saved, so admins don't paste one again. The `Vault` Durable Object encrypts it
+(AES-256-GCM) and keeps the key, which never leaves the object; only the ciphertext goes in `settings`
+(`worker/vault.ts`, `worker/settings.ts`). Keys and data live apart, as OWASP recommends: a D1 backup or read
+token reveals nothing, and Durable Object storage is only reachable from outside (Data Studio, its query API)
+with edit access to this Worker, audit-logged. The key is stored as raw bytes, since workerd can't persist a
+`CryptoKey`, and imported non-extractable for each use. The browser never holds the token after it's pasted;
+admin endpoints read it server-side, and replacing it first checks that the new one can see this install. Setup
+never reads the saved token, since pasting one is how setup proves ownership.
+
+Forgetting it deletes the ciphertext and the key, but D1 Time Travel and Durable Objects' point-in-time recovery
+keep both for 30 days, so revoking the token in Cloudflare is what ends it for certain.
 
 ### 5.3 Rendering untrusted HTML
 
