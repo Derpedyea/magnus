@@ -2,7 +2,7 @@ import { type Address, type AttachmentMeta, type DeliveryStatus, formatBytes, ty
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, CircleAlertIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon } from "lucide-react";
+import { ArchiveIcon, CircleAlertIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -75,26 +75,26 @@ export function ThreadView() {
 			</div>
 			<h1 className="mb-6 font-heading text-xl font-semibold">{summary.subject}</h1>
 			<div className="space-y-3">
-				{messages.map((m, i) => (
-					<Message
-						key={m.id}
-						mailboxId={mailboxId}
-						message={m}
-						outgoing={m.direction === "out" && inView(m.from.address)}
-						defaultOpen={i === messages.length - 1 || !m.isRead}
-						onReply={(all) =>
-							openDraft(
-								replyDraft(m, all, {
-									mailboxId,
-									identities,
-									delivered: summary.addresses,
-									outgoing: m.direction === "out" && inView(m.from.address),
-									inView,
-								}),
-							)
-						}
-					/>
-				))}
+				{messages.map((m, i) => {
+					const ctx: AnswerContext = {
+						mailboxId,
+						identities,
+						delivered: summary.addresses,
+						outgoing: m.direction === "out" && inView(m.from.address),
+						inView,
+					};
+					return (
+						<Message
+							key={m.id}
+							mailboxId={mailboxId}
+							message={m}
+							outgoing={ctx.outgoing}
+							defaultOpen={i === messages.length - 1 || !m.isRead}
+							onReply={(all) => openDraft(replyDraft(m, all, ctx))}
+							onForward={() => openDraft(forwardDraft(m, ctx))}
+						/>
+					);
+				})}
 			</div>
 		</article>
 	);
@@ -107,6 +107,7 @@ function Message(props: {
 	outgoing: boolean;
 	defaultOpen: boolean;
 	onReply: (all: boolean) => void;
+	onForward: () => void;
 }) {
 	const m = props.message;
 	const qc = useQueryClient();
@@ -220,6 +221,10 @@ function Message(props: {
 					<Button variant="outline" size="sm" onClick={() => props.onReply(true)}>
 						<ReplyAllIcon />
 						Reply all
+					</Button>
+					<Button variant="outline" size="sm" onClick={props.onForward}>
+						<ForwardIcon />
+						Forward
 					</Button>
 					<div className="ml-auto flex items-center">
 						{m.direction === "in" ? <BlockSender address={m.from.address} /> : null}
@@ -359,35 +364,42 @@ function DeliveryBadge({ message }: { message: MessageDetail }) {
 	);
 }
 
-function replyDraft(
-	m: MessageDetail,
-	all: boolean,
-	ctx: {
-		mailboxId: string;
-		identities: Identity[];
-		/** The thread's own addresses, which catch mail that reached us via Bcc or a list. */
-		delivered: string[];
-		outgoing: boolean;
-		inView: (address: string) => boolean;
-	},
-): Draft {
+interface AnswerContext {
+	mailboxId: string;
+	identities: Identity[];
+	/** The thread's own addresses, which catch mail that reached us via Bcc or a list. */
+	delivered: string[];
+	outgoing: boolean;
+	inView: (address: string) => boolean;
+}
+
+/** Which of our addresses answers or forwards a message: the one being viewed when it reached several of ours. */
+function answerFrom(m: MessageDetail, ctx: AnswerContext): string {
+	if (ctx.outgoing) return m.from.address.toLowerCase();
+	const ours = new Set(ctx.identities.map((i) => i.address.toLowerCase()));
+	const recipients = [...m.to, ...m.cc].filter((a) => ours.has(a.address.toLowerCase()));
+	const from =
+		recipients.find((a) => ctx.inView(a.address))?.address ??
+		recipients[0]?.address ??
+		ctx.delivered.find((a) => ours.has(a)) ??
+		ctx.identities[0]?.address ??
+		"";
+	return from.toLowerCase();
+}
+
+const signatureOf = (from: string, ctx: AnswerContext) => ctx.identities.find((i) => i.address === from)?.signature ?? null;
+
+function replyDraft(m: MessageDetail, all: boolean, ctx: AnswerContext): Draft {
 	const ours = new Set(ctx.identities.map((i) => i.address.toLowerCase()));
 	const isOurs = (a: Address) => ours.has(a.address.toLowerCase());
 	const recipients = [...m.to, ...m.cc];
-	// Answer from the address being viewed when the message reached several of ours.
-	const from = ctx.outgoing
-		? m.from.address
-		: (recipients.find((a) => isOurs(a) && ctx.inView(a.address))?.address ??
-			recipients.find(isOurs)?.address ??
-			ctx.delivered.find((a) => ours.has(a)) ??
-			ctx.identities[0]?.address ??
-			"");
+	const from = answerFrom(m, ctx);
 	const primary = ctx.outgoing ? m.to : m.replyTo.length ? m.replyTo : [m.from];
 	const extra = all ? recipients.filter((a) => !isOurs(a) && !primary.some((p) => p.address === a.address)) : [];
-	const signature = ctx.identities.find((i) => i.address === from.toLowerCase())?.signature ?? null;
+	const signature = signatureOf(from, ctx);
 	return {
 		mailboxId: ctx.mailboxId,
-		from: from.toLowerCase(),
+		from,
 		to: primary,
 		cc: extra,
 		bcc: [],
@@ -395,5 +407,21 @@ function replyDraft(
 		text: withSignature(quote(m), null, signature),
 		attachments: [],
 		replyToMessageId: m.id,
+	};
+}
+
+/** Forwards inline with the original's files, which can be removed in the composer. The signature ends the note. */
+function forwardDraft(m: MessageDetail, ctx: AnswerContext): Draft {
+	const from = answerFrom(m, ctx);
+	return {
+		mailboxId: ctx.mailboxId,
+		from,
+		to: [],
+		cc: [],
+		bcc: [],
+		subject: /^fwd?:/i.test(m.subject) ? m.subject : `Fwd: ${m.subject}`,
+		text: withSignature("", null, signatureOf(from, ctx)),
+		attachments: [],
+		forward: { message: m, files: m.attachments.filter((a) => !a.inline) },
 	};
 }

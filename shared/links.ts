@@ -38,14 +38,15 @@ export function splitAttachments<T extends { size: number }>(files: T[], bodyByt
 /**
  * splitAttachments for a whole message. Linking anything grows the body: a block in the text and, for plain-text
  * mail, an HTML part carrying the text again. So once something has to be linked, split again against that
- * bigger body, sized as if every file were linked, which only overestimates.
+ * bigger body, sized as if every file were linked, which only overestimates. `embeddedBytes` counts parts that
+ * can't become links, like the images a forwarded HTML body shows by Content-ID.
  */
-export function planAttachments<T extends Omit<LinkedFile, "url">>(files: T[], body: MessageBody, linkBase: string) {
-	const plain = splitAttachments(files, byteLength(body.text + (body.html ?? "")));
+export function planAttachments<T extends Omit<LinkedFile, "url">>(files: T[], body: MessageBody, linkBase: string, embeddedBytes = 0) {
+	const plain = splitAttachments(files, byteLength(body.text + (body.html ?? "")) + embeddedBytes);
 	if (plain.linked.length === 0) return plain;
 	const url = linkBase + newLinkToken();
 	const linked = withLinks(body, files.map((f) => ({ ...f, url })));
-	return splitAttachments(files, byteLength(linked.text + linked.html));
+	return splitAttachments(files, byteLength(linked.text + linked.html) + embeddedBytes);
 }
 
 const byteLength = (s: string) => new TextEncoder().encode(s).length;

@@ -177,6 +177,12 @@ no dead-letter queue: the Deploy button can't be relied on to create one.)
 2. `Mailbox.enqueueSend()` writes the message into the thread, labeled `outbox`, with status `queued`. For
    replies it computes `In-Reply-To`/`References` from the parent, capped at 2,048 bytes (root + newest IDs).
    It then inserts an `outbox` row with `send_at = now + delay` and sets a DO alarm.
+
+   **Forwards** (`shared/forward.ts`) name the original message rather than copying it into the composer, the
+   way EmailEngine's `reference` does. Below the note go Gmail's divider and header, then the original: its text,
+   and its HTML document with the note and header inserted at the top of `<body>`, so its layout and styles
+   survive. The files the sender kept are copied like uploads; images the HTML shows by `cid:` go inline and
+   never as links. The forward joins the original's thread, with the same threading headers as a reply.
 3. **Undo send / scheduled send:** until `send_at`, `cancelSend()` removes the message. The UI shows a 10 s
    undo toast. Delays up to 7 days work as scheduled send.
 4. `alarm()` drains due rows. Each is marked `sending` → `env.EMAIL.send()` → marked `sent`, with the
@@ -397,7 +403,7 @@ The web app is the only client, so it has to be good on phones and good enough t
    manifest + service worker so it installs to the home screen on iOS and Android.
 2. **Push notifications** (Web Push, VAPID): the Mailbox DO already knows the moment mail lands. iOS only
    delivers web push to home-screen apps, which item 1 covers.
-3. **Drafts** (autosave into the DO), **forward** (with attachments).
+3. **Drafts** (autosave into the DO).
 4. **Keyboard shortcuts** (j/k, e archive, r reply, c compose, / search), **bulk select**.
 5. **Mailbox import** from your previous provider (export to `.eml`, e.g. Proton's Import-Export app). Upload
    the raw files to R2 and enqueue `InboundJob`s; the existing ingest path does the rest.

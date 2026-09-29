@@ -1,4 +1,5 @@
 import type { Address } from "./address";
+import type { MessageBody } from "./links";
 
 // ─── Labels ──────────────────────────────────────────────────────────────────
 // Gmail-style: labels live on messages; a thread shows up in a view if any of its
@@ -202,6 +203,8 @@ export interface SendAttachmentRef {
 	filename: string;
 	contentType: string;
 	size: number;
+	/** Set on images a forwarded HTML body shows by Content-ID. They go inline and never as links. */
+	contentId?: string;
 }
 
 export interface SendInput {
@@ -214,8 +217,10 @@ export interface SendInput {
 	subject: string;
 	text: string;
 	html?: string;
-	/** Local message id being replied to; drives In-Reply-To/References and thread placement. */
-	replyToMessageId?: string;
+	/** Local message id being replied to or forwarded; drives In-Reply-To/References and thread placement. */
+	parentMessageId?: string;
+	/** A forward's divider, header, and original (forwardedPart()), added below the text and any links. */
+	forward?: MessageBody;
 	attachments: SendAttachmentRef[];
 	/** Too big to attach: kept like attachments, but the message carries download links to them. */
 	links: SendAttachmentRef[];

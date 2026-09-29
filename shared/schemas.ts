@@ -28,13 +28,27 @@ export const ComposeSchema = z
 		text: z.string(),
 		html: z.string().optional(),
 		replyToMessageId: z.string().optional(),
+		/** Forwards a message in this mailbox below `text`. The images its HTML shows come along by themselves. */
+		forward: z
+			.object({
+				messageId: z.string(),
+				/** Which of its files to include. */
+				attachmentIds: z.array(z.string()).max(MAX_ATTACHMENTS).default([]),
+				/** The sender's, for the forwarded header's Date line. */
+				timeZone: z.string().max(64).optional(),
+			})
+			.optional(),
 		attachments: z.array(AttachmentRefSchema).max(MAX_ATTACHMENTS).default([]),
 		/** Undo window. 0 sends on the next alarm tick; larger values are scheduled send. */
 		delaySeconds: z.number().int().min(0).max(7 * 24 * 3600).default(10),
 	})
 	.refine((c) => c.to.length + c.cc.length + c.bcc.length <= MAX_RECIPIENTS, {
 		message: `At most ${MAX_RECIPIENTS} recipients (to + cc + bcc)`,
-	});
+	})
+	.refine((c) => c.attachments.length + (c.forward?.attachmentIds.length ?? 0) <= MAX_ATTACHMENTS, {
+		message: `At most ${MAX_ATTACHMENTS} attachments`,
+	})
+	.refine((c) => !(c.replyToMessageId && c.forward), { message: "A message can't be both a reply and a forward" });
 
 export type ComposeRequest = z.infer<typeof ComposeSchema>;
 
