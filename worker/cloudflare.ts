@@ -10,7 +10,8 @@ const API = "https://api.cloudflare.com/client/v4";
 
 const Envelope = z.object({
 	success: z.boolean(),
-	errors: z.array(z.object({ code: z.number(), message: z.string() })).default([]),
+	// Some APIs (Queues) answer a success with `"errors": null` rather than an empty list.
+	errors: z.array(z.object({ code: z.number(), message: z.string() })).nullish(),
 	result: z.unknown(),
 });
 
