@@ -942,7 +942,7 @@ export class Mailbox extends DurableObject<Env> {
 		const now = Date.now();
 		const sent = outcome.status === "sent" ? outcome : null;
 		const headerId = sent?.providerMessageId ? toHeaderId(sent.providerMessageId) : null;
-		this.ctx.storage.transactionSync(() => {
+		const status = this.ctx.storage.transactionSync((): DeliveryStatus => {
 			this.sql.exec(`DELETE FROM outbox WHERE message_id = ?1`, messageId);
 			// A failed retry keeps the ids of the send before it, and a retry keeps the date the message first went out.
 			this.sql.exec(
@@ -957,7 +957,7 @@ export class Mailbox extends DurableObject<Env> {
 				headerId,
 				now,
 			);
-			if (!sent) return;
+			if (!sent) return outcome.status;
 			this.removeLabels([messageId], ["outbox"]);
 			this.addLabels([messageId], ["sent"]);
 			if (headerId) {
@@ -968,7 +968,7 @@ export class Mailbox extends DurableObject<Env> {
 			}
 			// A retry's recipients start over. Events from the send before are older, so they no longer apply.
 			const { to, cc, bcc, localRecipients = [] } = sent.payload;
-			this.sql.exec(
+			const { rowsWritten: restarted } = this.sql.exec(
 				`UPDATE deliveries SET status = 'sent', detail = NULL, updated_at = ?3
 				 WHERE message_id = ?1 AND recipient IN (SELECT value FROM json_each(?2))`,
 				messageId,
@@ -976,8 +976,11 @@ export class Mailbox extends DurableObject<Env> {
 				now,
 			);
 			if (localRecipients.length > 0) this.deliverLocally(messageId, localRecipients, sent.providerMessageId === undefined);
+			// Everyone else in a retry of mail that already went out keeps their state, which may be worse than `sent`
+			// (a complaint, a deferral). A first send has rows only for local recipients, so it stays `sent`.
+			return restarted > 0 ? this.rollUpDelivery(messageId) : outcome.status;
 		});
-		this.broadcast({ type: "delivery.changed", messageId, status: outcome.status });
+		this.broadcast({ type: "delivery.changed", messageId, status });
 		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
 	}
 
@@ -1002,18 +1005,23 @@ export class Mailbox extends DurableObject<Env> {
 			event.detail,
 			event.at,
 		);
+		this.broadcast({ type: "delivery.changed", messageId: msg.id, status: this.rollUpDelivery(msg.id) });
+		return true;
+	}
+
+	/** Sets a message's status to the worst of its recipients' (summarizeDelivery) and returns it. */
+	private rollUpDelivery(messageId: string): DeliveryStatus {
 		const statuses = this.sql
-			.exec<{ status: DeliveryStatus; detail: string | null }>(`SELECT status, detail FROM deliveries WHERE message_id = ?1`, msg.id)
+			.exec<{ status: DeliveryStatus; detail: string | null }>(`SELECT status, detail FROM deliveries WHERE message_id = ?1`, messageId)
 			.toArray();
 		const summary = summarizeDelivery(statuses);
 		this.sql.exec(
 			`UPDATE messages SET delivery_status = ?2, delivery_detail = ?3 WHERE id = ?1`,
-			msg.id,
+			messageId,
 			summary.status,
 			summary.detail,
 		);
-		this.broadcast({ type: "delivery.changed", messageId: msg.id, status: summary.status });
-		return true;
+		return summary.status;
 	}
 
 	/**

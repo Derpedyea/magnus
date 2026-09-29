@@ -204,8 +204,9 @@ An Email Sending **event subscription** per domain feeds `magnus-email-events` (
 mailboxes may send as `payload.sender` and offers the event to each. The one whose `sends` holds the message
 ID applies it to `deliveries(message_id, recipient)` and rolls it up to a message status, worst first:
 bounced > rejected > failed > complained > deferred > sent > delivered. The UI shows this as a badge on each
-sent message. When a retry goes out, its recipients' rows restart at `sent`; events from the earlier send are
-older, so they no longer apply.
+sent message. When a retry goes out, its recipients' rows restart at `sent` and the status rolls up again, so
+another recipient's complaint or deferral still shows. Events from the earlier send are older, so they no longer
+apply to the retried recipients.
 
 ### 4.4 Live updates
 
