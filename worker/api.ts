@@ -3,6 +3,7 @@ import {
 	canMatch,
 	formatBytes,
 	interleave,
+	type LocalRecipient,
 	localRecipients,
 	type MailboxQuery,
 	type MailboxThread,
@@ -116,6 +117,20 @@ const views = new Hono<AppEnv>()
 
 // ─── Mailbox-scoped routes ──────────────────────────────────────────────────
 
+/** The identity this mailbox sends `from` as, if it may. */
+async function sendIdentity(c: Context<AppEnv>, from: string) {
+	const identities = await getSendIdentities(c.env.DIRECTORY, c.var.mailboxId);
+	return identities.find((i) => i.address === normalizeAddress(from));
+}
+
+/** Of these normalized recipients, the ones a send from `from` delivers by itself (see localRecipients()). */
+async function localTo(c: Context<AppEnv>, from: string, recipients: string[]): Promise<LocalRecipient[]> {
+	const routed = await Promise.all(
+		recipients.map(async (address) => ({ address, route: await resolveRecipient(c.env.DIRECTORY, [from], address) })),
+	);
+	return localRecipients(routed, c.var.mailboxId);
+}
+
 const mb = new Hono<AppEnv>()
 	.use("*", async (c, next) => {
 		const mailboxId = c.req.param("mailboxId");
@@ -206,8 +221,7 @@ const mb = new Hono<AppEnv>()
 	.post("/send", zValidator("json", ComposeSchema), async (c) => {
 		const req = c.req.valid("json");
 
-		const identities = await getSendIdentities(c.env.DIRECTORY, c.var.mailboxId);
-		const identity = identities.find((i) => i.address === normalizeAddress(req.from));
+		const identity = await sendIdentity(c, req.from);
 		if (!identity) return c.json({ error: `This mailbox can't send as ${req.from}` }, 403);
 
 		// Only this mailbox's own uploads, with sizes taken from R2 rather than the client.
@@ -224,10 +238,7 @@ const mb = new Hono<AppEnv>()
 		if (!fits) return c.json({ error: "Message is too long to send" }, 413);
 
 		const recipients = [...new Set([...req.to, ...req.cc, ...req.bcc].map((a) => normalizeAddress(a.address)))];
-		const routed = await Promise.all(
-			recipients.map(async (address) => ({ address, route: await resolveRecipient(c.env.DIRECTORY, [identity.address], address) })),
-		);
-		const local = localRecipients(routed, c.var.mailboxId);
+		const local = await localTo(c, identity.address, recipients);
 
 		const queued = await c.var.mailbox.enqueueSend({
 			mailboxId: c.var.mailboxId,
@@ -252,6 +263,17 @@ const mb = new Hono<AppEnv>()
 	.post("/outbox/:messageId/cancel", async (c) => {
 		const cancelled = await c.var.mailbox.cancelSend(c.req.param("messageId"));
 		return cancelled ? c.body(null, 204) : c.json({ error: "Already sent" }, 409);
+	})
+
+	/** Sends a failed or bounced message again, to whoever it didn't reach. The sender is checked again first. */
+	.post("/messages/:messageId/retry", async (c) => {
+		const messageId = c.req.param("messageId");
+		const target = await c.var.mailbox.retryTarget(messageId);
+		if (!target) return c.json({ error: "Nothing to retry" }, 409);
+		const identity = await sendIdentity(c, target.from);
+		if (!identity) return c.json({ error: `This mailbox can't send as ${target.from}` }, 403);
+		const local = await localTo(c, identity.address, target.recipients);
+		return (await c.var.mailbox.retrySend(messageId, local)) ? c.body(null, 204) : c.json({ error: "Nothing to retry" }, 409);
 	})
 
 	/** Live updates: the WebSocket terminates in the Mailbox DO (hibernatable). */

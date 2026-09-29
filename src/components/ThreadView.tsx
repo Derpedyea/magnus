@@ -1,8 +1,8 @@
-import { type Address, type AttachmentMeta, type DeliveryStatus, formatBytes, type MessageDetail, type PreviewKind, preview } from "#shared";
+import { type Address, type AttachmentMeta, type DeliveryStatus, formatBytes, type MessageDetail, type PreviewKind, preview, RETRYABLE } from "#shared";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, StarIcon, StarOffIcon, Trash2Icon } from "lucide-react";
+import { ArchiveIcon, CircleAlertIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -10,8 +10,9 @@ import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api, formatList, type Identity, messageUrl } from "../api";
+import { api, errorMessage, formatList, type Identity, messageUrl } from "../api";
 import { openDraft, quote, withSignature } from "../compose";
 import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
@@ -149,6 +150,9 @@ function Message(props: {
 						{m.cc.length ? ` · cc ${formatList(m.cc)}` : ""}
 						{m.auth ? ` · spf ${m.auth.spf ?? "?"} · dkim ${m.auth.dkim ?? "?"} · dmarc ${m.auth.dmarc ?? "?"}` : ""}
 				</p>
+				{props.outgoing && m.delivery && RETRYABLE.has(m.delivery.status) ? (
+					<Undelivered mailboxId={props.mailboxId} messageId={m.id} delivery={m.delivery} />
+				) : null}
 				{m.hasHtml ? (
 					<HtmlBody src={`${messageUrl(props.mailboxId, m.id)}/body`} onLink={openLinked} />
 				) : (
@@ -228,6 +232,32 @@ function Message(props: {
 				</div>
 			</CollapsibleContent>
 		</Collapsible>
+	);
+}
+
+const RECIPIENTS = new Intl.ListFormat(undefined, { type: "conjunction" });
+
+/** A sent message that didn't make it: who it missed, why, and a way to send it again to just them. */
+function Undelivered(props: { mailboxId: string; messageId: string; delivery: NonNullable<MessageDetail["delivery"]> }) {
+	const qc = useQueryClient();
+	const retry = useMutation({
+		mutationFn: () => api.retry(props.mailboxId, props.messageId),
+		onSuccess: () => qc.invalidateQueries({ queryKey: ["mail"] }),
+	});
+	const { undelivered, detail } = props.delivery;
+	const reason = retry.error ? errorMessage(retry.error) : detail;
+	return (
+		<div className="mb-3 flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2">
+			<CircleAlertIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
+			<div className="min-w-0 flex-1">
+				<p className="font-medium text-destructive">{undelivered.length ? `Not delivered to ${RECIPIENTS.format(undelivered)}` : "Not sent"}</p>
+				{reason ? <p className="text-xs break-words text-muted-foreground">{reason}</p> : null}
+			</div>
+			<Button variant="outline" size="xs" disabled={retry.isPending || retry.isSuccess} onClick={() => retry.mutate()}>
+				{retry.isPending ? <Spinner className="size-3" /> : <RotateCwIcon />}
+				Retry
+			</Button>
+		</div>
 	);
 }
 

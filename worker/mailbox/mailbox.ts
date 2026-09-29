@@ -20,6 +20,7 @@ import {
 	normalizeAddress,
 	normalizeSubject,
 	r2Keys,
+	RETRYABLE,
 	type SendAttachmentRef,
 	type SendInput,
 	type SendQueued,
@@ -30,6 +31,7 @@ import {
 	ulid,
 	withLinks,
 } from "#shared";
+import { retryAddressing } from "./retry";
 import { MIGRATIONS } from "./schema";
 
 const SUBJECT_FALLBACK_WINDOW_MS = 30 * 24 * 3600 * 1000;
@@ -93,6 +95,33 @@ interface MessageRow extends Row {
 
 interface ContactRow extends Row, Contact {}
 
+interface RetryRow extends Row {
+	thread_id: string;
+	from_json: string;
+	to_json: string;
+	cc_json: string;
+	bcc_json: string;
+	subject: string;
+	text_body: string | null;
+	in_reply_to: string;
+	refs: string;
+	provider_message_id: string | null;
+	delivery_status: DeliveryStatus | null;
+	/** JSON array of the recipients whose servers refused it. */
+	refused: string;
+}
+
+/** A message to send again, addressed to just the recipients it goes to this time. */
+interface Retry {
+	row: RetryRow;
+	from: Address;
+	to: Address[];
+	cc: Address[];
+	bcc: Address[];
+	/** Normalized. */
+	recipients: Set<string>;
+}
+
 interface AttachmentRow extends Row {
 	id: string;
 	message_id: string;
@@ -121,6 +150,9 @@ const IN_ADDRESSES = (param: string) =>
 	`(${param} IS NULL OR EXISTS (SELECT 1 FROM message_addresses a
 		WHERE a.message_id = m.id AND a.address IN (SELECT value FROM json_each(${param}))))`;
 const addressParam = (filter: AddressFilter) => (filter.addresses ? JSON.stringify(filter.addresses) : null);
+
+/** Predicate on deliveries alias `d`: the recipient's server refused the message, so a retry sends to them. */
+const REFUSED = `d.status IN (${[...RETRYABLE].map((s) => `'${s}'`).join(", ")})`;
 
 /**
  * One instance per mailbox (name = mailbox id from the D1 directory).
@@ -468,9 +500,22 @@ export class Mailbox extends DurableObject<Env> {
 				threadId,
 			)
 			.toArray();
+		const refused = this.sql
+			.exec<{ message_id: string; recipient: string }>(
+				`SELECT d.message_id, d.recipient FROM deliveries d JOIN messages m ON m.id = d.message_id
+				 WHERE m.thread_id = ?1 AND ${REFUSED}`,
+				threadId,
+			)
+			.toArray();
 		return {
 			thread: toThreadSummary(thread),
-			messages: messages.map((m) => toMessageDetail(m, attachments.filter((a) => a.message_id === m.id))),
+			messages: messages.map((m) =>
+				toMessageDetail(
+					m,
+					attachments.filter((a) => a.message_id === m.id),
+					refused.filter((d) => d.message_id === m.id).map((d) => d.recipient),
+				),
+			),
 		};
 	}
 
@@ -670,12 +715,15 @@ export class Mailbox extends DurableObject<Env> {
 		return { id, threadId, sendAt };
 	}
 
-	/** Undo send: only possible while the message is still waiting in the outbox. */
+	/**
+	 * Undo send: only possible while the message is still waiting in the outbox. Not for a retry of mail that
+	 * already went out to someone, since undoing deletes the message.
+	 */
 	async cancelSend(messageId: string): Promise<boolean> {
 		const row = this.sql
 			.exec<{ thread_id: string; rowid: number }>(
 				`SELECT m.thread_id, m.rowid FROM outbox o JOIN messages m ON m.id = o.message_id
-				 WHERE o.message_id = ?1 AND m.delivery_status = 'queued'`,
+				 WHERE o.message_id = ?1 AND m.delivery_status = 'queued' AND m.provider_message_id IS NULL`,
 				messageId,
 			)
 			.toArray()[0];
@@ -697,6 +745,75 @@ export class Mailbox extends DurableObject<Env> {
 		return true;
 	}
 
+	/** Who a retry would go to, and as whom, so the API can check the sender and route the recipients first. */
+	async retryTarget(messageId: string): Promise<{ from: string; recipients: string[] } | null> {
+		const target = this.findRetry(messageId);
+		return target && { from: target.from.address, recipients: [...target.recipients] };
+	}
+
+	/**
+	 * Puts a failed or bounced message back in the outbox, addressed to whoever it didn't reach (see findRetry).
+	 * It's the same message: a retry of mail that already went out keeps its date, and delivery events for
+	 * either send still land on it (the `sends` table).
+	 */
+	async retrySend(messageId: string, local: LocalRecipient[]): Promise<boolean> {
+		const htmlKey = this.sql.exec<{ html_key: string | null }>(`SELECT html_key FROM messages WHERE id = ?1`, messageId).toArray()[0]?.html_key;
+		const html = htmlKey ? await (await this.env.MAIL.get(htmlKey))?.text() : undefined;
+		// Checked after reading R2, since other calls can run while it waits.
+		const target = this.findRetry(messageId);
+		if (!target) return false;
+
+		const { row, recipients } = target;
+		const inReplyTo: string[] = JSON.parse(row.in_reply_to);
+		const refs: string[] = JSON.parse(row.refs);
+		const localRecipients = local.filter((r) => recipients.has(r.address));
+		const payload: OutboxPayload = {
+			from: target.from,
+			to: target.to,
+			cc: target.cc,
+			bcc: target.bcc,
+			subject: row.subject,
+			text: row.text_body ?? "",
+			html,
+			headers: {
+				...(inReplyTo[0] ? { "In-Reply-To": inReplyTo[0] } : {}),
+				...(refs.length ? { References: refs.join(" ") } : {}),
+			},
+			attachments: this.sql.exec<AttachmentRow>(`SELECT * FROM attachments WHERE message_id = ?1`, messageId).toArray().map(toStoredAttachment),
+			localRecipients,
+			localOnly: localRecipients.length === recipients.size,
+		};
+
+		this.ctx.storage.transactionSync(() => {
+			this.sql.exec(`INSERT INTO outbox (message_id, send_at, payload) VALUES (?1, ?2, ?3)`, messageId, Date.now(), JSON.stringify(payload));
+			this.sql.exec(`UPDATE messages SET delivery_status = 'queued', delivery_detail = NULL WHERE id = ?1`, messageId);
+		});
+		await this.scheduleOutbox();
+		this.broadcast({ type: "delivery.changed", messageId, status: "queued" });
+		this.broadcast({ type: "threads.changed", threadIds: [row.thread_id] });
+		return true;
+	}
+
+	/** Who a retry goes to (see retryAddressing). Null when there's nothing to retry, including while one is queued. */
+	private findRetry(messageId: string): Retry | null {
+		const row = this.sql
+			.exec<RetryRow>(
+				`SELECT m.thread_id, m.from_json, m.to_json, m.cc_json, m.bcc_json, m.subject, m.text_body, m.in_reply_to, m.refs,
+					m.provider_message_id, m.delivery_status,
+					(SELECT json_group_array(d.recipient) FROM deliveries d WHERE d.message_id = m.id AND ${REFUSED}) AS refused
+				 FROM messages m
+				 WHERE m.id = ?1 AND m.direction = 'out' AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.message_id = m.id)`,
+				messageId,
+			)
+			.toArray()[0];
+		if (!row?.delivery_status || !RETRYABLE.has(row.delivery_status)) return null;
+		const addressing = retryAddressing(
+			{ to: JSON.parse(row.to_json), cc: JSON.parse(row.cc_json), bcc: JSON.parse(row.bcc_json) },
+			row.provider_message_id === null ? null : new Set<string>(JSON.parse(row.refused)),
+		);
+		return addressing.recipients.size > 0 ? { row, from: JSON.parse(row.from_json), ...addressing } : null;
+	}
+
 	private async scheduleOutbox(): Promise<void> {
 		const next = this.sql.exec<{ at: number | null }>(`SELECT min(send_at) AS at FROM outbox`).one().at;
 		if (next === null) {
@@ -707,7 +824,6 @@ export class Mailbox extends DurableObject<Env> {
 		if (current === null || current > next) await this.ctx.storage.setAlarm(next);
 	}
 
-	/** Drains due outbox rows. Each message is handled independently so one failure can't block the rest. */
 	/**
 	 * Recipients routed back into this mailbox get the sent copy as their received copy: labelled and
 	 * unread like inbound mail. When the send also went out through Email Sending, the copy that loops
@@ -732,6 +848,7 @@ export class Mailbox extends DurableObject<Env> {
 		);
 	}
 
+	/** Drains due outbox rows. Each message is handled independently so one failure can't block the rest. */
 	override async alarm(): Promise<void> {
 		const due = this.sql
 			.exec<{ message_id: string; attempts: number; payload: string; delivery_status: DeliveryStatus; thread_id: string }>(
@@ -747,7 +864,7 @@ export class Mailbox extends DurableObject<Env> {
 			if (row.delivery_status === "sending") {
 				// A previous attempt was interrupted after handing off to Email Sending.
 				// Don't risk a duplicate: surface it to the user instead.
-				this.finishSend(row.message_id, row.thread_id, "failed", "Interrupted mid-send; check Sent logs before retrying.");
+				this.finishSend(row.message_id, row.thread_id, { status: "failed", detail: "Interrupted mid-send; check Sent logs before retrying." });
 				continue;
 			}
 			this.sql.exec(`UPDATE messages SET delivery_status = 'sending' WHERE id = ?1`, row.message_id);
@@ -770,13 +887,13 @@ export class Mailbox extends DurableObject<Env> {
 					this.sql.exec(`UPDATE outbox SET send_at = ?2 WHERE message_id = ?1`, row.message_id, Date.now() + backoff);
 					this.sql.exec(`UPDATE messages SET delivery_status = 'queued', delivery_detail = ?2 WHERE id = ?1`, row.message_id, detail);
 				} else {
-					this.finishSend(row.message_id, row.thread_id, "failed", detail);
+					this.finishSend(row.message_id, row.thread_id, { status: "failed", detail });
 				}
 				console.error(JSON.stringify({ msg: "send failed", messageId: row.message_id, code, attempts }));
 				continue;
 			}
 
-			this.finishSend(row.message_id, row.thread_id, "sent", null, providerMessageId, payload.localRecipients);
+			this.finishSend(row.message_id, row.thread_id, { status: "sent", providerMessageId, payload });
 			try {
 				await this.persistSentAttachments(row.message_id, payload.attachments);
 			} catch (err) {
@@ -799,54 +916,68 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	/**
-	 * Uploads live under a lifecycle-reaped prefix; keep a permanent copy with the sent message.
+	 * Uploads live under a lifecycle-reaped prefix; keep a permanent copy with the sent message. A retry of mail
+	 * that already went out finds its files moved.
 	 * Streamed rather than buffered: linked files run up to MAX_UPLOAD_BYTES.
 	 */
 	private async persistSentAttachments(messageId: string, attachments: StoredAttachment[]): Promise<void> {
-		if (attachments.length === 0) return;
+		const uploads = attachments.filter((a) => a.r2Key.startsWith("uploads/"));
+		if (uploads.length === 0) return;
 		const mailboxId = this.mailboxId();
-		for (const a of attachments) {
+		for (const a of uploads) {
 			const upload = await this.env.MAIL.get(a.r2Key);
 			if (!upload) throw new Error(`Attachment missing: ${a.filename}`);
 			const r2Key = r2Keys.attachment(mailboxId, messageId, a.id);
 			await this.env.MAIL.put(r2Key, upload.body, { httpMetadata: { contentType: a.contentType } });
 			this.sql.exec(`UPDATE attachments SET r2_key = ?2 WHERE id = ?1`, a.id, r2Key);
-			if (a.r2Key.startsWith("uploads/")) await this.env.MAIL.delete(a.r2Key);
+			await this.env.MAIL.delete(a.r2Key);
 		}
 	}
 
 	private finishSend(
 		messageId: string,
 		threadId: string,
-		status: "sent" | "failed",
-		detail: string | null,
-		providerMessageId?: string,
-		local: LocalRecipient[] = [],
+		outcome: { status: "failed"; detail: string } | { status: "sent"; providerMessageId?: string; payload: OutboxPayload },
 	): void {
+		const now = Date.now();
+		const sent = outcome.status === "sent" ? outcome : null;
+		const headerId = sent?.providerMessageId ? toHeaderId(sent.providerMessageId) : null;
 		this.ctx.storage.transactionSync(() => {
 			this.sql.exec(`DELETE FROM outbox WHERE message_id = ?1`, messageId);
+			// A failed retry keeps the ids of the send before it, and a retry keeps the date the message first went out.
 			this.sql.exec(
-				`UPDATE messages SET delivery_status = ?2, delivery_detail = ?3, provider_message_id = ?4,
-					message_id_header = ?5, date = CASE WHEN ?2 = 'sent' THEN ?6 ELSE date END
+				`UPDATE messages SET delivery_status = ?2, delivery_detail = ?3,
+					provider_message_id = coalesce(?4, provider_message_id), message_id_header = coalesce(?5, message_id_header),
+					date = CASE WHEN ?2 = 'sent' AND provider_message_id IS NULL THEN ?6 ELSE date END
 				 WHERE id = ?1`,
 				messageId,
-				status,
-				detail,
-				providerMessageId ?? null,
-				providerMessageId ? toHeaderId(providerMessageId) : null,
-				Date.now(),
+				outcome.status,
+				outcome.status === "failed" ? outcome.detail : null,
+				sent?.providerMessageId ?? null,
+				headerId,
+				now,
 			);
-			if (status === "sent") {
-				this.removeLabels([messageId], ["outbox"]);
-				this.addLabels([messageId], ["sent"]);
-				if (providerMessageId) {
-					// We can't set Message-ID ourselves; register what Email Sending gave us so replies thread.
-					this.registerRef(toHeaderId(providerMessageId), threadId);
-				}
-				if (local.length > 0) this.deliverLocally(messageId, local, providerMessageId === undefined);
+			if (!sent) return;
+			this.removeLabels([messageId], ["outbox"]);
+			this.addLabels([messageId], ["sent"]);
+			if (headerId) {
+				// We can't set Message-ID ourselves; register what Email Sending gave us so replies thread and its
+				// delivery events find this message.
+				this.registerRef(headerId, threadId);
+				this.sql.exec(`INSERT OR IGNORE INTO sends (provider_message_id, message_id) VALUES (?1, ?2)`, headerId, messageId);
 			}
+			// A retry's recipients start over. Events from the send before are older, so they no longer apply.
+			const { to, cc, bcc, localRecipients = [] } = sent.payload;
+			this.sql.exec(
+				`UPDATE deliveries SET status = 'sent', detail = NULL, updated_at = ?3
+				 WHERE message_id = ?1 AND recipient IN (SELECT value FROM json_each(?2))`,
+				messageId,
+				JSON.stringify([...to, ...cc, ...bcc].map((a) => normalizeAddress(a.address))),
+				now,
+			);
+			if (localRecipients.length > 0) this.deliverLocally(messageId, localRecipients, sent.providerMessageId === undefined);
 		});
-		this.broadcast({ type: "delivery.changed", messageId, status });
+		this.broadcast({ type: "delivery.changed", messageId, status: outcome.status });
 		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
 	}
 
@@ -854,8 +985,7 @@ export class Mailbox extends DurableObject<Env> {
 	async applyDeliveryEvent(event: DeliveryEventInput): Promise<boolean> {
 		const msg = this.sql
 			.exec<{ id: string; thread_id: string }>(
-				`SELECT id, thread_id FROM messages WHERE provider_message_id = ?1 OR message_id_header = ?2 LIMIT 1`,
-				event.providerMessageId,
+				`SELECT m.id, m.thread_id FROM sends s JOIN messages m ON m.id = s.message_id WHERE s.provider_message_id = ?1`,
 				toHeaderId(event.providerMessageId),
 			)
 			.toArray()[0];
@@ -909,11 +1039,13 @@ export class Mailbox extends DurableObject<Env> {
 
 function buildSendRequest(p: OutboxPayload, attachments: EmailAttachment[]): EmailMessageBuilder {
 	const toEmail = (a: Address) => (a.name ? { email: a.address, name: a.name } : a.address);
+	const cc = p.cc.length ? { cc: p.cc.map(toEmail) } : {};
+	const bcc = p.bcc.length ? { bcc: p.bcc.map(toEmail) } : {};
+	// A retry to Bcc'd recipients alone has nobody in To, which Email Sending allows as long as there's a Bcc.
+	const destinations: EmailDestinations = p.to.length ? { to: p.to.map(toEmail), ...cc, ...bcc } : { bcc: p.bcc.map(toEmail) };
 	return {
 		from: toEmail(p.from),
-		to: p.to.map(toEmail),
-		...(p.cc.length ? { cc: p.cc.map(toEmail) } : {}),
-		...(p.bcc.length ? { bcc: p.bcc.map(toEmail) } : {}),
+		...destinations,
 		subject: p.subject,
 		text: p.text,
 		...(p.html ? { html: p.html } : {}),
@@ -981,7 +1113,7 @@ function toAttachmentMeta(a: AttachmentRow): AttachmentMeta {
 	};
 }
 
-function toMessageDetail(m: MessageRow, attachments: AttachmentRow[]): MessageDetail {
+function toMessageDetail(m: MessageRow, attachments: AttachmentRow[], undelivered: string[]): MessageDetail {
 	return {
 		id: m.id,
 		threadId: m.thread_id,
@@ -998,7 +1130,7 @@ function toMessageDetail(m: MessageRow, attachments: AttachmentRow[]): MessageDe
 		isRead: m.is_read === 1,
 		labels: JSON.parse(m.labels),
 		attachments: attachments.map(toAttachmentMeta),
-		delivery: m.delivery_status ? { status: m.delivery_status, detail: m.delivery_detail } : null,
+		delivery: m.delivery_status ? { status: m.delivery_status, detail: m.delivery_detail, undelivered } : null,
 		auth: m.auth_json ? JSON.parse(m.auth_json) : null,
 	};
 }
