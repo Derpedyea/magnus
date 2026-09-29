@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { ClockIcon, InboxIcon, MailsIcon, OctagonAlertIcon, SendIcon, SettingsIcon, ShieldIcon, SquarePenIcon, StarIcon, TagIcon, Trash2Icon, type LucideIcon } from "lucide-react";
-import { useEffect, useEffectEvent } from "react";
+import { useEffect, useEffectEvent, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
@@ -114,7 +114,9 @@ export function Sidebar(props: {
 						delay={iconsOnly ? 0 : 600}
 						render={
 							<SidebarMenuButton isActive={scope.includes(address)} onClick={(e) => pick(address, e.shiftKey || e.metaKey || e.ctrlKey)} className="select-none">
-								<span className={`mx-1 size-2 shrink-0 rounded-full ${props.colors.get(address)}`} />
+								<RowIcon unread={unread}>
+									<span className={`size-2 rounded-full ${props.colors.get(address)}`} />
+								</RowIcon>
 								<span>{address}</span>
 							</SidebarMenuButton>
 						}
@@ -136,11 +138,9 @@ export function Sidebar(props: {
 					onClick={() => setOpenMobile(false)}
 					render={<Link to="/$view" params={{ view: label }} activeOptions={{ includeSearch: false }} />}
 				>
-					{/* Collapsed, the count is hidden: a dot on the icon stands in for it. */}
-					<span className="relative">
+					<RowIcon unread={unread}>
 						<Icon />
-						{unread > 0 ? <span className="absolute -top-0.5 -right-0.5 hidden size-1.5 rounded-full bg-sidebar-primary group-data-[collapsible=icon]:block" /> : null}
-					</span>
+					</RowIcon>
 					<span>{name}</span>
 				</SidebarMenuButton>
 				{unread > 0 ? <SidebarMenuBadge>{unread}</SidebarMenuBadge> : null}
@@ -257,6 +257,16 @@ export function Sidebar(props: {
 				) : null}
 			</SidebarFooter>
 		</SidebarRoot>
+	);
+}
+
+/** A row's icon. Collapsed, the unread count is hidden, so a dot on the icon stands in for it. */
+function RowIcon(props: { unread: number; children: ReactNode }) {
+	return (
+		<span className="relative flex size-4 shrink-0 items-center justify-center">
+			{props.children}
+			{props.unread > 0 ? <span className="absolute -top-0.5 -right-0.5 hidden size-1.5 rounded-full bg-sidebar-primary group-data-[collapsible=icon]:block" /> : null}
+		</span>
 	);
 }
 
