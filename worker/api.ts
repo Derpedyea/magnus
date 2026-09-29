@@ -10,10 +10,10 @@ import {
 	mergeByRecency,
 	mergeCounts,
 	normalizeAddress,
+	planAttachments,
 	planScope,
 	r2Keys,
 	type SendAttachmentRef,
-	splitAttachments,
 	type ThreadSummary,
 	type User,
 } from "#shared";
@@ -234,8 +234,8 @@ mb.post("/send", zValidator("json", ComposeSchema), async (c) => {
 		if (!head) return c.json({ error: `Attachment expired: ${a.filename}` }, 400);
 		attachments.push({ ...a, size: head.size });
 	}
-	const bodyBytes = new TextEncoder().encode(req.text + (req.html ?? "")).length;
-	const { attached, linked, fits } = splitAttachments(attachments, bodyBytes);
+	const linkBase = `${new URL(c.req.url).origin}/f/${c.var.mailboxId}/`;
+	const { attached, linked, fits } = planAttachments(attachments, req, linkBase);
 	if (!fits) return c.json({ error: "Message is too long to send" }, 413);
 
 	const recipients = [...new Set([...req.to, ...req.cc, ...req.bcc].map((a) => normalizeAddress(a.address)))];
@@ -256,7 +256,7 @@ mb.post("/send", zValidator("json", ComposeSchema), async (c) => {
 		replyToMessageId: req.replyToMessageId,
 		attachments: attached,
 		links: linked,
-		linkBase: `${new URL(c.req.url).origin}/f/${c.var.mailboxId}/`,
+		linkBase,
 		delayMs: req.delaySeconds * 1000,
 		localRecipients: local,
 		localOnly: local.length === recipients.length,

@@ -11,7 +11,7 @@ export const MAX_OUTBOUND_BYTES = 5 * 1024 * 1024;
 /** Largest single upload: Cloudflare's request body limit on Free and Pro plans. */
 export const MAX_UPLOAD_BYTES = 100 * 1000 * 1000;
 
-/** Room for headers (Email Sending allows 16 KB of custom ones), MIME boundaries, and the link block. */
+/** Room for headers (Email Sending allows 16 KB of custom ones) and MIME boundaries. */
 const MESSAGE_OVERHEAD = 64 * 1024;
 
 /**
@@ -35,6 +35,21 @@ export function splitAttachments<T extends { size: number }>(files: T[], bodyByt
 	return { attached: files.filter((f) => !linked.has(f)), linked: files.filter((f) => linked.has(f)), fits: total <= MAX_OUTBOUND_BYTES };
 }
 
+/**
+ * splitAttachments for a whole message. Linking anything grows the body: a block in the text and, for plain-text
+ * mail, an HTML part carrying the text again. So once something has to be linked, split again against that
+ * bigger body, sized as if every file were linked, which only overestimates.
+ */
+export function planAttachments<T extends Omit<LinkedFile, "url">>(files: T[], body: MessageBody, linkBase: string) {
+	const plain = splitAttachments(files, byteLength(body.text + (body.html ?? "")));
+	if (plain.linked.length === 0) return plain;
+	const url = linkBase + newLinkToken();
+	const linked = withLinks(body, files.map((f) => ({ ...f, url })));
+	return splitAttachments(files, byteLength(linked.text + linked.html));
+}
+
+const byteLength = (s: string) => new TextEncoder().encode(s).length;
+
 /** 128 random bits, base64url. The link's only credential. */
 export function newLinkToken(): string {
 	const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -48,6 +63,19 @@ export interface LinkedFile {
 	contentType: string;
 	size: number;
 	url: string;
+}
+
+export interface MessageBody {
+	text: string;
+	html?: string;
+}
+
+/** The body once `files` are linked: their block in the text, and cards in the HTML, made from the text if there's none. */
+export function withLinks(body: MessageBody, files: LinkedFile[]): { text: string; html: string } {
+	return {
+		text: insertBeforeQuote(body.text, linkBlockText(files)),
+		html: body.html ? body.html + linkCards(files) : linkedMessageHtml(body.text, files),
+	};
 }
 
 // Wording after Thunderbird's Filelink, which recipients have seen for a decade.

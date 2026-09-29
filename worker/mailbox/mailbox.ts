@@ -9,10 +9,6 @@ import {
 	type DeliveryEventInput,
 	type DeliveryStatus,
 	type IngestInput,
-	insertBeforeQuote,
-	linkBlockText,
-	linkCards,
-	linkedMessageHtml,
 	type LiveEvent,
 	type LocalRecipient,
 	type MessageBlobs,
@@ -30,6 +26,7 @@ import {
 	type ThreadDetail,
 	type ThreadSummary,
 	ulid,
+	withLinks,
 } from "#shared";
 import { MIGRATIONS } from "./schema";
 
@@ -578,9 +575,7 @@ export class Mailbox extends DurableObject<Env> {
 		// The sent copy keeps the links too, so the sender sees what recipients got.
 		let { text, html } = input;
 		if (linked.length > 0) {
-			const files = linked.map((l) => ({ ...l.file, url: l.url }));
-			html = html ? html + linkCards(files) : linkedMessageHtml(text, files);
-			text = insertBeforeQuote(text, linkBlockText(files));
+			({ text, html } = withLinks({ text, html }, linked.map((l) => ({ ...l.file, url: l.url }))));
 		}
 
 		let htmlKey: string | null = null;

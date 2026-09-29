@@ -106,6 +106,8 @@ ${body}
 			"X-Content-Type-Options": "nosniff",
 			"Referrer-Policy": "no-referrer",
 			"X-Robots-Tag": "noindex",
+			// Sharing can stop and start again at any moment; a cached "No longer shared" must not outlive it.
+			"Cache-Control": "no-store",
 		},
 	});
 }

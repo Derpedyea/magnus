@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { encodedSize, insertBeforeQuote, isLinkToken, linkedMessageHtml, MAX_OUTBOUND_BYTES, newLinkToken, splitAttachments } from "./links";
+import { encodedSize, insertBeforeQuote, isLinkToken, linkedMessageHtml, MAX_OUTBOUND_BYTES, newLinkToken, planAttachments, splitAttachments } from "./links";
 
 const MB = 1_000_000;
 
@@ -23,6 +23,20 @@ describe("splitAttachments", () => {
 		expect(splitAttachments([photo], 0).linked).toEqual([]);
 		expect(splitAttachments([photo], 0.5 * MB).linked).toEqual([photo]);
 		expect(splitAttachments([photo], 5 * MB).fits).toBe(false);
+	});
+});
+
+describe("planAttachments", () => {
+	it("budgets for the HTML part that linking adds to plain-text mail", () => {
+		const video = { filename: "clip.mp4", contentType: "video/mp4", size: 12 * MB };
+		const text = "x".repeat(2.5 * MB);
+		// The text alone fits once the video is linked, but not once it's also carried in the HTML part.
+		expect(splitAttachments([video], text.length).fits).toBe(true);
+		expect(planAttachments([video], { text }, "https://mail.example.com/f/mbx_1/").fits).toBe(false);
+	});
+	it("leaves messages with nothing to link alone", () => {
+		const pdf = { filename: "a.pdf", contentType: "application/pdf", size: MB };
+		expect(planAttachments([pdf], { text: "hi" }, "https://mail.example.com/f/mbx_1/")).toEqual({ attached: [pdf], linked: [], fits: true });
 	});
 });
 

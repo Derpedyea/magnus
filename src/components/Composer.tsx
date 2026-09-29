@@ -1,4 +1,4 @@
-import { formatBytes, isValidAddress, MAX_UPLOAD_BYTES, type SendAttachmentRef, splitAttachments } from "#shared";
+import { formatBytes, isValidAddress, MAX_UPLOAD_BYTES, planAttachments, type SendAttachmentRef } from "#shared";
 import { useForm, useSelector } from "@tanstack/react-form";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { LinkIcon, PaperclipIcon, XIcon } from "lucide-react";
@@ -75,7 +75,9 @@ export function Composer(props: {
 	const pinned = useSelector(form.store, (s) => Boolean(s.values.replyToMessageId) || s.values.attachments.length > 0);
 	// Same split the server makes on send: whatever doesn't fit in the message goes as a download link.
 	const linked = new Set(
-		useSelector(form.store, (s) => splitAttachments(s.values.attachments, new TextEncoder().encode(s.values.text).length).linked.map((a) => a.r2Key)),
+		useSelector(form.store, (s) =>
+			planAttachments(s.values.attachments, { text: s.values.text }, `${location.origin}/f/${s.values.mailboxId}/`).linked.map((a) => a.r2Key),
+		),
 	);
 	const fromOptions = pinned ? props.identities.filter((i) => i.mailboxId === mailboxId) : props.identities;
 	const key = (mailboxId: string, address: string) => `${mailboxId}/${address}`;

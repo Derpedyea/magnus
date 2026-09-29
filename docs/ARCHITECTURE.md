@@ -202,9 +202,10 @@ Email Sending caps a message at 5 MiB, so larger files go as download links, the
 work. Code: `shared/links.ts`, `worker/links.ts`.
 
 1. **Upload** takes files up to 100 MB (Cloudflare's request body limit on Free and Pro plans).
-2. **Split:** `splitAttachments()` counts every part as base64 plus a fixed allowance for headers, then turns
-   the largest files into links until the rest fits. The composer runs the same function to mark linked files
-   as you attach them, and the send route runs it again on the sizes in R2.
+2. **Split:** `planAttachments()` counts every part as base64 plus a fixed allowance for headers, then turns
+   the largest files into links until the rest fits. Linking grows the body (step 3), so once anything is
+   linked it splits again against the linked body. The composer runs the same function to mark linked files
+   as you attach them, and the send route runs it again on the sizes in R2, refusing a body too big to send.
 3. **Enqueue:** each linked file becomes an ordinary attachment row with a 128-bit `link_token`. The text part
    gets a block naming each file, its size, and link, above any trailing quote, where Gmail would fold it away.
    The message also gains an HTML part: the sender's text with a card per file in the same place (extension
