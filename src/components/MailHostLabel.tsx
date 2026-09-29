@@ -5,5 +5,5 @@ import { FieldDescription } from "@/components/ui/field";
 export function MailHostLabel({ host }: { host: MailHost }) {
 	if (host.kind === "none") return <FieldDescription>No mail yet</FieldDescription>;
 	if (host.kind === "cloudflare") return <FieldDescription>Already on Email Routing</FieldDescription>;
-	return <FieldDescription className="text-amber-700">Gets mail at {host.provider}</FieldDescription>;
+	return <FieldDescription className="text-amber-700 dark:text-amber-400">Gets mail at {host.provider}</FieldDescription>;
 }

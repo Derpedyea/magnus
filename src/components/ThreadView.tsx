@@ -1,8 +1,9 @@
 import { type Address, type AttachmentMeta, type DeliveryStatus, formatBytes, type MessageDetail, type PreviewKind, preview } from "#shared";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
+import { useSelector } from "@tanstack/react-store";
 import { ArchiveIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, StarIcon, StarOffIcon, Trash2Icon } from "lucide-react";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,7 @@ import { api, formatList, type Identity, messageUrl } from "../api";
 import { openDraft } from "../compose";
 import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
+import { appearance } from "../theme";
 import type { Draft } from "./Composer";
 import { FileViewer } from "./FileViewer";
 
@@ -228,12 +230,17 @@ function Message(props: {
 /**
  * Email HTML renders in a sandboxed iframe: no scripts (sandbox + CSP), same-origin only so we
  * can size it and so inline cid: images authenticate. Remote images stay blocked until asked.
+ * Mail that sets no colours of its own takes the theme's; the rest keeps the look it was designed
+ * for, on a white sheet.
  */
 function HtmlBody({ src, onLink }: { src: string; /** Gets each link click first; returns true to keep it in the app. */ onLink: (href: string) => boolean }) {
 	const ref = useRef<HTMLIFrameElement>(null);
 	const [images, setImages] = useState(false);
 	const [height, setHeight] = useState(48);
 	const [hasBlocked, setHasBlocked] = useState(false);
+	const [plain, setPlain] = useState(false);
+	const isDark = useSelector(appearance, (s) => s.isDark);
+	const theme = useSelector(appearance, (s) => s.active);
 	// Each load (showing images reloads the frame) brings a new document to listen to.
 	const [doc, setDoc] = useState<Document | null>(null);
 
@@ -257,8 +264,16 @@ function HtmlBody({ src, onLink }: { src: string; /** Gets each link click first
 		const margin = Number.parseFloat(getComputedStyle(doc.body).marginTop) + Number.parseFloat(getComputedStyle(doc.body).marginBottom);
 		setHeight(Math.ceil(doc.body.scrollHeight + margin) + 4);
 		setHasBlocked(doc.querySelector("img[data-blocked-src]") !== null);
+		setPlain(!setsColors(doc));
 		setDoc(doc);
 	};
+	// Before paint, so plain mail never shows dark text on a dark card. Reruns when the theme changes, to pick up its text colour.
+	useLayoutEffect(() => {
+		const root = doc?.documentElement;
+		if (!plain || !root || !ref.current) return;
+		root.style.setProperty("color-scheme", isDark ? "dark" : "light");
+		root.style.setProperty("color", getComputedStyle(ref.current).color);
+	}, [doc, plain, isDark, theme]);
 
 	return (
 		<div>
@@ -275,11 +290,17 @@ function HtmlBody({ src, onLink }: { src: string; /** Gets each link click first
 				sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
 				onLoad={onLoad}
 				style={{ height }}
-				className="w-full border-0"
+				// Hidden until loaded, so a dark theme doesn't flash a white sheet at plain mail.
+				className={cn("w-full border-0", !doc && "invisible", !plain && "rounded-md bg-white")}
 			/>
 		</div>
 	);
 }
+
+/** Whether an email styles its own colours anywhere. False positives only cost a white sheet. */
+const setsColors = (doc: Document) =>
+	doc.querySelector("[bgcolor], [background], [text], font[color], [style*='color' i], [style*='background' i]") !== null ||
+	Array.from(doc.querySelectorAll("style")).some((s) => /color|background/i.test(s.textContent));
 
 const DONE = "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300";
 const WAITING = "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300";

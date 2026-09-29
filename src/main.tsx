@@ -7,6 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError } from "./api";
 import { routeTree } from "./routeTree.gen";
 import "./index.css";
+import "./theme";
 
 // A 401 means the session ended mid-use (expired, or signed out elsewhere). Dropping the account and
 // re-running the routes sends you through /_app's guard to sign in, and back here afterwards.

@@ -14,8 +14,7 @@ import {
 	SidebarProvider,
 	SidebarTrigger,
 } from "@/components/ui/sidebar";
-import { SignOutButton } from "../components/SignOutButton";
-import { useAccount } from "../hooks";
+import { AccountMenu } from "../components/AccountMenu";
 import { directoryQuery, meQuery } from "../queries";
 
 const PAGES = [
@@ -34,7 +33,6 @@ export const Route = createFileRoute("/_app/admin")({
 });
 
 function AdminLayout() {
-	const { user } = useAccount();
 	const pathname = useLocation({ select: (l) => l.pathname });
 	return (
 		<SidebarProvider className="h-full text-sm">
@@ -74,9 +72,8 @@ function AdminLayout() {
 			<SidebarInset className="min-w-0">
 				<header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
 					<SidebarTrigger />
-					<div className="ml-auto flex items-center gap-3 text-muted-foreground">
-						<span className="hidden sm:inline">{user.name}</span>
-						<SignOutButton />
+					<div className="ml-auto">
+						<AccountMenu />
 					</div>
 				</header>
 				<div className="min-h-0 flex-1 overflow-y-auto">
