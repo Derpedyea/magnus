@@ -24,6 +24,10 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
 - **Real threading** by `Message-ID`/`References`, with a careful subject fallback. Replies thread in Gmail,
   Apple Mail, and Outlook too.
 - **Full-text search**, undo send, and a delivery badge on every sent message (delivered, bounced, …).
+- **Previews** for photos, video, audio, and PDFs, in the app and on the page a file link opens. Video
+  streams, so it plays and seeks without downloading first.
+- **Big files go as links.** Whatever doesn't fit in a message is sent as a download link, like Gmail's Drive
+  links. It keeps working until you stop sharing it from Sent.
 - **Live updates** over hibernatable WebSockets, so idle tabs cost nothing.
 - **Hostile HTML stays contained**: streaming sanitizer, strict CSP, sandboxed iframe, and remote images
   blocked until you ask.
@@ -102,7 +106,8 @@ Nothing is really sent locally. Outbound mail, sign-in codes included, is writte
 - **Web client only.** No IMAP, POP, or JMAP, by design. Phones use the web app.
 - **Personal mail, not bulk.** Cloudflare Email Sending is for transactional mail. Don't send newsletters
   from it.
-- **Outbound messages max out at 5 MiB** including attachments (inbound allows 25 MiB).
+- **Outbound messages max out at 5 MiB** including attachments (inbound allows 25 MiB). Bigger files, up to
+  100 MB each, go as download links instead.
 
 Next up: a mobile layout and installable app, push notifications, drafts, forwarding, and importing mail
 from other providers. The full list is in [the roadmap](docs/ARCHITECTURE.md#8-roadmap).

@@ -1,7 +1,7 @@
-import { isValidAddress, type SendAttachmentRef } from "#shared";
+import { formatBytes, isValidAddress, MAX_UPLOAD_BYTES, type SendAttachmentRef, splitAttachments } from "#shared";
 import { useForm, useSelector } from "@tanstack/react-form";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { PaperclipIcon, XIcon } from "lucide-react";
+import { LinkIcon, PaperclipIcon, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -61,7 +61,11 @@ export function Composer(props: {
 	// Uploads only feed the draft's own attachment list; no cached query reads them.
 	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
 	const upload = useMutation({
-		mutationFn: (files: File[]) => Promise.all(files.map((f) => api.upload(form.getFieldValue("mailboxId"), f))),
+		mutationFn: (files: File[]) => {
+			const tooBig = files.find((f) => f.size > MAX_UPLOAD_BYTES);
+			if (tooBig) throw new Error(`Files can be up to ${formatBytes(MAX_UPLOAD_BYTES)}. ${tooBig.name} is ${formatBytes(tooBig.size)}.`);
+			return Promise.all(files.map((f) => api.upload(form.getFieldValue("mailboxId"), f)));
+		},
 		onSuccess: (refs) => form.setFieldValue("attachments", (prev) => [...prev, ...refs]),
 	});
 	const [showCc, setShowCc] = useState(Boolean(props.initial.cc || props.initial.bcc));
@@ -69,6 +73,10 @@ export function Composer(props: {
 	const mailboxId = useSelector(form.store, (s) => s.values.mailboxId);
 	// Replies and uploads belong to one mailbox, so From can't move them to another.
 	const pinned = useSelector(form.store, (s) => Boolean(s.values.replyToMessageId) || s.values.attachments.length > 0);
+	// Same split the server makes on send: whatever doesn't fit in the message goes as a download link.
+	const linked = new Set(
+		useSelector(form.store, (s) => splitAttachments(s.values.attachments, new TextEncoder().encode(s.values.text).length).linked.map((a) => a.r2Key)),
+	);
 	const fromOptions = pinned ? props.identities.filter((i) => i.mailboxId === mailboxId) : props.identities;
 	const key = (mailboxId: string, address: string) => `${mailboxId}/${address}`;
 	const error = send.error ?? upload.error;
@@ -170,7 +178,8 @@ export function Composer(props: {
 							{f.state.value.map((a) => (
 								<li key={a.r2Key}>
 									<Badge variant="secondary" className="h-6 pr-0.5">
-										{a.filename} <span className="text-muted-foreground">{Math.ceil(a.size / 1024)} KB</span>
+										{linked.has(a.r2Key) ? <LinkIcon data-icon="inline-start" aria-label="Sent as a link" /> : null}
+										{a.filename} <span className="text-muted-foreground">{formatBytes(a.size)}</span>
 										<Button variant="ghost" size="icon-xs" className="size-5 rounded-full" aria-label={`Remove ${a.filename}`} onClick={() => f.handleChange((prev) => prev.filter((x) => x !== a))}>
 											<XIcon />
 										</Button>
@@ -202,7 +211,12 @@ export function Composer(props: {
 					<TooltipContent>Attach files</TooltipContent>
 				</Tooltip>
 				<input ref={filePicker} type="file" multiple hidden onChange={(e) => e.target.files?.length && upload.mutate([...e.target.files])} />
-				<span className="ml-auto text-xs text-muted-foreground">5 MiB max per message</span>
+				{linked.size > 0 ? (
+					<span className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
+						<LinkIcon className="size-3 shrink-0" />
+						Too big to attach, so sent as {linked.size === 1 ? "a link" : "links"}
+					</span>
+				) : null}
 			</div>
 		</form>
 	);

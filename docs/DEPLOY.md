@@ -86,6 +86,9 @@ R2 under `raw/`.
 The app works at its `workers.dev` URL. To use something like `mail.example.com`, add it under the Worker's
 **Settings → Domains & Routes** in the Cloudflare dashboard. Sign-in works on both.
 
+Do this before sending large files. Their download links use the address you sent from, and spam filters
+trust your own domain far more than `workers.dev`, which phishing kits use heavily.
+
 ## Google sign-in (optional)
 
 Codes by email need nothing extra. To add "Continue with Google":

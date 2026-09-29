@@ -83,6 +83,11 @@ export interface AttachmentMeta {
 	/** Content-ID without angle brackets, for cid: references in HTML. */
 	contentId: string | null;
 	inline: boolean;
+	/**
+	 * Sent as a download link (shared/links.ts): its token, and whether the sender still shares it. Null when the
+	 * file is inside the message.
+	 */
+	link: { token: string; shared: boolean } | null;
 }
 
 export interface StoredAttachment extends AttachmentMeta {
@@ -195,6 +200,10 @@ export interface SendInput {
 	/** Local message id being replied to; drives In-Reply-To/References and thread placement. */
 	replyToMessageId?: string;
 	attachments: SendAttachmentRef[];
+	/** Too big to attach: kept like attachments, but the message carries download links to them. */
+	links: SendAttachmentRef[];
+	/** Where links point, `<origin>/f/<mailboxId>/`; each link is this plus the file's token. */
+	linkBase: string;
 	/** Undo-send window / scheduled send. */
 	delayMs: number;
 	/** Recipients delivered by labelling the sent copy once it leaves the outbox (see localRecipients()). */

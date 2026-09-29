@@ -1,4 +1,4 @@
-import type { StoredAttachment } from "#shared";
+import { preview, type StoredAttachment } from "#shared";
 
 /**
  * Serve an email's HTML body as its own document, loaded by the client in
@@ -78,18 +78,67 @@ export function renderEmailHtml(
 	);
 }
 
-/** Types a browser may render inline without risking script execution on our origin. */
-const INLINE_SAFE = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "application/pdf", "text/plain"]);
+/** Locked down even if something renders: no scripts, nothing loaded but the file itself. Chrome's PDF viewer copes. */
+const FILE_CSP = "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'self'";
 
-export function attachmentHeaders(a: StoredAttachment, download: boolean): Headers {
-	const type = a.contentType.toLowerCase().split(";")[0]!.trim();
-	const inline = !download && INLINE_SAFE.has(type);
+/**
+ * Headers for a stored file. It shows inline only when shared/files.ts says it's safe, served as that safe type;
+ * anything else, and anything asked for with `download`, is an attachment.
+ */
+export function fileHeaders(a: { filename: string; contentType: string }, download: boolean): Headers {
+	const shown = download ? null : preview(a);
 	const ascii = a.filename.replaceAll(/[^\x20-\x7e]|["\\]/g, "_");
 	return new Headers({
-		"Content-Type": inline ? a.contentType : "application/octet-stream",
-		"Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(a.filename)}`,
-		"Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
+		"Content-Type": shown?.type ?? "application/octet-stream",
+		"Content-Disposition": `${shown ? "inline" : "attachment"}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(a.filename)}`,
+		"Content-Security-Policy": FILE_CSP,
 		"X-Content-Type-Options": "nosniff",
 		"Cache-Control": "private, max-age=86400, immutable",
 	});
 }
+
+/** Streams a file from R2, honouring Range so video and audio can seek. Null if it's missing. */
+export async function serveFile(bucket: R2Bucket, key: string, request: Request, headers: Headers): Promise<Response | null> {
+	const range = parseRange(request.headers.get("Range"));
+	let obj: R2ObjectBody | null;
+	try {
+		obj = await bucket.get(key, range ? { range } : {});
+	} catch {
+		// R2 rejects a range that starts past the end.
+		const head = await bucket.head(key);
+		return head ? unsatisfiable(head.size) : null;
+	}
+	if (!obj) return null;
+	headers.set("Accept-Ranges", "bytes");
+	headers.set("ETag", obj.httpEtag);
+	if (!range) return new Response(obj.body, { headers });
+
+	const [start, end] = rangeBounds(range, obj.size);
+	if (start > end) {
+		await obj.body.cancel();
+		return unsatisfiable(obj.size);
+	}
+	headers.set("Content-Range", `bytes ${start}-${end}/${obj.size}`);
+	headers.set("Content-Length", String(end - start + 1));
+	return new Response(obj.body, { status: 206, headers });
+}
+
+/** `bytes=a-b`, `bytes=a-`, or `bytes=-n`. Anything else, several ranges included, gets the whole file. */
+export function parseRange(header: string | null): R2Range | null {
+	const m = header?.match(/^bytes=(\d*)-(\d*)$/);
+	if (!m || (!m[1] && !m[2])) return null;
+	if (!m[1]) return { suffix: Number(m[2]) };
+	const offset = Number(m[1]);
+	if (!m[2]) return { offset };
+	const length = Number(m[2]) - offset + 1;
+	return length > 0 ? { offset, length } : null;
+}
+
+/** First and last byte a range covers in a file of `size` bytes; start > end when none of it exists. */
+export function rangeBounds(range: R2Range, size: number): [number, number] {
+	if ("suffix" in range) return [Math.max(0, size - range.suffix), size - 1];
+	const start = range.offset ?? 0;
+	return [start, range.length === undefined ? size - 1 : Math.min(size, start + range.length) - 1];
+}
+
+const unsatisfiable = (size: number) => new Response(null, { status: 416, headers: { "Content-Range": `bytes */${size}` } });
