@@ -35,9 +35,9 @@ export function mergePage<T extends ThreadSummary>(lists: T[][], size: number): 
 	return { threads, next: all.length > size && last ? `${last.lastMessageAt}.${last.id}` : null };
 }
 
-/** Reads a `next` from mergePage. Missing or malformed means the first page. */
+/** Reads a `next` from mergePage. Missing or malformed means the first page. Mail dated before 1970 has negative times. */
 export function parseCursor(value: string | undefined): ListCursor | undefined {
-	const [, at, id] = value?.match(/^(\d+)\.(\w+)$/) ?? [];
+	const [, at, id] = value?.match(/^(-?\d+)\.(\w+)$/) ?? [];
 	return at && id ? { at: Number(at), id } : undefined;
 }
 
