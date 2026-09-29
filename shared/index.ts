@@ -3,6 +3,7 @@ export * from "./cloudflare";
 export * from "./contacts";
 export * from "./directory";
 export * from "./files";
+export * from "./forward";
 export * from "./ids";
 export * from "./keys";
 export * from "./links";

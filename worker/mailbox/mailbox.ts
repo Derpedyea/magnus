@@ -30,6 +30,7 @@ import {
 	type ThreadDetail,
 	type ThreadSummary,
 	ulid,
+	withForward,
 	withLinks,
 } from "#shared";
 import { retryAddressing } from "./retry";
@@ -514,6 +515,26 @@ export class Mailbox extends DurableObject<Env> {
 		};
 	}
 
+	/** One message, with where its body and files are stored. */
+	async getMessage(messageId: string): Promise<{ message: MessageDetail; blobs: MessageBlobs } | null> {
+		const row = this.sql
+			.exec<MessageRow>(
+				`SELECT m.*, (SELECT json_group_array(label) FROM message_labels l WHERE l.message_id = m.id) AS labels
+				 FROM messages m WHERE m.id = ?1`,
+				messageId,
+			)
+			.toArray()[0];
+		if (!row) return null;
+		const attachments = this.sql.exec<AttachmentRow>(`SELECT * FROM attachments WHERE message_id = ?1`, messageId).toArray();
+		const refused = this.sql
+			.exec<{ recipient: string }>(`SELECT d.recipient FROM deliveries d WHERE d.message_id = ?1 AND ${REFUSED}`, messageId)
+			.toArray();
+		return {
+			message: toMessageDetail(row, attachments, refused.map((d) => d.recipient)),
+			blobs: { rawKey: row.raw_key, htmlKey: row.html_key, attachments: attachments.map(toStoredAttachment) },
+		};
+	}
+
 	async getMessageBlobs(messageId: string): Promise<MessageBlobs | null> {
 		const msg = this.sql
 			.exec<{ raw_key: string | null; html_key: string | null }>(`SELECT raw_key, html_key FROM messages WHERE id = ?1`, messageId)
@@ -613,11 +634,11 @@ export class Mailbox extends DurableObject<Env> {
 		const id = ulid(now);
 		const sendAt = now + Math.max(0, input.delayMs);
 
-		const parent = input.replyToMessageId
+		const parent = input.parentMessageId
 			? this.sql
 					.exec<{ thread_id: string; message_id_header: string | null; refs: string }>(
 						`SELECT thread_id, message_id_header, refs FROM messages WHERE id = ?1`,
-						input.replyToMessageId,
+						input.parentMessageId,
 					)
 					.toArray()[0]
 			: undefined;
@@ -633,8 +654,8 @@ export class Mailbox extends DurableObject<Env> {
 			filename: a.filename,
 			contentType: a.contentType,
 			size: a.size,
-			contentId: null,
-			inline: false,
+			contentId: a.contentId ?? null,
+			inline: a.contentId !== undefined,
 			link,
 			r2Key: a.r2Key,
 		});
@@ -645,11 +666,12 @@ export class Mailbox extends DurableObject<Env> {
 		});
 		const attachments = [...attached, ...linked.map((l) => l.file)];
 
-		// The sent copy keeps the links too, so the sender sees what recipients got.
+		// The sent copy keeps the links too, so the sender sees what recipients got. They sit with the note, above a forward.
 		let { text, html } = input;
 		if (linked.length > 0) {
 			({ text, html } = withLinks({ text, html }, linked.map((l) => ({ ...l.file, url: l.url }))));
 		}
+		if (input.forward) ({ text, html } = withForward({ text, html }, input.forward));
 
 		let htmlKey: string | null = null;
 		if (html) {
@@ -905,7 +927,10 @@ export class Mailbox extends DurableObject<Env> {
 			attachments.map(async (a) => {
 				const obj = await this.env.MAIL.get(a.r2Key);
 				if (!obj) throw Object.assign(new Error(`Attachment missing: ${a.filename}`), { code: "E_ATTACHMENT_MISSING" });
-				return { content: await obj.arrayBuffer(), filename: a.filename, type: a.contentType, disposition: "attachment" as const };
+				const part = { content: await obj.arrayBuffer(), filename: a.filename, type: a.contentType };
+				return a.inline && a.contentId
+					? { ...part, disposition: "inline" as const, contentId: a.contentId }
+					: { ...part, disposition: "attachment" as const };
 			}),
 		);
 	}

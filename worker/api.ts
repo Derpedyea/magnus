@@ -2,12 +2,14 @@ import { zValidator } from "@hono/zod-validator";
 import {
 	canMatch,
 	formatBytes,
+	forwardedPart,
 	type ListCursor,
 	type ListPage,
 	type LocalRecipient,
 	localRecipients,
 	type MailboxQuery,
 	MAX_UPLOAD_BYTES,
+	type MessageBody,
 	mergeContacts,
 	mergeCounts,
 	mergePage,
@@ -19,6 +21,7 @@ import {
 	type SendAttachmentRef,
 	type ThreadSummary,
 	type User,
+	withForward,
 } from "#shared";
 import { ComposeSchema, MarkReadSchema, ModifyThreadsSchema, ShareLinkSchema, SignatureSchema } from "#shared/schemas";
 import { isAPIError } from "better-auth/api";
@@ -237,8 +240,34 @@ const mb = new Hono<AppEnv>()
 			if (!head) return c.json({ error: `Attachment expired: ${a.filename}` }, 400);
 			attachments.push({ ...a, size: head.size });
 		}
+
+		// A forward carries the original below the note, with the files picked from it and the images its HTML shows.
+		let forward: MessageBody | undefined;
+		let embedded: SendAttachmentRef[] = [];
+		if (req.forward) {
+			const original = await c.var.mailbox.getMessage(req.forward.messageId);
+			if (!original) return c.json({ error: "The message to forward is gone" }, 404);
+			// Its files are still uploads, which move when it sends.
+			if (original.message.labels.includes("outbox")) return c.json({ error: "Forward it once it's sent" }, 409);
+			const html = original.blobs.htmlKey ? ((await (await c.env.MAIL.get(original.blobs.htmlKey))?.text()) ?? null) : null;
+			for (const id of req.forward.attachmentIds) {
+				const a = original.blobs.attachments.find((x) => x.id === id && !x.inline);
+				if (!a) return c.json({ error: "Unknown attachment" }, 400);
+				attachments.push({ r2Key: a.r2Key, filename: a.filename, contentType: a.contentType, size: a.size });
+			}
+			const cids = html?.toLowerCase() ?? "";
+			embedded = original.blobs.attachments.flatMap((a) =>
+				a.inline && a.contentId && cids.includes(`cid:${a.contentId.toLowerCase()}`)
+					? [{ r2Key: a.r2Key, filename: a.filename, contentType: a.contentType, size: a.size, contentId: a.contentId }]
+					: [],
+			);
+			forward = forwardedPart({ ...original.message, html }, req.forward.timeZone);
+		}
+
 		const linkBase = `${new URL(c.req.url).origin}/f/${c.var.mailboxId}/`;
-		const { attached, linked, fits } = planAttachments(attachments, req, linkBase);
+		const body = forward ? withForward(req, forward) : req;
+		const embeddedBytes = embedded.reduce((n, a) => n + a.size, 0);
+		const { attached, linked, fits } = planAttachments(attachments, body, linkBase, embeddedBytes);
 		if (!fits) return c.json({ error: "Message is too long to send" }, 413);
 
 		const recipients = [...new Set([...req.to, ...req.cc, ...req.bcc].map((a) => normalizeAddress(a.address)))];
@@ -253,8 +282,9 @@ const mb = new Hono<AppEnv>()
 			subject: req.subject,
 			text: req.text,
 			html: req.html,
-			replyToMessageId: req.replyToMessageId,
-			attachments: attached,
+			parentMessageId: req.replyToMessageId ?? req.forward?.messageId,
+			forward,
+			attachments: [...attached, ...embedded],
 			links: linked,
 			linkBase,
 			delayMs: req.delaySeconds * 1000,

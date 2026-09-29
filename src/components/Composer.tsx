@@ -1,8 +1,18 @@
-import { type Address, formatBytes, isValidAddress, MAX_UPLOAD_BYTES, planAttachments, type SendAttachmentRef } from "#shared";
+import {
+	type Address,
+	type AttachmentMeta,
+	formatBytes,
+	isValidAddress,
+	MAX_UPLOAD_BYTES,
+	type MessageDetail,
+	makeSnippet,
+	planAttachments,
+	type SendAttachmentRef,
+} from "#shared";
 import { useForm, useSelector } from "@tanstack/react-form";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { shallow } from "@tanstack/react-store";
-import { LinkIcon, PaperclipIcon, XIcon } from "lucide-react";
+import { ForwardIcon, LinkIcon, PaperclipIcon, XIcon } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,6 +38,8 @@ export interface Draft {
 	text: string;
 	attachments: SendAttachmentRef[];
 	replyToMessageId?: string;
+	/** The message being forwarded and which of its files go along. The server adds it below the text as it is. */
+	forward?: { message: MessageDetail; files: AttachmentMeta[] };
 }
 
 const UNDO_SECONDS = 10;
@@ -49,6 +61,11 @@ export function Composer(props: {
 				subject: draft.subject,
 				text: draft.text,
 				replyToMessageId: draft.replyToMessageId,
+				forward: draft.forward && {
+					messageId: draft.forward.message.id,
+					attachmentIds: draft.forward.files.map((f) => f.id),
+					timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+				},
 				attachments: draft.attachments,
 				delaySeconds: UNDO_SECONDS,
 			}),
@@ -75,13 +92,18 @@ export function Composer(props: {
 	const [showCc, setShowCc] = useState(props.initial.cc.length + props.initial.bcc.length > 0);
 	const filePicker = useRef<HTMLInputElement>(null);
 	const mailboxId = useSelector(form.store, (s) => s.values.mailboxId);
-	// Replies and uploads belong to one mailbox, so From can't move them to another.
-	const pinned = useSelector(form.store, (s) => Boolean(s.values.replyToMessageId) || s.values.attachments.length > 0);
-	// Same split the server makes on send: whatever doesn't fit in the message goes as a download link.
+	// Replies, forwards, and uploads belong to one mailbox, so From can't move them to another.
+	const pinned = useSelector(form.store, (s) => Boolean(s.values.replyToMessageId || s.values.forward) || s.values.attachments.length > 0);
+	// Same split the server makes on send: whatever doesn't fit in the message goes as a download link. A forward's
+	// HTML isn't loaded here, so a file right at the limit may still go as a link.
 	const linked = new Set(
-		useSelector(form.store, (s) =>
-			planAttachments(s.values.attachments, { text: s.values.text }, `${location.origin}/f/${s.values.mailboxId}/`).linked.map((a) => a.r2Key),
-		),
+		useSelector(form.store, (s) => {
+			const forward = s.values.forward;
+			const files = [...s.values.attachments, ...(forward?.files ?? [])];
+			const text = s.values.text + (forward?.message.text ?? "");
+			const embedded = forward?.message.hasHtml ? forward.message.attachments.reduce((n, a) => n + (a.inline && a.contentId ? a.size : 0), 0) : 0;
+			return planAttachments(files, { text }, `${location.origin}/f/${s.values.mailboxId}/`, embedded).linked.map(fileKey);
+		}),
 	);
 	const fromOptions = pinned ? props.identities.filter((i) => i.mailboxId === mailboxId) : props.identities;
 	const key = (mailboxId: string, address: string) => `${mailboxId}/${address}`;
@@ -127,7 +149,7 @@ export function Composer(props: {
 			className="fixed right-6 bottom-0 z-30 flex w-[36rem] max-w-[calc(100vw-3rem)] flex-col overflow-hidden rounded-t-xl border bg-popover text-popover-foreground shadow-2xl"
 		>
 			<div className="flex items-center justify-between border-b bg-muted/50 py-1 pr-1 pl-3">
-				<span className="font-medium">{props.initial.replyToMessageId ? "Reply" : "New message"}</span>
+				<span className="font-medium">{props.initial.forward ? "Forward" : props.initial.replyToMessageId ? "Reply" : "New message"}</span>
 				<Button variant="ghost" size="icon-sm" onClick={props.onClose} aria-label="Close">
 					<XIcon />
 				</Button>
@@ -185,32 +207,35 @@ export function Composer(props: {
 					<Textarea
 						value={f.state.value}
 						onChange={(e) => f.handleChange(e.target.value)}
-						rows={14}
+						rows={props.initial.forward ? 8 : 14}
 						aria-label="Message"
 						className="resize-none rounded-none border-0 px-3 py-2.5 field-sizing-fixed focus-visible:ring-0 dark:bg-transparent"
 						autoFocus={!props.initial.replyToMessageId && props.initial.to.length > 0}
 					/>
 				)}
 			</form.Field>
-			<form.Field name="attachments">
-				{(f) =>
-					f.state.value.length > 0 ? (
-						<ul className="flex flex-wrap gap-1.5 px-3 pb-2">
-							{f.state.value.map((a) => (
-								<li key={a.r2Key}>
-									<Badge variant="secondary" className="h-6 pr-0.5">
-										{linked.has(a.r2Key) ? <LinkIcon data-icon="inline-start" aria-label="Sent as a link" /> : null}
-										{a.filename} <span className="text-muted-foreground">{formatBytes(a.size)}</span>
-										<Button variant="ghost" size="icon-xs" className="size-5 rounded-full" aria-label={`Remove ${a.filename}`} onClick={() => f.handleChange((prev) => prev.filter((x) => x !== a))}>
-											<XIcon />
-										</Button>
-									</Badge>
-								</li>
-							))}
-						</ul>
-					) : null
-				}
-			</form.Field>
+			{props.initial.forward ? <Forwarded message={props.initial.forward.message} /> : null}
+			<ul className="flex flex-wrap gap-1.5 px-3 pb-2 empty:hidden">
+				<form.Field name="forward">
+					{(f) =>
+						f.state.value?.files.map((a) => (
+							<FileChip
+								key={a.id}
+								file={a}
+								linked={linked.has(a.id)}
+								onRemove={() => f.handleChange((prev) => prev && { ...prev, files: prev.files.filter((x) => x !== a) })}
+							/>
+						))
+					}
+				</form.Field>
+				<form.Field name="attachments">
+					{(f) =>
+						f.state.value.map((a) => (
+							<FileChip key={a.r2Key} file={a} linked={linked.has(a.r2Key)} onRemove={() => f.handleChange((prev) => prev.filter((x) => x !== a))} />
+						))
+					}
+				</form.Field>
+			</ul>
 			{error ? <p className="px-3 pb-2 text-destructive">{error.message}</p> : null}
 			<div className="flex items-center gap-1 border-t px-3 py-2">
 				<form.Subscribe selector={(s) => s.values.from !== ""}>
@@ -242,6 +267,39 @@ export function Composer(props: {
 		</form>
 	);
 }
+
+/** The forwarded message, which goes below the note untouched: who it's from and how it starts. */
+function Forwarded({ message: m }: { message: MessageDetail }) {
+	const snippet = makeSnippet(m.text);
+	return (
+		<blockquote className="mx-3 mb-3 border-l-2 pl-3 text-xs text-muted-foreground">
+			<p className="flex items-center gap-1.5">
+				<ForwardIcon className="size-3.5 shrink-0" />
+				<span className="truncate">
+					<span className="font-medium text-foreground">{m.from.name || m.from.address}</span> · {new Date(m.date).toLocaleString()}
+				</span>
+			</p>
+			{snippet ? <p className="mt-1 line-clamp-2">{snippet}</p> : null}
+		</blockquote>
+	);
+}
+
+function FileChip(props: { file: { filename: string; size: number }; linked: boolean; onRemove: () => void }) {
+	return (
+		<li>
+			<Badge variant="secondary" className="h-6 pr-0.5">
+				{props.linked ? <LinkIcon data-icon="inline-start" aria-label="Sent as a link" /> : null}
+				{props.file.filename} <span className="text-muted-foreground">{formatBytes(props.file.size)}</span>
+				<Button variant="ghost" size="icon-xs" className="size-5 rounded-full" aria-label={`Remove ${props.file.filename}`} onClick={props.onRemove}>
+					<XIcon />
+				</Button>
+			</Badge>
+		</li>
+	);
+}
+
+/** Uploads are told apart by storage key, a forward's files by id. */
+const fileKey = (f: SendAttachmentRef | AttachmentMeta) => ("r2Key" in f ? f.r2Key : f.id);
 
 const identityLabel = (i: Identity) => (i.displayName ? `${i.displayName} <${i.address}>` : i.address);
 
