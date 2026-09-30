@@ -14,17 +14,18 @@ import { useForm, useSelector } from "@tanstack/react-form";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { shallow } from "@tanstack/react-store";
 import { ForwardIcon, LinkIcon, PaperclipIcon, XIcon } from "lucide-react";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FieldError } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { toast } from "@/components/ui/toast-manager";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { api, type Identity } from "../api";
-import { withSignature } from "../compose";
+import { api, errorMessage, type Identity } from "../api";
+import { closeDraft, compose, openDraft, withSignature } from "../compose";
 import { normalizeMarkdown } from "../markdown";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { RecipientField } from "./RecipientField";
@@ -51,10 +52,12 @@ const UNDO_SECONDS = 10;
 export function Composer(props: {
 	/** Every identity the user can send as, across mailboxes. */
 	identities: Identity[];
+	/** This opening (compose.ts). A send outlives it: the draft can be closed, or another opened, while it goes. */
+	id: number;
 	initial: Draft;
-	onClose: () => void;
 }) {
 	const qc = useQueryClient();
+	const close = () => closeDraft(props.id);
 	const send = useMutation({
 		mutationFn: (draft: Draft) =>
 			api.send(draft.mailboxId, {
@@ -78,11 +81,25 @@ export function Composer(props: {
 			void qc.invalidateQueries({ queryKey: ["mail"] });
 			// Whoever this went to is suggested next time.
 			void qc.invalidateQueries({ queryKey: ["contacts"] });
-			props.onClose();
+			close();
 			toastUndoSend(queued, draft, qc);
+		},
+		// The form shows it while it's open. Once it isn't, this is all that's left of the draft.
+		onError: (error, draft) => {
+			if (compose.state?.id !== props.id) toastReopen(`Couldn't send: ${errorMessage(error)}`, draft, "error");
 		},
 	});
 	const form = useForm({ defaultValues: props.initial, onSubmit: ({ value }) => send.mutate(value) });
+	// Opening another draft takes this one's place, so what was typed here and not sent stays a click away. Close
+	// throws it out, as before.
+	const unsent = send.isIdle || send.isError;
+	useEffect(
+		() => () => {
+			const open = compose.state;
+			if (unsent && open && open.id !== props.id && form.state.isDirty) toastReopen("Draft closed", form.state.values);
+		},
+		[unsent, form, props.id],
+	);
 	// Uploads only feed the draft's own attachment list; no cached query reads them.
 	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
 	const upload = useMutation({
@@ -156,7 +173,7 @@ export function Composer(props: {
 		>
 			<div className="flex items-center justify-between border-b bg-muted/50 py-1 pr-1 pl-3">
 				<span className="font-medium">{props.initial.forward ? "Forward" : props.initial.replyToMessageId ? "Reply" : "New message"}</span>
-				<Button variant="ghost" size="icon-sm" onClick={props.onClose} aria-label="Close">
+				<Button variant="ghost" size="icon-sm" onClick={close} aria-label="Close">
 					<XIcon />
 				</Button>
 			</div>
@@ -316,4 +333,19 @@ const FIELD = "h-9 rounded-none border-0 border-b px-3 focus-visible:border-ring
 function invalidAddresses(list: Address[]): string | undefined {
 	const bad = list.filter((a) => !isValidAddress(a.address));
 	return bad.length ? `Not an email address: ${bad.map((a) => a.address).join(", ")}` : undefined;
+}
+
+/** For a draft that's no longer open. Reopening it takes the place of whatever draft is. */
+function toastReopen(title: string, draft: Draft, type?: "error") {
+	const id = toast.add({
+		title,
+		type,
+		actionProps: {
+			children: "Reopen",
+			onClick: () => {
+				toast.close(id);
+				openDraft(draft);
+			},
+		},
+	});
 }

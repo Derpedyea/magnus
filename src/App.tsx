@@ -5,7 +5,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { closeDraft, compose, openDraft, withSignature } from "./compose";
+import { compose, openDraft, withSignature } from "./compose";
 import { AccountMenu } from "./components/AccountMenu";
 import { Centered } from "./components/Centered";
 import { Sidebar } from "./components/Sidebar";
@@ -84,7 +84,7 @@ export function App() {
 			</SidebarInset>
 
 			{/* Keyed by opening: the composer's form only reads its draft when it mounts. */}
-			<Suspense>{composing ? <Composer key={composing.id} identities={identities} initial={composing.draft} onClose={() => closeDraft(composing.id)} /> : null}</Suspense>
+			<Suspense>{composing ? <Composer key={composing.id} id={composing.id} identities={identities} initial={composing.draft} /> : null}</Suspense>
 
 			<Suspense>
 				<Devtools />
