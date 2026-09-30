@@ -55,17 +55,28 @@ describe("replyParents", () => {
 			// Answers a message we never got; its References still reach b.
 			msg("c", ["<c@x>"], ["<lost@x>"], ["<a@x>", "<b@x>", "<lost@x>"]),
 		]);
-		expect([...parents]).toEqual([["a", null], ["b", "a"], ["c", "b"]]);
+		expect([...parents]).toEqual([
+			["a", { parentId: null, hasDirectParent: false }],
+			["b", { parentId: "a", hasDirectParent: true }],
+			["c", { parentId: "b", hasDirectParent: false }],
+		]);
 	});
 	it("matches a reply to any id the parent went out under", () => {
 		const parents = replyParents([msg("sent", ["<retry@x>", "<first@x>"]), msg("reply", ["<r@y>"], ["<first@x>"])]);
-		expect(parents.get("reply")).toBe("sent");
+		expect(parents.get("reply")).toEqual({ parentId: "sent", hasDirectParent: true });
 	});
 	it("leaves a message that answers nothing here at the top", () => {
-		expect(replyParents([msg("a", ["<a@x>"]), msg("b", [], ["<elsewhere@y>"])]).get("b")).toBeNull();
+		expect(replyParents([msg("a", ["<a@x>"]), msg("b", [], ["<elsewhere@y>"])]).get("b")).toEqual({ parentId: null, hasDirectParent: false });
+	});
+	it("keeps a References-only ancestor for layout without treating it as a direct parent", () => {
+		const parents = replyParents([msg("a", ["<a@x>"]), msg("b", ["<b@x>"], [], ["<a@x>", "<lost@x>"])]);
+		expect(parents.get("b")).toEqual({ parentId: "a", hasDirectParent: false });
 	});
 	it("breaks a loop of forged headers", () => {
 		const parents = replyParents([msg("a", ["<a@x>"], ["<b@x>"]), msg("b", ["<b@x>"], ["<a@x>"])]);
-		expect([...parents]).toEqual([["a", null], ["b", "a"]]);
+		expect([...parents]).toEqual([
+			["a", { parentId: null, hasDirectParent: false }],
+			["b", { parentId: "a", hasDirectParent: true }],
+		]);
 	});
 });

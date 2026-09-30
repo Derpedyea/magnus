@@ -531,7 +531,7 @@ export class Mailbox extends DurableObject<Env> {
 					attachments.filter((a) => a.message_id === m.id),
 					refused.filter((d) => d.message_id === m.id).map((d) => d.recipient),
 				),
-				parentId: parents.get(m.id) ?? null,
+				...(parents.get(m.id) ?? { parentId: null, hasDirectParent: false }),
 			})),
 		};
 	}

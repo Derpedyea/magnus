@@ -143,8 +143,10 @@ export interface MessageDetail {
 
 /** A message as its thread shows it. */
 export interface ThreadMessage extends MessageDetail {
-	/** The message here it replies to (replyParents()). Null when it starts the thread or answers nothing here. */
+	/** Its parent for layout, falling back to a References ancestor. Null when it answers nothing here. */
 	parentId: string | null;
+	/** The layout parent matches In-Reply-To; a fallback ancestor isn't enough to fold its quote. */
+	hasDirectParent: boolean;
 }
 
 export interface ThreadDetail {
