@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils";
 import { api, errorMessage, type Identity } from "../api";
 import { closeDraft, compose, openDraft, withSignature } from "../compose";
 import { normalizeMarkdown } from "../markdown";
+import { currentSession } from "../session";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { RecipientField } from "./RecipientField";
 import { toastUndoSend } from "./UndoToast";
@@ -76,7 +77,9 @@ export function Composer(props: {
 				attachments: draft.attachments,
 				delaySeconds: UNDO_SECONDS,
 			}),
-		onSuccess: (queued, draft) => {
+		onMutate: currentSession,
+		onSuccess: (queued, draft, session) => {
+			if (session !== currentSession()) return;
 			// The live socket reports this too, but it may be reconnecting.
 			void qc.invalidateQueries({ queryKey: ["mail"] });
 			// Whoever this went to is suggested next time.
@@ -85,8 +88,8 @@ export function Composer(props: {
 			toastUndoSend(queued, draft, qc);
 		},
 		// The form shows it while it's open. Once it isn't, this is all that's left of the draft.
-		onError: (error, draft) => {
-			if (compose.state?.id !== props.id) toastReopen(`Couldn't send: ${errorMessage(error)}`, draft, "error");
+		onError: (error, draft, session) => {
+			if (session === currentSession() && compose.state?.id !== props.id) toastReopen(`Couldn't send: ${errorMessage(error)}`, draft, "error");
 		},
 	});
 	const form = useForm({ defaultValues: props.initial, onSubmit: ({ value }) => send.mutate(value) });
