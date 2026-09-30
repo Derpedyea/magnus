@@ -205,6 +205,7 @@ const mb = new Hono<AppEnv>()
 				"Content-Type": "message/rfc822",
 				"Content-Disposition": `attachment; filename="${messageId}.eml"`,
 				"X-Content-Type-Options": "nosniff",
+				"Cache-Control": "no-store",
 			},
 		});
 	})
