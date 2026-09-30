@@ -26,7 +26,8 @@ export async function email(message: ForwardableEmailMessage, env: Env): Promise
 	const raw = await new Response(message.raw).arrayBuffer();
 	await env.MAIL.put(rawKey, raw, {
 		httpMetadata: { contentType: "message/rfc822" },
-		customMetadata: { envelopeFrom: message.from, envelopeTo: message.to },
+		// `mailboxes`: whose queue jobs read this copy, so deleting one of them can tell whether another still needs it.
+		customMetadata: { envelopeFrom: message.from, envelopeTo: message.to, mailboxes: resolution.mailboxIds.join(",") },
 	});
 
 	const jobs: InboundJob[] = resolution.mailboxIds.map((mailboxId) => ({
