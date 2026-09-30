@@ -3,7 +3,7 @@ import { blockPattern, normalizeAddress, STEP_IDS } from "#shared";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "./api";
-import { auth } from "./auth";
+import { auth, isAdminNow } from "./auth";
 import { type Cloudflare, cloudflare, CloudflareError, findInstall, getZone, listZones } from "./cloudflare";
 import { type DomainContext, domainStatus, runStep } from "./connect";
 import {
@@ -56,7 +56,7 @@ const BlockPatternSchema = z.string().transform((input, ctx) => {
  */
 export const admin = new Hono<AppEnv>()
 	.use("*", async (c, next) => {
-		if (!c.var.user.isAdmin) return c.json({ error: "Only admins can do that." }, 403);
+		if (!(await isAdminNow(c.req.raw))) return c.json({ error: "Only admins can do that." }, 403);
 		await next();
 	})
 
@@ -132,8 +132,10 @@ export const admin = new Hono<AppEnv>()
 		async (c) => {
 			const body = c.req.valid("json");
 			const db = c.env.DIRECTORY;
+			// With the headers, Better Auth checks the caller may create users and set roles; without, it trusts the server.
 			const { user } = await (await auth(c.req.raw)).api.createUser({
 				body: { email: body.email, name: body.name, role: body.isAdmin ? "admin" : "user" },
+				headers: c.req.raw.headers,
 			});
 			const mailbox = createMailbox(db, user.id, body.name);
 			const address = body.address ? addAddress(db, `${body.address.localPart}@${body.address.domain}`, body.name, [mailbox.id]) : [];
