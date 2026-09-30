@@ -173,7 +173,7 @@ function Avatar({ from, ours }: { from: Address; ours: boolean }) {
 
 function Message(props: {
 	mailboxId: string;
-	message: MessageDetail;
+	message: ThreadMessage;
 	/** Sent from an address in view; see ThreadView. */
 	outgoing: boolean;
 	/** The message it answers, when that isn't the one above it. */
@@ -185,8 +185,9 @@ function Message(props: {
 	const m = props.message;
 	const qc = useQueryClient();
 	const [open, setOpen] = useState(props.defaultOpen);
-	// Forwards keep what they carry; replies fold the history the thread already shows.
-	const fold = !isForward(m.subject);
+	// A layout parent may be an older ancestor. Only fold when the direct parent is here; otherwise the quote
+	// may be all there is of it. Forwards keep what they carry.
+	const fold = m.hasDirectParent && !isForward(m.subject);
 	const files = m.attachments.filter((a) => !a.inline);
 	const fileUrl = (a: AttachmentMeta) => `${messageUrl(props.mailboxId, m.id)}/attachments/${a.id}/${encodeURIComponent(a.filename)}`;
 	// Kept after closing, so the viewer can animate out.

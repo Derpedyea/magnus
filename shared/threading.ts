@@ -69,23 +69,28 @@ export interface ReplyHeaders {
 /**
  * The message each one answers, by local id: the one its In-Reply-To names, else the nearest of its References
  * that's in the thread, so a reply still attaches when a message between them never reached us. Null when it
- * starts the thread or answers nothing here. Forged headers can't make a message its own ancestor.
+ * starts the thread or answers nothing here. Only an In-Reply-To match counts as a direct parent, so a fallback
+ * ancestor can keep the tree connected without hiding a quote of missing mail. Forged headers can't make a
+ * message its own ancestor.
  */
-export function replyParents(messages: ReplyHeaders[]): Map<string, string | null> {
+export function replyParents(messages: ReplyHeaders[]) {
 	const byMessageId = new Map<string, string>();
 	for (const m of messages) for (const id of m.messageIds) if (!byMessageId.has(id)) byMessageId.set(id, m.id);
 
-	const parents = new Map<string, string | null>();
+	const parents = new Map<string, { parentId: string | null; hasDirectParent: boolean }>();
 	for (const m of messages) {
 		const candidates = [...m.inReplyTo, ...m.references.toReversed()];
 		const parent = candidates.map((id) => byMessageId.get(id)).find((id) => id !== undefined && id !== m.id);
-		parents.set(m.id, parent ?? null);
+		parents.set(m.id, {
+			parentId: parent ?? null,
+			hasDirectParent: parent !== undefined && m.inReplyTo.some((id) => byMessageId.get(id) === parent),
+		});
 	}
 	for (const m of messages) {
 		const seen = new Set([m.id]);
-		for (let at = parents.get(m.id); at; at = parents.get(at)) {
+		for (let at = parents.get(m.id)?.parentId; at; at = parents.get(at)?.parentId) {
 			if (seen.has(at)) {
-				parents.set(m.id, null);
+				parents.set(m.id, { parentId: null, hasDirectParent: false });
 				break;
 			}
 			seen.add(at);
