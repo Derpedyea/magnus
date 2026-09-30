@@ -7,6 +7,7 @@ export * from "./forward";
 export * from "./ids";
 export * from "./keys";
 export * from "./links";
+export * from "./plaintext";
 export * from "./scope";
 export * from "./threading";
 export * from "./types";

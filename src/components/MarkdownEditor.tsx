@@ -62,7 +62,10 @@ export function MarkdownEditor({
 		content,
 		autofocus: autoFocus ? "start" : false,
 		editorProps,
-		onUpdate: ({ editor }) => {
+		onUpdate: ({ editor, transaction }) => {
+			// Only edits. A plugin tidying the document (the paragraph Tiptap adds after a closing quote) isn't one, and would
+			// send back what the editor held before a change from outside had reached it.
+			if (!transaction.docChanged) return;
 			held.current = serializeMarkdown(editor.getJSON());
 			onChange(held.current);
 		},
@@ -156,9 +159,14 @@ const BLOCKS: Tool[] = [
 ];
 const LINK = { name: "link", label: "Link", icon: LinkIcon };
 
+// Outside the editor's container, which may clip it (the composer does).
+const toBody = () => document.body;
+
 /** The bubble over a selection, like Linear's and Notion's: the formatting markdown has, and links. */
 function Formatting({ editor }: { editor: Editor }) {
 	const [linking, setLinking] = useState(false);
+	// Stable: the bubble dispatches a transaction whenever its options change identity.
+	const options = useMemo(() => ({ strategy: "fixed" as const, placement: "top" as const, offset: 8, onHide: () => setLinking(false) }), []);
 	const state = useEditorState({
 		editor,
 		selector: ({ editor }) => {
@@ -172,9 +180,8 @@ function Formatting({ editor }: { editor: Editor }) {
 	return (
 		<BubbleMenu
 			editor={editor}
-			// Outside the editor's container, which may clip it (the composer does).
-			appendTo={() => document.body}
-			options={{ strategy: "fixed", placement: "top", offset: 8, onHide: () => setLinking(false) }}
+			appendTo={toBody}
+			options={options}
 			className="z-50 flex items-center gap-0.5 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md"
 		>
 			{linking ? (

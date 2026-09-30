@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { noteBody } from "./markdown";
+import { escapeMarkdown } from "./plaintext";
 
 // As the composer's editor writes it (src/markdown.ts): entities and markdown characters escaped, "  \n" line breaks.
 const reply = [
@@ -63,5 +64,30 @@ describe("noteBody", () => {
 		expect(text.indexOf(file.url)).toBeLessThan(text.indexOf("Sam wrote"));
 		expect(html.indexOf("clip.mp4")).toBeLessThan(html.indexOf("Sam wrote"));
 		expect(noteBody("  \n")).toEqual({ text: "" });
+	});
+});
+
+describe("escapeMarkdown", () => {
+	it("keeps plain text as written, links included", () => {
+		const text = [
+			"Jane *CEO* at snake_case & <Acme>",
+			"- not a list",
+			"2024. not a number",
+			"# not a heading",
+			"Underlined",
+			"---",
+			"~~kept~~ `ticks` [brackets](x) a|b",
+			"https://x.com/a_b?c=1&d=2 (www.x.com/a_b) first_last@corp.com",
+		].join("\n");
+		const { text: plain, html = "" } = noteBody(escapeMarkdown(text));
+		expect(plain).toBe(text);
+		expect(html).not.toMatch(/<(em|h\d|ul|ol|hr|del|code)\b/);
+		expect(html).toContain('<a href="https://x.com/a_b?c=1&amp;d=2">');
+		expect(html).toContain('<a href="http://www.x.com/a_b">www.x.com/a_b</a>)');
+		expect(html).toContain('<a href="mailto:first_last@corp.com">');
+	});
+
+	it("keeps an indent rather than making it code", () => {
+		expect(noteBody(escapeMarkdown("Steps:\n    indented")).html).toContain("Steps:<br>\u00a0\u00a0\u00a0\u00a0indented</p>");
 	});
 });

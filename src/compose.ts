@@ -1,4 +1,4 @@
-import type { Address } from "#shared";
+import { type Address, escapeMarkdown } from "#shared";
 import { createStore } from "@tanstack/react-store";
 import type { Draft } from "./components/Composer";
 
@@ -11,13 +11,16 @@ export const compose = createStore<Draft | null>(null);
 export const openDraft = (draft: Draft) => compose.setState(() => draft);
 export const closeDraft = () => compose.setState(() => null);
 
-/** What a reply starts with: the message it answers, quoted. The signature goes above it. */
+/**
+ * What a reply starts with: the message it answers, quoted. The signature goes above it. The message is plain text,
+ * so it's escaped to stay as it was received rather than read as markdown.
+ */
 export function quote(m: { date: number; from: Address; text: string | null }): string {
-	const quoted = (m.text ?? "")
+	const quoted = escapeMarkdown(m.text ?? "")
 		.split("\n")
 		.map((l) => `> ${l}`)
 		.join("\n");
-	return `\n\nOn ${new Date(m.date).toLocaleString()}, ${m.from.name || m.from.address} wrote:\n${quoted}`;
+	return `\n\nOn ${new Date(m.date).toLocaleString()}, ${escapeMarkdown(m.from.name || m.from.address)} wrote:\n${quoted}`;
 }
 
 // The attribution, then the quote: on the next line as quote() writes it, after a blank one as the editor does.

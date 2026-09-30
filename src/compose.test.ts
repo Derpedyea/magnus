@@ -1,3 +1,4 @@
+import { noteBody } from "#shared/markdown";
 import { describe, expect, it } from "vitest";
 import { quote, withSignature } from "./compose";
 import { normalizeMarkdown as normalize } from "./markdown";
@@ -22,5 +23,12 @@ describe("withSignature", () => {
 	it("leaves a signature edited by hand alone", () => {
 		const edited = normalize("Hi\n\n-- \nAnn (edited)");
 		expect(withSignature(edited, "Ann", "Bob", normalize)).toBe(edited);
+	});
+});
+
+describe("quote", () => {
+	it("quotes the message as it was received, not as markdown, through the editor too", () => {
+		const draft = quote({ date: 0, from: { address: "ann@example.com", name: "Ann_Lee" }, text: "Please *do not alter*\n- or this" });
+		expect(noteBody(normalize(draft)).text).toMatch(/Ann_Lee wrote:\n\n> Please \*do not alter\*\n> - or this$/);
 	});
 });

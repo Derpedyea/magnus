@@ -100,7 +100,7 @@ mailbox_members(mailbox_id, user_id, role)                   ← user_id → aut
 addresses(address, domain, display_name, enabled)            ← normalized, no +tag
 address_routes(address, mailbox_id, can_send)                ← >1 row = group alias (e.g. family@)
 sender_blocks(pattern)                                       ← 'x@y.com' or '*@y.com', matched against the envelope sender and From header at SMTP time
-signatures(user_id, address, text)                           ← markdown, per person and address they send as; the composer adds it
+signatures(user_id, address, text, markdown)                 ← per person and address they send as; the composer adds it. markdown = 0: plain text from before, escaped on read
 ```
 
 ### Mailbox DO schema (`worker/mailbox/schema.ts`)
