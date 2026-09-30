@@ -41,6 +41,10 @@ const SUBJECT_FALLBACK_WINDOW_MS = 30 * 24 * 3600 * 1000;
 const MAX_SEND_ATTEMPTS = 8;
 const OUTBOX_BATCH = 10;
 const MAX_PARTICIPANTS = 12;
+/** Longer than the inbound queue keeps retrying a message (wrangler.jsonc: 10 retries, at most an hour apart). */
+const INGEST_WINDOW_MS = 24 * 3600 * 1000;
+/** Message ids per holding() call when a deleted mailbox asks the others what they still hold. */
+const HOLDING_BATCH = 10_000;
 
 /** Email Sending error codes worth retrying. Everything else is a permanent failure. */
 const TRANSIENT_SEND_ERRORS = new Set(["E_RATE_LIMIT_EXCEEDED", "E_DAILY_LIMIT_EXCEEDED", "E_INTERNAL_SERVER_ERROR", "E_DELIVERY_FAILED"]);
@@ -220,6 +224,8 @@ export class Mailbox extends DurableObject<Env> {
 	async destroy(): Promise<void> {
 		const mailboxId = this.ctx.id.name;
 		if (!mailboxId) return;
+		// If another mailbox can't be asked, keeping the originals is the safe side; the rest still goes.
+		await this.deleteOriginals().catch((err) => console.error(JSON.stringify({ msg: "originals kept", mailboxId, error: String(err) })));
 		for (const prefix of [r2Keys.mailbox(mailboxId), r2Keys.upload(mailboxId, "")]) {
 			let cursor: string | undefined;
 			do {
@@ -231,6 +237,45 @@ export class Mailbox extends DurableObject<Env> {
 		for (const ws of this.ctx.getWebSockets()) ws.close(1000, "mailbox deleted");
 		await this.ctx.storage.deleteAlarm();
 		await this.ctx.storage.deleteAll();
+	}
+
+	/**
+	 * An original under raw/ is shared by every mailbox its message was delivered to, so it goes only once no mailbox
+	 * left in the directory holds that message. A recent one may still be queued for another mailbox; it stays if the
+	 * copy's `mailboxes` names one that's left.
+	 */
+	private async deleteOriginals(): Promise<void> {
+		const rows = this.sql
+			.exec<{ id: string; raw_key: string; received_at: number }>(`SELECT id, raw_key, received_at FROM messages WHERE raw_key IS NOT NULL`)
+			.toArray();
+		const { results } = await this.env.DIRECTORY.prepare(`SELECT id FROM mailboxes`).all<{ id: string }>();
+		const others = new Set(results.map((r) => r.id));
+		const held = new Set<string>();
+		for (let i = 0; i < rows.length; i += HOLDING_BATCH) {
+			const ids = rows.slice(i, i + HOLDING_BATCH).map((r) => r.id);
+			const lists = await Promise.all([...others].map((id) => this.env.MAILBOX.getByName(id).holding(ids)));
+			for (const id of lists.flat()) held.add(id);
+		}
+
+		const recent = Date.now() - INGEST_WINDOW_MS;
+		const orphans: string[] = [];
+		for (const row of rows) {
+			if (held.has(row.id)) continue;
+			if (row.received_at > recent) {
+				const due = (await this.env.MAIL.head(row.raw_key))?.customMetadata?.mailboxes?.split(",") ?? [];
+				if (due.some((id) => others.has(id))) continue;
+			}
+			orphans.push(row.raw_key);
+		}
+		for (let i = 0; i < orphans.length; i += 1000) await this.env.MAIL.delete(orphans.slice(i, i + 1000));
+	}
+
+	/** Which of these messages this mailbox has, for a mailbox being deleted to check before it removes their originals. */
+	async holding(messageIds: string[]): Promise<string[]> {
+		return this.sql
+			.exec<{ id: string }>(`SELECT id FROM messages WHERE id IN (SELECT value FROM json_each(?1))`, JSON.stringify(messageIds))
+			.toArray()
+			.map((r) => r.id);
 	}
 
 	// ─── Inbound ────────────────────────────────────────────────────────────

@@ -134,13 +134,14 @@ locally, so suggestions need no round trip.
 ### R2 layout (`shared/keys.ts`)
 
 ```
-raw/2026/09/26/<ingestId>.eml          raw inbound, shared across fan-out, kept forever (source of truth)
+raw/2026/09/26/<ingestId>.eml          raw inbound, shared across fan-out, kept while a mailbox has it (source of truth)
 m/<mailboxId>/<messageId>/body.html     HTML body (served through the sanitizer)
 m/<mailboxId>/<messageId>/att/<attId>   attachments (inbound, and outbound once sent)
 uploads/<mailboxId>/<uuid>              composer uploads; a lifecycle rule (DEPLOY.md) can reap abandoned ones
 ```
 
-Everything a mailbox owns sits under `m/<mailboxId>/`, so deleting a mailbox (removing a person) is a prefix delete. The raw archive
+Everything a mailbox owns sits under `m/<mailboxId>/`, so deleting a mailbox (removing a person) is a prefix delete. Its
+originals under `raw/` go too, unless another mailbox holds that message or is still due it from the queue. The raw archive
 means any parsing bug can be fixed by re-queuing `InboundJob`s. Ingest is idempotent.
 
 ## 4. Flows
