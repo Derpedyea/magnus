@@ -72,7 +72,6 @@ export function renderEmailHtml(
 				"Content-Security-Policy": csp,
 				"Referrer-Policy": "no-referrer",
 				"X-Content-Type-Options": "nosniff",
-				"Cache-Control": "private, max-age=3600",
 			},
 		}),
 	);
@@ -93,7 +92,6 @@ export function fileHeaders(a: { filename: string; contentType: string }, downlo
 		"Content-Disposition": `${shown ? "inline" : "attachment"}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(a.filename)}`,
 		"Content-Security-Policy": FILE_CSP,
 		"X-Content-Type-Options": "nosniff",
-		"Cache-Control": "private, max-age=86400, immutable",
 	});
 }
 
