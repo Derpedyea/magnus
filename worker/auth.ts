@@ -55,7 +55,8 @@ function createAuth(baseURL: string, secret: string) {
 			// A mail client should stay signed in; every day of use pushes expiry out again.
 			expiresIn: 60 * 60 * 24 * 30,
 			updateAge: 60 * 60 * 24,
-			// Skips the D1 session lookup on most requests. A suspended person keeps access for up to 5 minutes.
+			// Skips the D1 session lookup on most requests. A suspended person keeps access for up to 5 minutes, admin
+			// powers aside (isAdminNow()).
 			cookieCache: { enabled: true, maxAge: 5 * 60 },
 		},
 		socialProviders: googleConfig ? { google: { ...googleConfig, prompt: "select_account", disableSignUp: true } } : {},
@@ -127,4 +128,13 @@ export async function currentUser(request: Request): Promise<{ user: User; cooki
 	if (!devEmail || (hostname !== "localhost" && hostname !== "127.0.0.1")) return null;
 	const user = await findUserByEmail(env.DIRECTORY, devEmail);
 	return user ? { user, cookies: await signInWithoutCode(request, user.email) } : null;
+}
+
+/**
+ * Whether the request's session is an admin's right now. Asks D1 instead of the session cookie's 5-minute cache,
+ * so a suspended or demoted admin can't use those minutes to add another admin.
+ */
+export async function isAdminNow(request: Request): Promise<boolean> {
+	const session = await (await auth(request)).api.getSession({ headers: request.headers, query: { disableCookieCache: true } });
+	return session?.user.role === "admin";
 }
