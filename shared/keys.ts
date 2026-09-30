@@ -8,7 +8,7 @@
  *
  * Everything a mailbox keeps sits under m/<mailboxId>/ so deleting a mailbox is a prefix delete, plus its originals
  * under raw/ that no other mailbox holds (Mailbox.deleteOriginals()).
- * Uploads are copied under m/ once sent; put a 14-day lifecycle rule on "uploads/" to reap abandoned ones.
+ * Uploads are copied under m/ as their message goes out; put a 14-day lifecycle rule on "uploads/" to reap abandoned ones.
  */
 export const r2Keys = {
 	raw(ingestId: string, receivedAt: number): string {

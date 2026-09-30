@@ -191,11 +191,12 @@ no dead-letter queue: the Deploy button can't be relied on to create one.)
    never as links. The forward joins the original's thread, with the same threading headers as a reply.
 3. **Undo send / scheduled send:** until `send_at`, `cancelSend()` removes the message. The UI shows a 10 s
    undo toast. Delays up to 7 days work as scheduled send.
-4. `alarm()` drains due rows. Each is marked `sending` → `env.EMAIL.send()` → marked `sent`, with the
-   platform `messageId` stored as `provider_message_id` and registered in `thread_refs`. Attachments move from
-   `uploads/` to `m/…`. Transient errors (`E_RATE_LIMIT_EXCEEDED`, `E_DAILY_LIMIT_EXCEEDED`,
-   `E_INTERNAL_SERVER_ERROR`, `E_DELIVERY_FAILED`) back off from 30 s up to 1 h, for at most 8 attempts.
-   Other errors are permanent and marked `failed` with the code.
+4. `alarm()` drains due rows. Each first copies its attachments from `uploads/` to `m/…` while still `queued`,
+   so Undo still works and a copy cut short is redone. Then it's marked `sending` → `env.EMAIL.send()` → marked
+   `sent`, with the platform `messageId` stored as `provider_message_id` and registered in `thread_refs`, and the
+   uploads are deleted. Transient errors (`E_RATE_LIMIT_EXCEEDED`, `E_DAILY_LIMIT_EXCEEDED`,
+   `E_INTERNAL_SERVER_ERROR`, `E_DELIVERY_FAILED`, and `E_STORAGE` when R2 fails a copy) back off from 30 s up
+   to 1 h, for at most 8 attempts. Other errors are permanent and marked `failed` with the code.
 5. **At-most-once on crash:** if an alarm finds a row still marked `sending`, the previous attempt died after
    handing off to Cloudflare. It's marked `failed` ("check Sent logs") rather than risking a duplicate send.
 6. **Local delivery:** step 1 also resolves every recipient against the directory. Recipients routed only to the
@@ -218,9 +219,9 @@ An Email Sending **event subscription** per domain feeds `magnus-email-events` (
 mailboxes may send as `payload.sender` and offers the event to each. The one whose `sends` holds the message
 ID applies it to `deliveries(message_id, recipient)` and rolls it up to a message status, worst first:
 bounced > rejected > failed > complained > deferred > sent > delivered. The UI shows this as a badge on each
-sent message. When a retry goes out, its recipients' rows restart at `sent` and the status rolls up again, so
-another recipient's complaint or deferral still shows. Events from the earlier send are older, so they no longer
-apply to the retried recipients.
+sent message. Every recipient a send goes to starts at `sent`, so a message reads delivered only once all of
+them are. A retry restarts only its own recipients, so another recipient's complaint or deferral still shows.
+Events from the earlier send are older, so they no longer apply to the retried recipients.
 
 ### 4.4 Live updates
 
@@ -244,8 +245,8 @@ work. Code: `shared/links.ts`, `worker/links.ts`.
    The HTML part gets a card per file in the same place (extension tile, name, size, View or Download), built
    from tables and inline styles so it holds up in Gmail and Outlook. HTML readers never see the bare URLs. The sent copy keeps both, so the sender sees what recipients
    got.
-4. **Send:** only the attached files are read into memory. On success, every file is streamed from `uploads/` to
-   `m/…` like any attachment.
+4. **Send:** every file is first streamed from `uploads/` to `m/…` like any attachment; only the attached ones
+   are then read into memory.
 5. **Download:** the link, `GET /f/<mailboxId>/<token>`, opens a plain page (no scripts) with the file's name,
    size, and sender, a preview when the browser can show it safely (§5.3), and a Download button. The bytes
    are at `/f/<mailboxId>/<token>/<filename>`, streamed with Range support, and `?download=1` saves them. The
