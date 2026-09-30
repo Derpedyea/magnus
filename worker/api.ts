@@ -56,7 +56,15 @@ app.onError((err, c) => {
 // ─── Auth ───────────────────────────────────────────────────────────────────
 
 // Better Auth's own endpoints: sign-in, the OAuth callback, sign-out, session, admin. It checks origins itself.
-app.on(["GET", "POST"], "/auth/*", async (c) => (await auth(c.req.raw)).handler(c.req.raw));
+app.on(["GET", "POST"], "/auth/*", async (c) => {
+	const res = await (await auth(c.req.raw)).handler(c.req.raw);
+	if (!res.headers.getSetCookie().some((cookie) => cookie.includes("session_token"))) return res;
+	// Signing in or out empties this site's browser cache: nothing kept for one account, including anything cached
+	// before mail was sent `no-store`, is served to the next.
+	const cleared = new Response(res.body, res);
+	cleared.headers.set("Clear-Site-Data", '"cache"');
+	return cleared;
+});
 
 // ─── Views across mailboxes ─────────────────────────────────────────────────
 // Lists, search, and counts span every mailbox the user belongs to. `?in=a@x.com,b@y.com`
@@ -205,7 +213,6 @@ const mb = new Hono<AppEnv>()
 				"Content-Type": "message/rfc822",
 				"Content-Disposition": `attachment; filename="${messageId}.eml"`,
 				"X-Content-Type-Options": "nosniff",
-				"Cache-Control": "no-store",
 			},
 		});
 	})
@@ -343,6 +350,9 @@ const routes = app
 		if (!signedIn) return c.json({ error: "Unauthenticated" }, 401);
 		c.set("user", signedIn.user);
 		await next();
+		// Everything past sign-in is someone's mail or settings, which the browser mustn't keep for whoever uses it next.
+		// A WebSocket upgrade has nothing to cache, so it's passed through untouched.
+		if (c.res.status !== 101) c.header("Cache-Control", "no-store");
 		for (const cookie of signedIn.cookies) c.res.headers.append("Set-Cookie", cookie);
 	})
 

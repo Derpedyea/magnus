@@ -72,8 +72,6 @@ export function renderEmailHtml(
 				"Content-Security-Policy": csp,
 				"Referrer-Policy": "no-referrer",
 				"X-Content-Type-Options": "nosniff",
-				// Not even to disk: a cached copy outlives signing out, for whoever signs in next in this browser.
-				"Cache-Control": "no-store",
 			},
 		}),
 	);
@@ -94,8 +92,6 @@ export function fileHeaders(a: { filename: string; contentType: string }, downlo
 		"Content-Disposition": `${shown ? "inline" : "attachment"}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(a.filename)}`,
 		"Content-Security-Policy": FILE_CSP,
 		"X-Content-Type-Options": "nosniff",
-		// Private like the body (links.ts relaxes it for files shared publicly).
-		"Cache-Control": "no-store",
 	});
 }
 
