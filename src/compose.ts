@@ -4,12 +4,15 @@ import type { Draft } from "./components/Composer";
 
 /**
  * The open composer. It floats above whatever route is showing, so any view can start a draft
- * (Compose, Reply, Undo send) without threading callbacks through the router.
+ * (Compose, Reply, Undo send) without threading callbacks through the router. Each opening has its own `id`, so
+ * the composer starts over for it rather than keeping what was typed into the one before.
  */
-export const compose = createStore<Draft | null>(null);
+export const compose = createStore<{ id: number; draft: Draft } | null>(null);
 
-export const openDraft = (draft: Draft) => compose.setState(() => draft);
-export const closeDraft = () => compose.setState(() => null);
+let opened = 0;
+export const openDraft = (draft: Draft) => compose.setState(() => ({ id: ++opened, draft }));
+/** With `id`, only if that opening is still the open one: a send that finishes after you've opened another draft leaves it be. */
+export const closeDraft = (id?: number) => compose.setState((open) => (id === undefined || open?.id === id ? null : open));
 
 /**
  * What a reply starts with: the message it answers, quoted. The signature goes above it. The message is plain text,

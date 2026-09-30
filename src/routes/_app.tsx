@@ -4,6 +4,7 @@ import { ApiError, errorMessage } from "../api";
 import { Centered } from "../components/Centered";
 import { SignOutButton } from "../components/SignOutButton";
 import { configQuery, meQuery } from "../queries";
+import { endSession } from "../session";
 
 /** Everything behind sign-in. Its guard runs before any child loads, so nothing fetches mail while signed out. */
 export const Route = createFileRoute("/_app")({
@@ -12,7 +13,11 @@ export const Route = createFileRoute("/_app")({
 		try {
 			await context.queryClient.ensureQueryData(meQuery);
 		} catch (error) {
-			if (error instanceof ApiError && error.status === 401) throw redirect({ to: "/login", search: { redirect: location.href } });
+			if (error instanceof ApiError && error.status === 401) {
+				// A session that ends mid-use lands here too (see main.tsx), with its mail still in memory.
+				endSession(context.queryClient);
+				throw redirect({ to: "/login", search: { redirect: location.href } });
+			}
 			throw error;
 		}
 	},

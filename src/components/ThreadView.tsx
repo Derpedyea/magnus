@@ -22,6 +22,7 @@ import { buttonVariants } from "@/components/ui/button-variants";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
+import { toast } from "@/components/ui/toast-manager";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, errorMessage, formatList, type Identity, messageUrl } from "../api";
 import { openDraft, quote, withSignature } from "../compose";
@@ -45,12 +46,22 @@ export function ThreadView() {
 	const { data } = useSuspenseQuery(threadQuery(mailboxId, threadId));
 	const close = () => void navigate({ to: "/$view", params: { view }, search: true });
 	const invalidate = () => qc.invalidateQueries({ queryKey: ["mail"] });
+	// Most actions close the thread without waiting, so a failure can only show up as a toast.
+	const failed = (verb: string, error: Error) => toast.add({ title: `Couldn't ${verb}: ${errorMessage(error)}`, type: "error" });
 
 	const modify = useMutation({
-		mutationFn: (v: { add?: string[]; remove?: string[] }) => api.modify(mailboxId, [threadId], v.add ?? [], v.remove ?? []),
+		mutationFn: (v: { verb: string; add?: string[]; remove?: string[] }) => api.modify(mailboxId, [threadId], v.add ?? [], v.remove ?? []),
 		onSuccess: invalidate,
+		onError: (error, v) => failed(v.verb, error),
 	});
-	const markRead = useMutation({ mutationFn: (read: boolean) => api.markRead(mailboxId, [threadId], read), onSuccess: invalidate });
+	const markRead = useMutation({
+		mutationFn: (read: boolean) => api.markRead(mailboxId, [threadId], read),
+		onSuccess: invalidate,
+		// Only when asked for: marking read happens by itself on opening, and the next opening tries again.
+		onError: (error, read) => {
+			if (!read) failed("mark unread", error);
+		},
+	});
 
 	const unread = data.thread.unreadCount;
 	const { mutate: setRead } = markRead;
@@ -77,13 +88,13 @@ export function ThreadView() {
 		<article className="mx-auto max-w-4xl p-6">
 			<div className="mb-4 flex flex-wrap items-center gap-1 border-b pb-3">
 				{inInbox
-					? action(<ArchiveIcon />, "Archive", () => (modify.mutate({ remove: ["inbox"] }), close()))
-					: action(<InboxIcon />, "Move to inbox", () => modify.mutate({ add: ["inbox"], remove: ["trash", "spam"] }))}
-				{action(<Trash2Icon />, "Trash", () => (modify.mutate({ add: ["trash"] }), close()))}
-				{action(<OctagonAlertIcon />, "Spam", () => (modify.mutate({ add: ["spam"] }), close()))}
+					? action(<ArchiveIcon />, "Archive", () => (modify.mutate({ verb: "archive", remove: ["inbox"] }), close()))
+					: action(<InboxIcon />, "Move to inbox", () => modify.mutate({ verb: "move to inbox", add: ["inbox"], remove: ["trash", "spam"] }))}
+				{action(<Trash2Icon />, "Trash", () => (modify.mutate({ verb: "move to trash", add: ["trash"] }), close()))}
+				{action(<OctagonAlertIcon />, "Spam", () => (modify.mutate({ verb: "mark as spam", add: ["spam"] }), close()))}
 				{starred
-					? action(<StarOffIcon />, "Unstar", () => modify.mutate({ remove: ["starred"] }))
-					: action(<StarIcon />, "Star", () => modify.mutate({ add: ["starred"] }))}
+					? action(<StarOffIcon />, "Unstar", () => modify.mutate({ verb: "unstar", remove: ["starred"] }))
+					: action(<StarIcon />, "Star", () => modify.mutate({ verb: "star", add: ["starred"] }))}
 				{action(<MailIcon />, "Mark unread", () => (markRead.mutate(false), close()))}
 			</div>
 			<h1 className="mb-6 font-heading text-xl font-semibold">{summary.subject}</h1>

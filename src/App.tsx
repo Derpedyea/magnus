@@ -24,7 +24,7 @@ export function App() {
 	const navigate = useNavigate();
 	const q = useSearch({ strict: false, select: (s) => s.q });
 	const [search, setSearch] = useState(q ?? "");
-	const draft = useSelector(compose, (s) => s);
+	const composing = useSelector(compose, (s) => s);
 	const live = useLive(mailboxes.map((m) => m.id));
 	const status = live ? "Live updates connected" : "Reconnecting…";
 	// Fetched now, so it opens at once.
@@ -83,7 +83,8 @@ export function App() {
 				</div>
 			</SidebarInset>
 
-			<Suspense>{draft ? <Composer identities={identities} initial={draft} onClose={closeDraft} /> : null}</Suspense>
+			{/* Keyed by opening: the composer's form only reads its draft when it mounts. */}
+			<Suspense>{composing ? <Composer key={composing.id} identities={identities} initial={composing.draft} onClose={() => closeDraft(composing.id)} /> : null}</Suspense>
 
 			<Suspense>
 				<Devtools />

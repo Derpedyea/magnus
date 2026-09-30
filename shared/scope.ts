@@ -10,6 +10,10 @@ export interface MailboxQuery {
 	addresses?: string[];
 }
 
+/** The selected addresses as `?in=a@x.com,b@y.com`, in the app's URLs and API calls. None selected (every address) leaves it out. */
+export const parseScope = (param: string | undefined) => param?.split(",").filter(Boolean) ?? [];
+export const formatScope = (scope: string[]) => (scope.length ? scope.join(",") : undefined);
+
 /** Selected addresses → one query per mailbox. No selection means everything, unfiltered. */
 export function planScope(mailboxes: { id: string; addresses: string[] }[], selected: string[]): MailboxQuery[] {
 	if (selected.length === 0) return mailboxes.map((m) => ({ mailboxId: m.id }));
