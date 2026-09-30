@@ -270,6 +270,12 @@ export interface MessageBlobs {
 	attachments: StoredAttachment[];
 }
 
+/**
+ * Sent instead of an event once a mailbox WebSocket is past its time, just before the server closes it. The socket
+ * was only authorized when it opened, so the client opens a new one, and the Worker checks the sign-in again.
+ */
+export const LIVE_RECHECK = "recheck";
+
 /** Pushed to connected web clients over the mailbox WebSocket. */
 export type LiveEvent =
 	| { type: "threads.changed"; threadIds: string[] }
