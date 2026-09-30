@@ -242,7 +242,7 @@ export class Mailbox extends DurableObject<Env> {
 	/**
 	 * An original under raw/ is shared by every mailbox its message was delivered to, so it goes only once no mailbox
 	 * left in the directory holds that message. A recent one may still be queued for another mailbox; it stays if the
-	 * copy's `mailboxes` names one that's left.
+	 * copy's `mailboxes` names one that's left, or if the copy predates `mailboxes` and can't say.
 	 */
 	private async deleteOriginals(): Promise<void> {
 		const rows = this.sql
@@ -262,8 +262,9 @@ export class Mailbox extends DurableObject<Env> {
 		for (const row of rows) {
 			if (held.has(row.id)) continue;
 			if (row.received_at > recent) {
-				const due = (await this.env.MAIL.head(row.raw_key))?.customMetadata?.mailboxes?.split(",") ?? [];
-				if (due.some((id) => others.has(id))) continue;
+				const head = await this.env.MAIL.head(row.raw_key);
+				const due = head?.customMetadata?.mailboxes?.split(",");
+				if (head && (!due || due.some((id) => others.has(id)))) continue;
 			}
 			orphans.push(row.raw_key);
 		}
