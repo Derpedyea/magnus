@@ -97,6 +97,8 @@ function SidebarProvider({
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (
+        // Already handled, like bold in the mail editor (components/MarkdownEditor.tsx).
+        !event.defaultPrevented &&
         event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
         (event.metaKey || event.ctrlKey)
       ) {

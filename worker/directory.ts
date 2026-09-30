@@ -93,8 +93,9 @@ export async function getUserMailboxes(db: D1Database, userId: string): Promise<
 
 /** Blank clears it. Returns what was saved. */
 export async function setSignature(db: D1Database, userId: string, address: string, text: string): Promise<string | null> {
-	// The composer adds the "-- " delimiter itself, so one pasted from another client would show twice.
-	const signature = text.trim().replace(/^--[ \t]*\n/, "").trim() || null;
+	// The composer adds the "-- " delimiter itself, so one pasted from another client would show twice. The editor
+	// writes it as markdown, escaped (`\--`).
+	const signature = text.trim().replace(/^\\?--[ \t]*\n/, "").trim() || null;
 	await (signature
 		? db
 				.prepare(`INSERT INTO signatures (user_id, address, text) VALUES (?1, ?2, ?3) ON CONFLICT (user_id, address) DO UPDATE SET text = excluded.text`)

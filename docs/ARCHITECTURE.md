@@ -100,7 +100,7 @@ mailbox_members(mailbox_id, user_id, role)                   ← user_id → aut
 addresses(address, domain, display_name, enabled)            ← normalized, no +tag
 address_routes(address, mailbox_id, can_send)                ← >1 row = group alias (e.g. family@)
 sender_blocks(pattern)                                       ← 'x@y.com' or '*@y.com', matched against the envelope sender and From header at SMTP time
-signatures(user_id, address, text)                           ← per person and address they send as; the composer adds it
+signatures(user_id, address, text)                           ← markdown, per person and address they send as; the composer adds it
 ```
 
 ### Mailbox DO schema (`worker/mailbox/schema.ts`)
@@ -179,6 +179,11 @@ no dead-letter queue: the Deploy button can't be relied on to create one.)
    replies it computes `In-Reply-To`/`References` from the parent, capped at 2,048 bytes (root + newest IDs).
    It then inserts an `outbox` row with `send_at = now + delay` and sets a DO alarm.
 
+   **Formatting:** the composer writes markdown (a Tiptap editor; `src/markdown.ts` fixes the dialect), and
+   `noteBody()` (`shared/markdown.ts`) renders both parts from it: HTML with inline styles and no text colours,
+   spaced like the editor, and plain text the way Gmail writes it for rich mail. The route sizes the message
+   from those, and the DO renders them again with the file links in place.
+
    **Forwards** (`shared/forward.ts`) name the original message rather than copying it into the composer, the
    way EmailEngine's `reference` does. Below the note go Gmail's divider and header, then the original: its text,
    and its HTML document with the note and header inserted at the top of `<body>`, so its layout and styles
@@ -236,9 +241,8 @@ work. Code: `shared/links.ts`, `worker/links.ts`.
    as you attach them, and the send route runs it again on the sizes in R2, refusing a body too big to send.
 3. **Enqueue:** each linked file becomes an ordinary attachment row with a 128-bit `link_token`. The text part
    gets a block naming each file, its size, and link, above any trailing quote, where Gmail would fold it away.
-   The message also gains an HTML part: the sender's text with a card per file in the same place (extension
-   tile, name, size, View or Download), built from tables and inline styles so it holds up in Gmail and
-   Outlook. HTML readers never see the bare URLs. The sent copy keeps both, so the sender sees what recipients
+   The HTML part gets a card per file in the same place (extension tile, name, size, View or Download), built
+   from tables and inline styles so it holds up in Gmail and Outlook. HTML readers never see the bare URLs. The sent copy keeps both, so the sender sees what recipients
    got.
 4. **Send:** only the attached files are read into memory. On success, every file is streamed from `uploads/` to
    `m/…` like any attachment.
@@ -337,7 +341,7 @@ Your part:
 
 - Keep **DMARC** at `p=quarantine` or stricter, with `rua` pointing at a mailbox here (reports arrive as mail
   and can be parsed later).
-- Always send a text part (the composer is text-first).
+- Always send a text part (the composer renders one from its markdown).
 - Give the app a custom domain before sending large files. Their links point at the app's host, and filters
   distrust `workers.dev`, which phishing kits use heavily.
 - Watch bounce and complaint rates. The delivery badges surface them per message.
@@ -418,11 +422,10 @@ The web app is the only client, so it has to be good on phones and good enough t
 
 6. **Rules and filters** per mailbox (from/to/subject → labels, skip inbox, auto-archive), evaluated in ingest.
 7. **Image proxy** through the Worker so "Show images" doesn't leak your IP.
-8. **Rich-text compose** (the composer is text-first today).
-9. **Workers AI**: spam and phishing scoring, category labels, thread summaries. Use **Vectorize** for
+8. **Workers AI**: spam and phishing scoring, category labels, thread summaries. Use **Vectorize** for
    semantic search next to FTS5.
-10. **Vacation responder** via `env.EMAIL.send` (skip auto-submitted and list mail; honor `Auto-Submitted`).
-11. **DMARC aggregate report parsing** from the `rua` mailbox into a dashboard.
-12. **Retention/export**: per-label retention, full mailbox export (raw `.eml` is already in R2).
+9. **Vacation responder** via `env.EMAIL.send` (skip auto-submitted and list mail; honor `Auto-Submitted`).
+10. **DMARC aggregate report parsing** from the `rua` mailbox into a dashboard.
+11. **Retention/export**: per-label retention, full mailbox export (raw `.eml` is already in R2).
 
 **Decided against:** IMAP and JMAP servers (see §1).

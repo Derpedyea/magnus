@@ -9,6 +9,7 @@ import {
 	planAttachments,
 	type SendAttachmentRef,
 } from "#shared";
+import { noteBody } from "#shared/markdown";
 import { useForm, useSelector } from "@tanstack/react-form";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { shallow } from "@tanstack/react-store";
@@ -20,10 +21,12 @@ import { FieldError } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { api, type Identity } from "../api";
 import { withSignature } from "../compose";
+import { normalizeMarkdown } from "../markdown";
+import { MarkdownEditor } from "./MarkdownEditor";
 import { RecipientField } from "./RecipientField";
 import { toastUndoSend } from "./UndoToast";
 
@@ -35,6 +38,7 @@ export interface Draft {
 	cc: Address[];
 	bcc: Address[];
 	subject: string;
+	/** Markdown (components/MarkdownEditor.tsx). */
 	text: string;
 	attachments: SendAttachmentRef[];
 	replyToMessageId?: string;
@@ -100,9 +104,11 @@ export function Composer(props: {
 		useSelector(form.store, (s) => {
 			const forward = s.values.forward;
 			const files = [...s.values.attachments, ...(forward?.files ?? [])];
-			const text = s.values.text + (forward?.message.text ?? "");
+			if (files.length === 0) return [];
+			const note = noteBody(s.values.text);
+			const body = { text: note.text + (forward?.message.text ?? ""), html: note.html };
 			const embedded = forward?.message.hasHtml ? forward.message.attachments.reduce((n, a) => n + (a.inline && a.contentId ? a.size : 0), 0) : 0;
-			return planAttachments(files, { text }, `${location.origin}/f/${s.values.mailboxId}/`, embedded).linked.map(fileKey);
+			return planAttachments(files, body, `${location.origin}/f/${s.values.mailboxId}/`, embedded).linked.map(fileKey);
 		}),
 	);
 	const fromOptions = pinned ? props.identities.filter((i) => i.mailboxId === mailboxId) : props.identities;
@@ -165,7 +171,7 @@ export function Composer(props: {
 								const picked = fromOptions.find((i) => key(i.mailboxId, i.address) === value);
 								if (!picked) return;
 								const current = props.identities.find((i) => i.mailboxId === mailboxId && i.address === f.state.value);
-								form.setFieldValue("text", (text) => withSignature(text, current?.signature ?? null, picked.signature));
+								form.setFieldValue("text", (text) => withSignature(text, current?.signature ?? null, picked.signature, normalizeMarkdown));
 								form.setFieldValue("mailboxId", picked.mailboxId);
 								f.handleChange(picked.address);
 							}}
@@ -204,12 +210,12 @@ export function Composer(props: {
 			</form.Field>
 			<form.Field name="text">
 				{(f) => (
-					<Textarea
+					<MarkdownEditor
 						value={f.state.value}
-						onChange={(e) => f.handleChange(e.target.value)}
-						rows={props.initial.forward ? 8 : 14}
+						onChange={f.handleChange}
 						aria-label="Message"
-						className="resize-none rounded-none border-0 px-3 py-2.5 field-sizing-fixed focus-visible:ring-0 dark:bg-transparent"
+						// The height of 14 lines, or 8 above a forward.
+						className={cn("overflow-y-auto px-3 py-2.5 text-base md:text-sm", props.initial.forward ? "h-45" : "h-75")}
 						autoFocus={!props.initial.replyToMessageId && props.initial.to.length > 0}
 					/>
 				)}

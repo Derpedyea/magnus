@@ -23,6 +23,7 @@ import {
 	type User,
 	withForward,
 } from "#shared";
+import { noteBody } from "#shared/markdown";
 import { ComposeSchema, MarkReadSchema, MAX_ATTACHMENTS, ModifyThreadsSchema, ShareLinkSchema, SignatureSchema } from "#shared/schemas";
 import { isAPIError } from "better-auth/api";
 import { type Context, Hono } from "hono";
@@ -274,7 +275,8 @@ const mb = new Hono<AppEnv>()
 		}
 
 		const linkBase = `${new URL(c.req.url).origin}/f/${c.var.mailboxId}/`;
-		const body = forward ? withForward(req, forward) : req;
+		const note = noteBody(req.text);
+		const body = forward ? withForward(note, forward) : note;
 		const embeddedBytes = embedded.reduce((n, a) => n + a.size, 0);
 		const { attached, linked, fits } = planAttachments(attachments, body, linkBase, embeddedBytes);
 		if (!fits) return c.json({ error: "Message is too long to send" }, 413);
@@ -293,8 +295,7 @@ const mb = new Hono<AppEnv>()
 			cc: req.cc,
 			bcc: req.bcc,
 			subject: req.subject,
-			text: req.text,
-			html: req.html,
+			markdown: req.text,
 			parentMessageId: req.replyToMessageId ?? req.forward?.messageId,
 			forward,
 			attachments: [...attached, ...embedded],

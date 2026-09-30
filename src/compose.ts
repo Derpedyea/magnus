@@ -20,27 +20,26 @@ export function quote(m: { date: number; from: Address; text: string | null }): 
 	return `\n\nOn ${new Date(m.date).toLocaleString()}, ${m.from.name || m.from.address} wrote:\n${quoted}`;
 }
 
-const QUOTE = /\n\nOn .+ wrote:\n>/;
-
-// "-- " on its own line is the RFC 3676 signature delimiter, which mail clients recognise.
-const block = (signature: string | null) => (signature ? `\n\n-- \n${signature}` : "");
+// The attribution, then the quote: on the next line as quote() writes it, after a blank one as the editor does.
+const QUOTE = /\n\nOn .+ wrote:\n\n?>/;
 
 /**
  * Swaps `previous`'s signature for `next`'s, so changing From changes it. With none yet, `next`'s goes above
- * the quote, or at the end. One edited or removed by hand is left alone.
+ * the quote, or at the end. One edited or removed by hand is left alone. Text that's been through the editor needs
+ * its `normalize` (src/markdown.ts), which writes the signature the way the editor would; the composer passes it,
+ * since that module comes with the editor.
  */
-export function withSignature(text: string, previous: string | null, next: string | null): string {
+export function withSignature(markdown: string, previous: string | null, next: string | null, normalize = (md: string) => md): string {
+	// "-- " on its own line is the RFC 3676 signature delimiter, which mail clients recognise.
+	const block = (signature: string | null) => (signature ? `\n\n${normalize(`-- \n${signature}`)}` : "");
+	const text = normalize(markdown);
 	if (previous) {
-		const at = signatureAt(text, previous);
-		return at === -1 ? text : text.slice(0, at) + block(next) + text.slice(at + block(previous).length);
+		const at = text.indexOf(block(previous));
+		const after = text.slice(at + block(previous).length);
+		// Only where it sits untouched: last, or right above the quote.
+		const untouched = at !== -1 && (after === "" || after.search(QUOTE) === 0);
+		return untouched ? text.slice(0, at) + block(next) + after : text;
 	}
 	const at = text.search(QUOTE);
 	return at === -1 ? text + block(next) : text.slice(0, at) + block(next) + text.slice(at);
-}
-
-/** Where the signature sits untouched: last, or right above the quote. -1 once it's been edited. */
-function signatureAt(text: string, signature: string): number {
-	const at = text.indexOf(block(signature));
-	const after = text.slice(at + block(signature).length);
-	return at !== -1 && (after === "" || after.search(QUOTE) === 0) ? at : -1;
 }

@@ -33,8 +33,8 @@ import {
 	type ThreadSummary,
 	ulid,
 	withForward,
-	withLinks,
 } from "#shared";
+import { noteBody } from "#shared/markdown";
 import { retryAddressing } from "./retry";
 import { MIGRATIONS } from "./schema";
 
@@ -746,11 +746,8 @@ export class Mailbox extends DurableObject<Env> {
 		const attachments = [...attached, ...linked.map((l) => l.file)];
 
 		// The sent copy keeps the links too, so the sender sees what recipients got. They sit with the note, above a forward.
-		let { text, html } = input;
-		if (linked.length > 0) {
-			({ text, html } = withLinks({ text, html }, linked.map((l) => ({ ...l.file, url: l.url }))));
-		}
-		if (input.forward) ({ text, html } = withForward({ text, html }, input.forward));
+		const note = noteBody(input.markdown, linked.map((l) => ({ ...l.file, url: l.url })));
+		const { text, html } = input.forward ? withForward(note, input.forward) : note;
 
 		let htmlKey: string | null = null;
 		if (html) {
