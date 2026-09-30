@@ -46,7 +46,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.60.2",
+    "@cloudflare/vite-plugin": "^1.62.2",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/react-devtools": "^0.10.13",
     "@tanstack/react-query-devtools": "^5.104.0",
@@ -59,7 +59,7 @@
     "typescript": "^7.0.2",
     "vite": "^8.3.1",
     "vitest": "^5.0.2",
-    "wrangler": "^4.141.0"
+    "wrangler": "^4.144.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
