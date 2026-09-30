@@ -1,7 +1,7 @@
 /**
  * The quoted history at the end of a reply repeats what the thread already shows, so it folds away behind a
  * "•••" like Gmail's. Only a quote that ends the message folds: answers written between quoted lines stay whole,
- * and so does a forward, whose original is the point.
+ * and so does a forward, whose original is the point. Callers fold only replies whose parent is in the thread.
  */
 
 /** Forwards keep what they carry, even when the client quotes it like a reply (Outlook does). */
