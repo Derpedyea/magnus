@@ -29,8 +29,10 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
   header, and the forward stays in the conversation.
 - **Full-text search**, undo send, and a delivery badge on every sent message (delivered, bounced, …). Mail
   that didn't make it says who missed it, and Retry sends it again to just them.
+- **Write in markdown, see it formatted.** Bold, lists, quotes, and links show as you type them, or from the
+  bar over a selection. Mail goes out as HTML with a plain-text part that reads the same.
 - **Recipients autocomplete** from everyone you've written to or heard from, and each address you send as
-  can have its own signature.
+  can have its own signature, formatted the same way.
 - **Previews** for photos, video, audio, and PDFs, in the app and on the page a file link opens. Video
   streams, so it plays and seeks without downloading first.
 - **Big files go as links.** Whatever doesn't fit in a message is sent as a download link, like Gmail's Drive

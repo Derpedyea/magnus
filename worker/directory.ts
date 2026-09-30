@@ -1,5 +1,6 @@
 import {
 	type Directory,
+	escapeMarkdown,
 	type MailboxMembership,
 	normalizeAddress,
 	splitAddress,
@@ -72,7 +73,7 @@ export async function getUserMailboxes(db: D1Database, userId: string): Promise<
 			.all<Omit<MailboxMembership, "addresses">>(),
 		db
 			.prepare(
-				`SELECT r.mailbox_id, a.address, a.display_name, r.can_send AND d.sending AS can_send, s.text AS signature
+				`SELECT r.mailbox_id, a.address, a.display_name, r.can_send AND d.sending AS can_send, s.text AS signature, s.markdown
 				 FROM mailbox_members mm
 				 JOIN address_routes r ON r.mailbox_id = mm.mailbox_id
 				 JOIN addresses a ON a.address = r.address
@@ -81,23 +82,33 @@ export async function getUserMailboxes(db: D1Database, userId: string): Promise<
 				 WHERE mm.user_id = ?1 AND a.enabled = 1 ORDER BY a.created_at, a.rowid`,
 			)
 			.bind(userId)
-			.all<{ mailbox_id: string; address: string; display_name: string | null; can_send: number; signature: string | null }>(),
+			.all<{ mailbox_id: string; address: string; display_name: string | null; can_send: number; signature: string | null; markdown: number | null }>(),
 	]);
 	return mailboxes.results.map((m) => ({
 		...m,
 		addresses: addresses.results
 			.filter((a) => a.mailbox_id === m.id)
-			.map((a) => ({ address: a.address, displayName: a.display_name, canSend: a.can_send === 1, signature: a.signature })),
+			.map((a) => ({
+				address: a.address,
+				displayName: a.display_name,
+				canSend: a.can_send === 1,
+				// Saved as plain text before signatures were markdown: escaped, so it still reads as written.
+				signature: a.signature !== null && a.markdown === 0 ? escapeMarkdown(a.signature) : a.signature,
+			})),
 	}));
 }
 
 /** Blank clears it. Returns what was saved. */
 export async function setSignature(db: D1Database, userId: string, address: string, text: string): Promise<string | null> {
-	// The composer adds the "-- " delimiter itself, so one pasted from another client would show twice.
-	const signature = text.trim().replace(/^--[ \t]*\n/, "").trim() || null;
+	// The composer adds the "-- " delimiter itself, so one pasted from another client would show twice. The editor
+	// writes it as markdown, escaped (`\--`).
+	const signature = text.trim().replace(/^\\?--[ \t]*\n/, "").trim() || null;
 	await (signature
 		? db
-				.prepare(`INSERT INTO signatures (user_id, address, text) VALUES (?1, ?2, ?3) ON CONFLICT (user_id, address) DO UPDATE SET text = excluded.text`)
+				.prepare(
+					`INSERT INTO signatures (user_id, address, text, markdown) VALUES (?1, ?2, ?3, 1)
+					 ON CONFLICT (user_id, address) DO UPDATE SET text = excluded.text, markdown = 1`,
+				)
 				.bind(userId, address, signature)
 		: db.prepare(`DELETE FROM signatures WHERE user_id = ?1 AND address = ?2`).bind(userId, address)
 	).run();

@@ -36,17 +36,18 @@ export function splitAttachments<T extends { size: number }>(files: T[], bodyByt
 }
 
 /**
- * splitAttachments for a whole message. Linking anything grows the body: a block in the text and, for plain-text
- * mail, an HTML part carrying the text again. So once something has to be linked, split again against that
- * bigger body, sized as if every file were linked, which only overestimates. `embeddedBytes` counts parts that
- * can't become links, like the images a forwarded HTML body shows by Content-ID.
+ * splitAttachments for a whole message. Linking anything grows the body by a block in the text and a card in the
+ * HTML (noteBody()). So once something has to be linked, split again against that bigger body, sized as if every
+ * file were linked, which only overestimates. `embeddedBytes` counts parts that can't become links, like the
+ * images a forwarded HTML body shows by Content-ID.
  */
 export function planAttachments<T extends Omit<LinkedFile, "url">>(files: T[], body: MessageBody, linkBase: string, embeddedBytes = 0) {
-	const plain = splitAttachments(files, byteLength(body.text + (body.html ?? "")) + embeddedBytes);
+	const bodyBytes = byteLength(body.text + (body.html ?? "")) + embeddedBytes;
+	const plain = splitAttachments(files, bodyBytes);
 	if (plain.linked.length === 0) return plain;
 	const url = linkBase + newLinkToken();
-	const linked = withLinks(body, files.map((f) => ({ ...f, url })));
-	return splitAttachments(files, byteLength(linked.text + linked.html) + embeddedBytes);
+	const linked = files.map((f) => ({ ...f, url }));
+	return splitAttachments(files, bodyBytes + byteLength(linkBlockText(linked) + linkCards(linked)));
 }
 
 const byteLength = (s: string) => new TextEncoder().encode(s).length;
@@ -71,14 +72,6 @@ export interface MessageBody {
 	html?: string;
 }
 
-/** The body once `files` are linked: their block in the text, and cards in the HTML, made from the text if there's none. */
-export function withLinks(body: MessageBody, files: LinkedFile[]): { text: string; html: string } {
-	return {
-		text: insertBeforeQuote(body.text, linkBlockText(files)),
-		html: body.html ? body.html + linkCards(files) : linkedMessageHtml(body.text, files),
-	};
-}
-
 // Wording after Thunderbird's Filelink, which recipients have seen for a decade.
 const linkIntro = (count: number) => (count === 1 ? "I've linked a file to this email." : `I've linked ${count} files to this email.`);
 
@@ -88,16 +81,9 @@ export function linkBlockText(files: LinkedFile[]): string {
 }
 
 /**
- * The plain-text message as its HTML part, with a card per linked file where the text has its link block. HTML
- * readers (nearly everyone, and Magnus itself) see cards instead of long URLs, like Gmail's Drive attachments.
+ * For the HTML part: a card per file instead of long URLs, like Gmail's Drive attachments. HTML readers (nearly
+ * everyone, and Magnus itself) see these.
  */
-export function linkedMessageHtml(text: string, files: LinkedFile[]): string {
-	const [body, quote] = splitQuote(text);
-	const lines = (s: string, style: string) => (s ? `<div style="${style}">${escapeHtml(s).replaceAll("\n", "<br>")}</div>` : "");
-	return `<div style="font-family:${FONT};font-size:14px;line-height:1.5;color:${INK}">${lines(body, "")}${linkCards(files)}${lines(quote, `margin-top:16px;color:${MUTED}`)}</div>`;
-}
-
-/** Link cards on their own, for appending to HTML the sender wrote. */
 export function linkCards(files: LinkedFile[]): string {
 	return `<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;max-width:440px;margin:16px 0 0;font-family:${FONT}">
 <tr><td style="font-size:13px;color:${MUTED}">${escapeHtml(linkIntro(files.length))}</td></tr>
@@ -107,7 +93,7 @@ ${files.map((f) => `<tr><td style="padding:8px 0 0">${linkCard(f)}</td></tr>`).j
 
 // Email HTML: tables and inline styles only, so it holds up in Gmail and Outlook. A tile with the extension on it
 // stands in for an icon, since clients strip SVG and block images.
-const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+export const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const INK = "#18181b";
 const MUTED = "#71717a";
 const TILE_COLORS: Record<PreviewKind | "other", string> = { image: "#0284c7", video: "#7c3aed", audio: "#d97706", pdf: "#dc2626", other: "#52525b" };
@@ -136,11 +122,6 @@ export function splitQuote(text: string): [body: string, quote: string] {
 	if (!lines.slice(end).some((l) => l.startsWith(">"))) return [text.trimEnd(), ""];
 	if (end > 0 && /wrote:\s*$/.test(lines[end - 1]!)) end--;
 	return [lines.slice(0, end).join("\n").trimEnd(), lines.slice(end).join("\n")];
-}
-
-export function insertBeforeQuote(text: string, block: string): string {
-	const [body, quote] = splitQuote(text);
-	return [body, block, quote].filter(Boolean).join("\n\n");
 }
 
 export const escapeHtml = (s: string) =>

@@ -25,10 +25,10 @@ export const ComposeSchema = z
 		cc: z.array(AddressSchema).default([]),
 		bcc: z.array(AddressSchema).default([]),
 		subject: z.string().max(998),
+		/** Markdown (plain text reads the same). The message's text and HTML parts are both rendered from it (noteBody()). */
 		text: z.string(),
-		html: z.string().optional(),
 		replyToMessageId: z.string().optional(),
-		/** Forwards a message in this mailbox below `text`. The images its HTML shows come along by themselves. */
+		/** Forwards a message in this mailbox below the note. The images its HTML shows come along by themselves. */
 		forward: z
 			.object({
 				messageId: z.string(),
@@ -61,7 +61,7 @@ export const ModifyThreadsSchema = z.object({
 /** Stops or resumes sharing a file sent as a link. The link itself never changes. */
 export const ShareLinkSchema = z.object({ shared: z.boolean() });
 
-/** Empty clears it. */
+/** Markdown, like the note it's added to. Empty clears it. */
 export const SignatureSchema = z.object({
 	address: z.email(),
 	text: z.string().max(MAX_SIGNATURE),

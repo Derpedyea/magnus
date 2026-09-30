@@ -1,18 +1,21 @@
 import { useSelector } from "@tanstack/react-store";
 import { Outlet, useNavigate, useSearch } from "@tanstack/react-router";
 import { SearchIcon } from "lucide-react";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { closeDraft, compose, openDraft, withSignature } from "./compose";
 import { AccountMenu } from "./components/AccountMenu";
 import { Centered } from "./components/Centered";
-import { Composer } from "./components/Composer";
 import { Sidebar } from "./components/Sidebar";
 import { useAccount, useLive, useScope } from "./hooks";
 
 const Devtools = import.meta.env.DEV ? lazy(() => import("./devtools")) : () => null;
+
+// The composer brings the editor, the app's largest dependency, so it loads after the mail rather than before.
+const loadComposer = () => import("./components/Composer");
+const Composer = lazy(() => loadComposer().then((m) => ({ default: m.Composer })));
 
 /** The signed-in layout: sidebar and header around the current view, plus the composer floating above it. */
 export function App() {
@@ -24,6 +27,8 @@ export function App() {
 	const draft = useSelector(compose, (s) => s);
 	const live = useLive(mailboxes.map((m) => m.id));
 	const status = live ? "Live updates connected" : "Reconnecting…";
+	// Fetched now, so it opens at once.
+	useEffect(() => void loadComposer(), []);
 
 	const [firstMailbox] = mailboxes;
 	if (!firstMailbox) return <Centered>No mailboxes are assigned to {user.email} yet.</Centered>;
@@ -78,7 +83,7 @@ export function App() {
 				</div>
 			</SidebarInset>
 
-			{draft ? <Composer identities={identities} initial={draft} onClose={closeDraft} /> : null}
+			<Suspense>{draft ? <Composer identities={identities} initial={draft} onClose={closeDraft} /> : null}</Suspense>
 
 			<Suspense>
 				<Devtools />

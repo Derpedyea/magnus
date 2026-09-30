@@ -224,11 +224,11 @@ export interface SendInput {
 	cc: Address[];
 	bcc: Address[];
 	subject: string;
-	text: string;
-	html?: string;
+	/** What the sender wrote, in markdown; noteBody() renders the message's text and HTML from it. */
+	markdown: string;
 	/** Local message id being replied to or forwarded; drives In-Reply-To/References and thread placement. */
 	parentMessageId?: string;
-	/** A forward's divider, header, and original (forwardedPart()), added below the text and any links. */
+	/** A forward's divider, header, and original (forwardedPart()), added below the note and any links. */
 	forward?: MessageBody;
 	attachments: SendAttachmentRef[];
 	/** Too big to attach: kept like attachments, but the message carries download links to them. */
