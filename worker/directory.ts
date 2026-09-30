@@ -240,6 +240,10 @@ export function addAddress(db: D1Database, address: string, displayName: string 
 	];
 }
 
+export async function addressExists(db: D1Database, address: string): Promise<boolean> {
+	return (await db.prepare(`SELECT 1 AS ok FROM addresses WHERE address = ?1`).bind(address).first()) !== null;
+}
+
 export async function removeAddress(db: D1Database, address: string): Promise<void> {
 	await db.prepare(`DELETE FROM addresses WHERE address = ?1`).bind(address).run();
 }

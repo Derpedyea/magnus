@@ -9,6 +9,7 @@ import { type DomainContext, domainStatus, runStep } from "./connect";
 import {
 	addAddress,
 	addDomain,
+	addressExists,
 	blockSender,
 	createMailbox,
 	deleteMailboxes,
@@ -132,14 +133,26 @@ export const admin = new Hono<AppEnv>()
 		async (c) => {
 			const body = c.req.valid("json");
 			const db = c.env.DIRECTORY;
+			const address = body.address && `${body.address.localPart}@${body.address.domain}`;
+			// Better Auth commits the person before their mailbox and address are made, so rule out what would predictably fail.
+			if (body.address && !(await getDomain(db, body.address.domain))) return c.json({ error: "That domain isn't in Magnus." }, 404);
+			if (address && (await addressExists(db, address))) return c.json({ error: "That address is already taken." }, 409);
 			// With the headers, Better Auth checks the caller may create users and set roles; without, it trusts the server.
 			const { user } = await (await auth(c.req.raw)).api.createUser({
 				body: { email: body.email, name: body.name, role: body.isAdmin ? "admin" : "user" },
 				headers: c.req.raw.headers,
 			});
 			const mailbox = createMailbox(db, user.id, body.name);
-			const address = body.address ? addAddress(db, `${body.address.localPart}@${body.address.domain}`, body.name, [mailbox.id]) : [];
-			await db.batch([...mailbox.statements, ...address]);
+			try {
+				await db.batch([...mailbox.statements, ...(address ? addAddress(db, address, body.name, [mailbox.id]) : [])]);
+			} catch (error) {
+				// Another admin just took the address, or D1 failed. Undo both sides so nothing blocks a retry: D1 can report
+				// a failure for writes it applied, and if the batch did roll back, removing the mailbox finds nothing.
+				await deleteMailboxes(db, [mailbox.id]);
+				await db.prepare(`DELETE FROM auth_users WHERE id = ?1`).bind(user.id).run();
+				if (address && (await addressExists(db, address))) return c.json({ error: "That address is already taken." }, 409);
+				throw error;
+			}
 			return c.json({ id: user.id }, 201);
 		},
 	)
