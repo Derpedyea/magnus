@@ -14,12 +14,9 @@ import { mailboxExists } from "../directory";
 /** Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. */
 export async function ingest(env: Env, job: InboundJob): Promise<void> {
 	// The mailbox can be gone since this was queued: its person removed, or a failed add undone after its address took
-	// mail. Delivering would bring it back, mail and all, with nobody to open it.
-	if (!(await mailboxExists(env.DIRECTORY, job.mailboxId))) {
-		await dropOriginal(env, job.rawKey);
-		console.log(JSON.stringify({ msg: "mailbox gone", ingestId: job.ingestId, mailboxId: job.mailboxId }));
-		return;
-	}
+	// mail. Delivering would bring it back, mail and all, with nobody to open it. (It can also go while this runs: see
+	// the end.)
+	if (!(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
 	const raw = await env.MAIL.get(job.rawKey);
 	if (!raw) {
 		// Nothing to retry against. Logged for the DLQ/ops trail.
@@ -82,8 +79,27 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 		labels,
 	};
 
-	const result = await env.MAILBOX.getByName(job.mailboxId).ingest(input);
-	console.log(JSON.stringify({ msg: "ingested", ingestId: job.ingestId, mailboxId: job.mailboxId, ...result }));
+	const delivered = await env.MAILBOX.getByName(job.mailboxId)
+		.ingest(input)
+		.then(
+			(result) => ({ result }),
+			(error: unknown) => ({ error }),
+		);
+	// Deleted since the check above. Its deletion may have cleared the mailbox before this reached it (the mailbox then
+	// refuses it), or after, so clear it either way.
+	if (!(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
+	if ("error" in delivered) throw delivered.error;
+	console.log(JSON.stringify({ msg: "ingested", ingestId: job.ingestId, mailboxId: job.mailboxId, ...delivered.result }));
+}
+
+/**
+ * For a mailbox deleted before or while its mail was delivered: clears what delivering it left (the mailbox's files and
+ * storage, which destroy() takes any number of times), and the original if no other mailbox is due it.
+ */
+async function clearGone(env: Env, job: InboundJob): Promise<void> {
+	await env.MAILBOX.getByName(job.mailboxId).destroy();
+	await dropOriginal(env, job.rawKey);
+	console.log(JSON.stringify({ msg: "mailbox gone", ingestId: job.ingestId, mailboxId: job.mailboxId }));
 }
 
 /**

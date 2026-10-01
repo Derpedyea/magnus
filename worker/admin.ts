@@ -151,6 +151,8 @@ export const admin = new Hono<AppEnv>()
 				// a failure for writes it applied, and if the batch did roll back, removing the mailbox finds nothing. One batch,
 				// so a failure here can't leave the person without the rest.
 				await db.batch([...deleteMailboxStatements(db, [mailbox.id]), db.prepare(`DELETE FROM auth_users WHERE id = ?1`).bind(user.id)]);
+				// Mail its address took in the meantime may have reached the mailbox already (see ingest).
+				c.executionCtx.waitUntil(c.env.MAILBOX.getByName(mailbox.id).destroy());
 				if (address && (await addressExists(db, address))) return c.json({ error: "That address is already taken." }, 409);
 				throw error;
 			}
