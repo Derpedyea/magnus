@@ -815,8 +815,8 @@ export class Mailbox extends DurableObject<Env> {
 	 */
 	async cancelSend(messageId: string): Promise<boolean> {
 		const row = this.sql
-			.exec<{ thread_id: string; rowid: number }>(
-				`SELECT m.thread_id, m.rowid FROM outbox o JOIN messages m ON m.id = o.message_id
+			.exec<{ thread_id: string; rowid: number; payload: string; attempts: number }>(
+				`SELECT m.thread_id, m.rowid, o.payload, o.attempts FROM outbox o JOIN messages m ON m.id = o.message_id
 				 WHERE o.message_id = ?1 AND m.delivery_status = 'queued' AND m.provider_message_id IS NULL`,
 				messageId,
 			)
@@ -845,6 +845,11 @@ export class Mailbox extends DurableObject<Env> {
 				this.touchThread(row.thread_id, m.date, m.snippet, [JSON.parse(m.from_json), ...JSON.parse(m.to_json), ...JSON.parse(m.cc_json)]);
 			}
 		});
+		// One that's been tried has copied its files (an attempt still copying clears up after itself).
+		if (row.attempts > 0) {
+			const payload: OutboxPayload = JSON.parse(row.payload);
+			await this.deleteCopies(messageId, payload.attachments);
+		}
 		await this.scheduleOutbox();
 		this.broadcast({ type: "threads.changed", threadIds: [row.thread_id] });
 		return true;
@@ -976,10 +981,11 @@ export class Mailbox extends DurableObject<Env> {
 			try {
 				// Kept while still `queued`, so Undo still works and a copy cut short is simply redone.
 				const attachments = await this.keepAttachments(row.message_id, payload.attachments);
-				// Undo may have landed during that, or while an earlier row sent: the message is gone, so its copies go too.
+				// Linked files stay behind; the text already links to them. (Rows queued before links existed lack the field.)
+				const attached = payload.localOnly ? [] : await this.loadAttachments(attachments.filter((a) => !a.link));
+				// Undo may have landed during those, or while an earlier row sent: the message is gone, so its copies go too.
 				if (this.sql.exec(`SELECT 1 FROM outbox WHERE message_id = ?1`, row.message_id).toArray().length === 0) {
-					const copies = attachments.filter((a, i) => a.r2Key !== payload.attachments[i]?.r2Key).map((a) => a.r2Key);
-					if (copies.length > 0) await this.env.MAIL.delete(copies).catch(() => {});
+					await this.deleteCopies(row.message_id, payload.attachments);
 					continue;
 				}
 				// Taken before anything reaches Email Sending, so every delivery event for this send is newer.
@@ -987,8 +993,6 @@ export class Mailbox extends DurableObject<Env> {
 				if (!payload.localOnly) {
 					// Only now could a crash leave the message with Email Sending, so only now is it `sending` (see above).
 					this.sql.exec(`UPDATE messages SET delivery_status = 'sending' WHERE id = ?1`, row.message_id);
-					// Linked files stay behind; the text already links to them. (Rows queued before links existed lack the field.)
-					const attached = await this.loadAttachments(attachments.filter((a) => !a.link));
 					providerMessageId = (await this.env.EMAIL.send(buildSendRequest(payload, attached))).messageId;
 				}
 			} catch (err) {
@@ -1018,9 +1022,9 @@ export class Mailbox extends DurableObject<Env> {
 	private async loadAttachments(attachments: StoredAttachment[]): Promise<EmailAttachment[]> {
 		return Promise.all(
 			attachments.map(async (a) => {
-				const obj = await this.env.MAIL.get(a.r2Key);
+				const obj = await this.env.MAIL.get(a.r2Key).catch(storageFailed);
 				if (!obj) throw Object.assign(new Error(`Attachment missing: ${a.filename}`), { code: "E_ATTACHMENT_MISSING" });
-				const part = { content: await obj.arrayBuffer(), filename: a.filename, type: a.contentType };
+				const part = { content: await obj.arrayBuffer().catch(storageFailed), filename: a.filename, type: a.contentType };
 				return a.inline && a.contentId
 					? { ...part, disposition: "inline" as const, contentId: a.contentId }
 					: { ...part, disposition: "attachment" as const };
@@ -1052,6 +1056,12 @@ export class Mailbox extends DurableObject<Env> {
 			kept.push({ ...a, r2Key });
 		}
 		return kept;
+	}
+
+	/** Removes what keepAttachments made for a message that won't be sent. Its uploads stay: Undo reopens the draft with them. */
+	private async deleteCopies(messageId: string, attachments: StoredAttachment[]): Promise<void> {
+		const copies = attachments.filter(isUpload).map((a) => r2Keys.attachment(this.mailboxId(), messageId, a.id));
+		if (copies.length > 0) await this.env.MAIL.delete(copies).catch(() => {});
 	}
 
 	private finishSend(
