@@ -9,6 +9,7 @@ import {
 	type Counts,
 	type DeliveryEventInput,
 	type DeliveryStatus,
+	ensureAngleBrackets,
 	type IngestInput,
 	isValidAddress,
 	type ListPage,
@@ -40,6 +41,10 @@ import { MIGRATIONS } from "./schema";
 
 const SUBJECT_FALLBACK_WINDOW_MS = 30 * 24 * 3600 * 1000;
 const MAX_SEND_ATTEMPTS = 8;
+/** How soon R2 objects it wouldn't delete are tried again. */
+const TRASH_RETRY_MS = 60_000;
+/** Keys in trash no message has any more. A forward sends from the original's keys, so one can outlive its message. */
+const DELETABLE_TRASH = `SELECT r2_key FROM trash t WHERE NOT EXISTS (SELECT 1 FROM attachments a WHERE a.r2_key = t.r2_key)`;
 const OUTBOX_BATCH = 10;
 const MAX_PARTICIPANTS = 12;
 /** Longer than the inbound queue keeps retrying a message (wrangler.jsonc: 10 retries, at most an hour apart). */
@@ -49,8 +54,8 @@ const HOLDING_BATCH = 10_000;
 /** A socket is authorized once, when it opens. After this long it has to reconnect, which checks the sign-in again. */
 const SOCKET_MS = 5 * 60 * 1000;
 
-/** Email Sending error codes worth retrying. Everything else is a permanent failure. */
-const TRANSIENT_SEND_ERRORS = new Set(["E_RATE_LIMIT_EXCEEDED", "E_DAILY_LIMIT_EXCEEDED", "E_INTERNAL_SERVER_ERROR", "E_DELIVERY_FAILED"]);
+/** Error codes worth retrying: Email Sending's, and R2 failing to keep an upload (E_STORAGE). Everything else is a permanent failure. */
+const TRANSIENT_SEND_ERRORS = new Set(["E_RATE_LIMIT_EXCEEDED", "E_DAILY_LIMIT_EXCEEDED", "E_INTERNAL_SERVER_ERROR", "E_DELIVERY_FAILED", "E_STORAGE"]);
 
 interface OutboxPayload {
 	from: Address;
@@ -707,7 +712,8 @@ export class Mailbox extends DurableObject<Env> {
 
 	// ─── Outbound ───────────────────────────────────────────────────────────
 
-	async enqueueSend(input: SendInput): Promise<SendQueued> {
+	/** Null when a forward's original was cancelled while the forward was put together, taking its files with it. */
+	async enqueueSend(input: SendInput): Promise<SendQueued | null> {
 		this.bindMailboxId(input.mailboxId);
 		const now = Date.now();
 		const id = ulid(now);
@@ -770,7 +776,11 @@ export class Mailbox extends DurableObject<Env> {
 		};
 
 		const snippet = makeSnippet(text);
+		// A forward's files are the original's (keepAttachments copies only uploads). Asked in the same turn as the insert,
+		// so either the original's cancel sees this message has them (emptyTrash) or this sees they're gone.
+		const forwarded = attachments.filter((a) => !isUpload(a)).map((a) => a.r2Key);
 		const threadId = this.ctx.storage.transactionSync(() => {
+			if (forwarded.some((key) => this.sql.exec(`SELECT 1 FROM attachments WHERE r2_key = ?1`, key).toArray().length === 0)) return null;
 			const threadId = parent?.thread_id ?? this.createThread(input.subject, now);
 			const { rowid } = this.sql
 				.exec<{ rowid: number }>(
@@ -802,6 +812,11 @@ export class Mailbox extends DurableObject<Env> {
 			this.sql.exec(`INSERT INTO outbox (message_id, send_at, payload) VALUES (?1, ?2, ?3)`, id, sendAt, JSON.stringify(payload));
 			return threadId;
 		});
+		if (threadId === null) {
+			if (htmlKey) this.sql.exec(`INSERT OR IGNORE INTO trash (r2_key) VALUES (?1)`, htmlKey);
+			await this.emptyTrash();
+			return null;
+		}
 
 		await this.scheduleOutbox();
 		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
@@ -814,25 +829,47 @@ export class Mailbox extends DurableObject<Env> {
 	 */
 	async cancelSend(messageId: string): Promise<boolean> {
 		const row = this.sql
-			.exec<{ thread_id: string; rowid: number }>(
-				`SELECT m.thread_id, m.rowid FROM outbox o JOIN messages m ON m.id = o.message_id
+			.exec<{ thread_id: string; rowid: number; html_key: string | null }>(
+				`SELECT m.thread_id, m.rowid, m.html_key FROM outbox o JOIN messages m ON m.id = o.message_id
 				 WHERE o.message_id = ?1 AND m.delivery_status = 'queued' AND m.provider_message_id IS NULL`,
 				messageId,
 			)
 			.toArray()[0];
 		if (!row) return false;
+		// Its own files in R2 go with it: copies an attempt made (keepAttachments), a retry's, and its body. A forward's are
+		// the original's, and trash keeps any another message still has. Uploads stay: Undo reopens the draft with them.
+		// (An attempt still copying clears up after itself.)
+		const own = this.sql
+			.exec<{ id: string; r2_key: string }>(`SELECT id, r2_key FROM attachments WHERE message_id = ?1`, messageId)
+			.toArray()
+			.filter((a) => a.r2_key === r2Keys.attachment(this.mailboxId(), messageId, a.id))
+			.map((a) => a.r2_key);
+		if (row.html_key) own.push(row.html_key);
 		this.ctx.storage.transactionSync(() => {
+			for (const key of own) this.sql.exec(`INSERT OR IGNORE INTO trash (r2_key) VALUES (?1)`, key);
 			this.sql.exec(`DELETE FROM messages_fts WHERE rowid = ?1`, row.rowid);
 			this.sql.exec(`DELETE FROM outbox WHERE message_id = ?1`, messageId);
 			this.sql.exec(`DELETE FROM message_labels WHERE message_id = ?1`, messageId);
 			this.sql.exec(`DELETE FROM attachments WHERE message_id = ?1`, messageId);
 			this.sql.exec(`DELETE FROM messages WHERE id = ?1`, messageId);
-			const left = this.sql.exec<{ n: number }>(`SELECT count(*) AS n FROM messages WHERE thread_id = ?1`, row.thread_id).one();
-			if (left.n === 0) {
+			const left = this.sql
+				.exec<{ date: number; snippet: string; from_json: string; to_json: string; cc_json: string }>(
+					`SELECT date, snippet, from_json, to_json, cc_json FROM messages WHERE thread_id = ?1 ORDER BY date, id`,
+					row.thread_id,
+				)
+				.toArray();
+			if (left.length === 0) {
 				this.sql.exec(`DELETE FROM thread_refs WHERE thread_id = ?1`, row.thread_id);
 				this.sql.exec(`DELETE FROM threads WHERE id = ?1`, row.thread_id);
+				return;
+			}
+			// The thread's preview may be the cancelled message's (its text, send time, recipients): rebuild it from the rest, oldest first.
+			this.sql.exec(`UPDATE threads SET snippet = '', last_message_at = 0, participants = '[]' WHERE id = ?1`, row.thread_id);
+			for (const m of left) {
+				this.touchThread(row.thread_id, m.date, m.snippet, [JSON.parse(m.from_json), ...JSON.parse(m.to_json), ...JSON.parse(m.cc_json)]);
 			}
 		});
+		await this.emptyTrash();
 		await this.scheduleOutbox();
 		this.broadcast({ type: "threads.changed", threadIds: [row.thread_id] });
 		return true;
@@ -908,7 +945,9 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	private async scheduleOutbox(): Promise<void> {
-		const next = this.sql.exec<{ at: number | null }>(`SELECT min(send_at) AS at FROM outbox`).one().at;
+		const due = this.sql.exec<{ at: number | null }>(`SELECT min(send_at) AS at FROM outbox`).one().at;
+		const retry = this.sql.exec(`${DELETABLE_TRASH} LIMIT 1`).toArray().length > 0 ? Date.now() + TRASH_RETRY_MS : null;
+		const next = due === null ? retry : retry === null ? due : Math.min(due, retry);
 		if (next === null) {
 			await this.ctx.storage.deleteAlarm();
 			return;
@@ -922,7 +961,7 @@ export class Mailbox extends DurableObject<Env> {
 	 * unread like inbound mail. When the send also went out through Email Sending, the copy that loops
 	 * back through MX is merged into this one by ingest().
 	 */
-	private deliverLocally(messageId: string, recipients: LocalRecipient[], everyone: boolean): void {
+	private deliverLocally(messageId: string, recipients: LocalRecipient[]): void {
 		const now = Date.now();
 		for (const r of recipients) {
 			this.addLabels([messageId], r.labels);
@@ -930,19 +969,16 @@ export class Mailbox extends DurableObject<Env> {
 			this.sql.exec(
 				`INSERT OR REPLACE INTO deliveries (message_id, recipient, status, detail, updated_at) VALUES (?1, ?2, 'delivered', NULL, ?3)`,
 				messageId,
-				r.address,
+				normalizeAddress(r.address),
 				now,
 			);
 		}
-		this.sql.exec(
-			`UPDATE messages SET is_read = 0, delivery_status = CASE WHEN ?2 THEN 'delivered' ELSE delivery_status END WHERE id = ?1`,
-			messageId,
-			everyone ? 1 : 0,
-		);
+		this.sql.exec(`UPDATE messages SET is_read = 0 WHERE id = ?1`, messageId);
 	}
 
 	/** Drains due outbox rows. Each message is handled independently so one failure can't block the rest. */
 	override async alarm(): Promise<void> {
+		await this.emptyTrash();
 		const due = this.sql
 			.exec<{ message_id: string; attempts: number; payload: string; delivery_status: DeliveryStatus; thread_id: string }>(
 				`SELECT o.message_id, o.attempts, o.payload, m.delivery_status, m.thread_id
@@ -960,18 +996,34 @@ export class Mailbox extends DurableObject<Env> {
 				this.finishSend(row.message_id, row.thread_id, { status: "failed", detail: "Interrupted mid-send; check Sent logs before retrying." });
 				continue;
 			}
-			this.sql.exec(`UPDATE messages SET delivery_status = 'sending' WHERE id = ?1`, row.message_id);
 			this.sql.exec(`UPDATE outbox SET attempts = attempts + 1 WHERE message_id = ?1`, row.message_id);
 
 			const payload: OutboxPayload = JSON.parse(row.payload);
 			let providerMessageId: string | undefined;
+			let handoff: number;
 			try {
+				// Kept while still `queued`, so Undo still works and a copy cut short is simply redone.
+				const attachments = await this.keepAttachments(row.message_id, payload.attachments);
+				// Linked files stay behind; the text already links to them. (Rows queued before links existed lack the field.)
+				const attached = payload.localOnly ? [] : await this.loadAttachments(attachments.filter((a) => !a.link));
+				// Undo may have landed during those, or while an earlier row sent: the message is gone, so its copies go too.
+				if (!this.inOutbox(row.message_id)) {
+					await this.deleteCopies(row.message_id, payload.attachments);
+					continue;
+				}
+				// Taken before anything reaches Email Sending, so every delivery event for this send is newer.
+				handoff = Date.now();
 				if (!payload.localOnly) {
-					// Linked files stay behind; the text already links to them. (Rows queued before links existed lack the field.)
-					const attached = await this.loadAttachments(payload.attachments.filter((a) => !a.link));
+					// Only now could a crash leave the message with Email Sending, so only now is it `sending` (see above).
+					this.sql.exec(`UPDATE messages SET delivery_status = 'sending' WHERE id = ?1`, row.message_id);
 					providerMessageId = (await this.env.EMAIL.send(buildSendRequest(payload, attached))).messageId;
 				}
 			} catch (err) {
+				// Undone while its files were copied or read, before this failed: nothing to retry, only the copies made since.
+				if (!this.inOutbox(row.message_id)) {
+					await this.deleteCopies(row.message_id, payload.attachments);
+					continue;
+				}
 				const code = typeof err === "object" && err && "code" in err ? String(err.code) : "E_UNKNOWN";
 				const detail = `${code}: ${err instanceof Error ? err.message : String(err)}`;
 				const attempts = row.attempts + 1;
@@ -986,13 +1038,10 @@ export class Mailbox extends DurableObject<Env> {
 				continue;
 			}
 
-			this.finishSend(row.message_id, row.thread_id, { status: "sent", providerMessageId, payload });
-			try {
-				await this.persistSentAttachments(row.message_id, payload.attachments);
-			} catch (err) {
-				// The mail went out; the attachment rows still point at the upload copies.
-				console.error(JSON.stringify({ msg: "persisting sent attachments failed", messageId: row.message_id, error: String(err) }));
-			}
+			this.finishSend(row.message_id, row.thread_id, { status: "sent", providerMessageId, payload, handoff });
+			// It went from the kept copies, so the uploads can go. Any left behind are reaped by the uploads/ lifecycle rule.
+			const uploads = payload.attachments.filter(isUpload).map((a) => a.r2Key);
+			if (uploads.length > 0) await this.env.MAIL.delete(uploads).catch(() => {});
 		}
 
 		await this.scheduleOutbox();
@@ -1001,9 +1050,9 @@ export class Mailbox extends DurableObject<Env> {
 	private async loadAttachments(attachments: StoredAttachment[]): Promise<EmailAttachment[]> {
 		return Promise.all(
 			attachments.map(async (a) => {
-				const obj = await this.env.MAIL.get(a.r2Key);
+				const obj = await this.env.MAIL.get(a.r2Key).catch(storageFailed);
 				if (!obj) throw Object.assign(new Error(`Attachment missing: ${a.filename}`), { code: "E_ATTACHMENT_MISSING" });
-				const part = { content: await obj.arrayBuffer(), filename: a.filename, type: a.contentType };
+				const part = { content: await obj.arrayBuffer().catch(storageFailed), filename: a.filename, type: a.contentType };
 				return a.inline && a.contentId
 					? { ...part, disposition: "inline" as const, contentId: a.contentId }
 					: { ...part, disposition: "attachment" as const };
@@ -1012,32 +1061,71 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	/**
-	 * Uploads live under a lifecycle-reaped prefix; keep a permanent copy with the sent message. A retry of mail
-	 * that already went out finds its files moved.
+	 * Uploads live under a lifecycle-reaped prefix, so each gets a permanent copy with the message before it's sent,
+	 * and is sent from there: nothing after the send can lose it. Returns the attachments at their permanent keys.
+	 * The payload still names the uploads, so a retry skips any whose row already moved.
 	 * Streamed rather than buffered: linked files run up to MAX_UPLOAD_BYTES.
 	 */
-	private async persistSentAttachments(messageId: string, attachments: StoredAttachment[]): Promise<void> {
-		const uploads = attachments.filter((a) => a.r2Key.startsWith("uploads/"));
-		if (uploads.length === 0) return;
-		const mailboxId = this.mailboxId();
-		for (const a of uploads) {
-			const upload = await this.env.MAIL.get(a.r2Key);
-			if (!upload) throw new Error(`Attachment missing: ${a.filename}`);
-			const r2Key = r2Keys.attachment(mailboxId, messageId, a.id);
-			await this.env.MAIL.put(r2Key, upload.body, { httpMetadata: { contentType: a.contentType } });
-			this.sql.exec(`UPDATE attachments SET r2_key = ?2 WHERE id = ?1`, a.id, r2Key);
-			await this.env.MAIL.delete(a.r2Key);
+	private async keepAttachments(messageId: string, attachments: StoredAttachment[]): Promise<StoredAttachment[]> {
+		const kept: StoredAttachment[] = [];
+		for (const a of attachments) {
+			if (!isUpload(a)) {
+				kept.push(a);
+				continue;
+			}
+			const r2Key = r2Keys.attachment(this.mailboxId(), messageId, a.id);
+			const moved = this.sql.exec(`SELECT 1 FROM attachments WHERE id = ?1 AND r2_key = ?2`, a.id, r2Key).toArray().length > 0;
+			if (!moved) {
+				const upload = await this.env.MAIL.get(a.r2Key).catch(storageFailed);
+				if (!upload) throw Object.assign(new Error(`Attachment missing: ${a.filename}`), { code: "E_ATTACHMENT_MISSING" });
+				await this.env.MAIL.put(r2Key, upload.body, { httpMetadata: { contentType: a.contentType } }).catch(storageFailed);
+				this.sql.exec(`UPDATE attachments SET r2_key = ?2 WHERE id = ?1`, a.id, r2Key);
+			}
+			kept.push({ ...a, r2Key });
 		}
+		return kept;
+	}
+
+	/** Whether the message still waits to send. Undo takes it out, maybe while an alarm is working on it. */
+	private inOutbox(messageId: string): boolean {
+		return this.sql.exec(`SELECT 1 FROM outbox WHERE message_id = ?1`, messageId).toArray().length > 0;
+	}
+
+	/**
+	 * Removes what keepAttachments made for a message that won't be sent. Its uploads stay: Undo reopens the draft with
+	 * them. The copies go through trash, so any R2 won't delete now are tried again rather than left for good.
+	 */
+	private async deleteCopies(messageId: string, attachments: StoredAttachment[]): Promise<void> {
+		for (const a of attachments.filter(isUpload)) {
+			this.sql.exec(`INSERT OR IGNORE INTO trash (r2_key) VALUES (?1)`, r2Keys.attachment(this.mailboxId(), messageId, a.id));
+		}
+		await this.emptyTrash();
+	}
+
+	/**
+	 * Deletes from R2 what's in trash and no message has. Whatever R2 refuses stays, and the alarm comes back for it
+	 * (scheduleOutbox), as it does once the last message to have one is cancelled too.
+	 */
+	private async emptyTrash(): Promise<void> {
+		const keys = this.sql.exec<{ r2_key: string }>(`${DELETABLE_TRASH} LIMIT 1000`).toArray().map((r) => r.r2_key);
+		if (keys.length === 0) return;
+		const deleted = await this.env.MAIL.delete(keys).then(
+			() => true,
+			() => false,
+		);
+		if (deleted) this.sql.exec(`DELETE FROM trash WHERE r2_key IN (SELECT value FROM json_each(?1))`, JSON.stringify(keys));
+		// Here rather than left to each caller, so none can return without it.
+		else await this.scheduleOutbox();
 	}
 
 	private finishSend(
 		messageId: string,
 		threadId: string,
-		outcome: { status: "failed"; detail: string } | { status: "sent"; providerMessageId?: string; payload: OutboxPayload },
+		outcome: { status: "failed"; detail: string } | { status: "sent"; providerMessageId?: string; payload: OutboxPayload; handoff: number },
 	): void {
 		const now = Date.now();
 		const sent = outcome.status === "sent" ? outcome : null;
-		const headerId = sent?.providerMessageId ? toHeaderId(sent.providerMessageId) : null;
+		const headerId = sent?.providerMessageId ? ensureAngleBrackets(sent.providerMessageId) : null;
 		const status = this.ctx.storage.transactionSync((): DeliveryStatus => {
 			this.sql.exec(`DELETE FROM outbox WHERE message_id = ?1`, messageId);
 			// A failed retry keeps the ids of the send before it, and a retry keeps the date the message first went out.
@@ -1062,19 +1150,21 @@ export class Mailbox extends DurableObject<Env> {
 				this.registerRef(headerId, threadId);
 				this.sql.exec(`INSERT OR IGNORE INTO sends (provider_message_id, message_id) VALUES (?1, ?2)`, headerId, messageId);
 			}
-			// A retry's recipients start over. Events from the send before are older, so they no longer apply.
+			// Everyone it went to is `sent` until their server answers, so it's delivered only once they all are. A retry's
+			// recipients start over from the handoff: events from the send before are older, so they no longer apply.
+			// Everyone else in a retry of mail that already went out keeps their state, which may be worse than `sent`
+			// (a complaint, a deferral).
 			const { to, cc, bcc, localRecipients = [] } = sent.payload;
-			const { rowsWritten: restarted } = this.sql.exec(
-				`UPDATE deliveries SET status = 'sent', detail = NULL, updated_at = ?3
-				 WHERE message_id = ?1 AND recipient IN (SELECT value FROM json_each(?2))`,
+			this.sql.exec(
+				`INSERT INTO deliveries (message_id, recipient, status, detail, updated_at)
+				 SELECT ?1, value, 'sent', NULL, ?3 FROM json_each(?2) WHERE true
+				 ON CONFLICT (message_id, recipient) DO UPDATE SET status = 'sent', detail = NULL, updated_at = excluded.updated_at`,
 				messageId,
 				JSON.stringify([...to, ...cc, ...bcc].map((a) => normalizeAddress(a.address))),
-				now,
+				sent.handoff,
 			);
-			if (localRecipients.length > 0) this.deliverLocally(messageId, localRecipients, sent.providerMessageId === undefined);
-			// Everyone else in a retry of mail that already went out keeps their state, which may be worse than `sent`
-			// (a complaint, a deferral). A first send has rows only for local recipients, so it stays `sent`.
-			return restarted > 0 ? this.rollUpDelivery(messageId) : outcome.status;
+			if (localRecipients.length > 0) this.deliverLocally(messageId, localRecipients);
+			return this.rollUpDelivery(messageId);
 		});
 		this.broadcast({ type: "delivery.changed", messageId, status });
 		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
@@ -1085,7 +1175,7 @@ export class Mailbox extends DurableObject<Env> {
 		const msg = this.sql
 			.exec<{ id: string; thread_id: string }>(
 				`SELECT m.id, m.thread_id FROM sends s JOIN messages m ON m.id = s.message_id WHERE s.provider_message_id = ?1`,
-				toHeaderId(event.providerMessageId),
+				ensureAngleBrackets(event.providerMessageId),
 			)
 			.toArray()[0];
 		if (!msg) return false;
@@ -1096,7 +1186,7 @@ export class Mailbox extends DurableObject<Env> {
 				updated_at = excluded.updated_at
 			 WHERE excluded.updated_at >= deliveries.updated_at`,
 			msg.id,
-			event.recipient.toLowerCase(),
+			normalizeAddress(event.recipient),
 			event.status,
 			event.detail,
 			event.at,
@@ -1141,6 +1231,16 @@ export class Mailbox extends DurableObject<Env> {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
+/** A composer upload that hasn't been given a permanent copy yet (see Mailbox.keepAttachments). */
+function isUpload(a: StoredAttachment): boolean {
+	return a.r2Key.startsWith("uploads/");
+}
+
+/** R2 failing mid-copy passes, so it's retried like a transient send error. */
+function storageFailed(err: unknown): never {
+	throw Object.assign(new Error(err instanceof Error ? err.message : String(err)), { code: "E_STORAGE" });
+}
+
 function buildSendRequest(p: OutboxPayload, attachments: EmailAttachment[]): EmailMessageBuilder {
 	const toEmail = (a: Address) => (a.name ? { email: a.address, name: a.name } : a.address);
 	const cc = p.cc.length ? { cc: p.cc.map(toEmail) } : {};
@@ -1156,11 +1256,6 @@ function buildSendRequest(p: OutboxPayload, attachments: EmailAttachment[]): Ema
 		...(Object.keys(p.headers).length ? { headers: p.headers } : {}),
 		...(attachments.length ? { attachments } : {}),
 	};
-}
-
-function toHeaderId(id: string): string {
-	const trimmed = id.trim();
-	return trimmed.startsWith("<") ? trimmed : `<${trimmed}>`;
 }
 
 /** Worst-first: any hard failure wins, then in-flight states, then delivered. */
