@@ -984,7 +984,7 @@ export class Mailbox extends DurableObject<Env> {
 				// Linked files stay behind; the text already links to them. (Rows queued before links existed lack the field.)
 				const attached = payload.localOnly ? [] : await this.loadAttachments(attachments.filter((a) => !a.link));
 				// Undo may have landed during those, or while an earlier row sent: the message is gone, so its copies go too.
-				if (this.sql.exec(`SELECT 1 FROM outbox WHERE message_id = ?1`, row.message_id).toArray().length === 0) {
+				if (!this.inOutbox(row.message_id)) {
 					await this.deleteCopies(row.message_id, payload.attachments);
 					continue;
 				}
@@ -996,6 +996,11 @@ export class Mailbox extends DurableObject<Env> {
 					providerMessageId = (await this.env.EMAIL.send(buildSendRequest(payload, attached))).messageId;
 				}
 			} catch (err) {
+				// Undone while its files were copied or read, before this failed: nothing to retry, only the copies made since.
+				if (!this.inOutbox(row.message_id)) {
+					await this.deleteCopies(row.message_id, payload.attachments);
+					continue;
+				}
 				const code = typeof err === "object" && err && "code" in err ? String(err.code) : "E_UNKNOWN";
 				const detail = `${code}: ${err instanceof Error ? err.message : String(err)}`;
 				const attempts = row.attempts + 1;
@@ -1056,6 +1061,11 @@ export class Mailbox extends DurableObject<Env> {
 			kept.push({ ...a, r2Key });
 		}
 		return kept;
+	}
+
+	/** Whether the message still waits to send. Undo takes it out, maybe while an alarm is working on it. */
+	private inOutbox(messageId: string): boolean {
+		return this.sql.exec(`SELECT 1 FROM outbox WHERE message_id = ?1`, messageId).toArray().length > 0;
 	}
 
 	/** Removes what keepAttachments made for a message that won't be sent. Its uploads stay: Undo reopens the draft with them. */
