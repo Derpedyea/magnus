@@ -1097,8 +1097,8 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	/**
-	 * Deletes from R2 what's in trash and no message has. Whatever R2 refuses stays, and scheduleOutbox brings the alarm
-	 * back for it, as it does once the last message to have one is cancelled too.
+	 * Deletes from R2 what's in trash and no message has. Whatever R2 refuses stays, and the alarm comes back for it
+	 * (scheduleOutbox), as it does once the last message to have one is cancelled too.
 	 */
 	private async emptyTrash(): Promise<void> {
 		const keys = this.sql.exec<{ r2_key: string }>(`${DELETABLE_TRASH} LIMIT 1000`).toArray().map((r) => r.r2_key);
@@ -1108,6 +1108,8 @@ export class Mailbox extends DurableObject<Env> {
 			() => false,
 		);
 		if (deleted) this.sql.exec(`DELETE FROM trash WHERE r2_key IN (SELECT value FROM json_each(?1))`, JSON.stringify(keys));
+		// Here rather than left to each caller, so none can return without it.
+		else await this.scheduleOutbox();
 	}
 
 	private finishSend(
