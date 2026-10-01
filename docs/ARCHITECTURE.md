@@ -192,8 +192,9 @@ no dead-letter queue: the Deploy button can't be relied on to create one.)
 3. **Undo send / scheduled send:** until `send_at`, `cancelSend()` removes the message. The UI shows a 10 s
    undo toast. Delays up to 7 days work as scheduled send.
 4. `alarm()` drains due rows. Each first copies its attachments from `uploads/` to `m/…`, and reads the attached
-   ones, while still `queued`, so Undo still works and a copy cut short is redone. Undo removes the copies (retried
-   by the alarm if R2 refuses), except any a forward still sends from: a forward uses the original's files. Then
+   ones, while still `queued`, so Undo still works and a copy cut short is redone. Undo deletes the message's own
+   files from R2 (copies, a retry's files, its body), retried by the alarm if R2 refuses, except any a forward still
+   sends from: a forward uses the original's files. Then
    it's marked `sending` → `env.EMAIL.send()` → marked `sent`, with the platform `messageId` stored as
    `provider_message_id` and registered in `thread_refs`, and the uploads are deleted.
    Transient errors (`E_RATE_LIMIT_EXCEEDED`, `E_DAILY_LIMIT_EXCEEDED`, `E_INTERNAL_SERVER_ERROR`,

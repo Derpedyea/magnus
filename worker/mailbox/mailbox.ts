@@ -829,14 +829,24 @@ export class Mailbox extends DurableObject<Env> {
 	 */
 	async cancelSend(messageId: string): Promise<boolean> {
 		const row = this.sql
-			.exec<{ thread_id: string; rowid: number; payload: string; attempts: number }>(
-				`SELECT m.thread_id, m.rowid, o.payload, o.attempts FROM outbox o JOIN messages m ON m.id = o.message_id
+			.exec<{ thread_id: string; rowid: number; html_key: string | null }>(
+				`SELECT m.thread_id, m.rowid, m.html_key FROM outbox o JOIN messages m ON m.id = o.message_id
 				 WHERE o.message_id = ?1 AND m.delivery_status = 'queued' AND m.provider_message_id IS NULL`,
 				messageId,
 			)
 			.toArray()[0];
 		if (!row) return false;
+		// Its own files in R2 go with it: copies an attempt made (keepAttachments), a retry's, and its body. A forward's are
+		// the original's, and trash keeps any another message still has. Uploads stay: Undo reopens the draft with them.
+		// (An attempt still copying clears up after itself.)
+		const own = this.sql
+			.exec<{ id: string; r2_key: string }>(`SELECT id, r2_key FROM attachments WHERE message_id = ?1`, messageId)
+			.toArray()
+			.filter((a) => a.r2_key === r2Keys.attachment(this.mailboxId(), messageId, a.id))
+			.map((a) => a.r2_key);
+		if (row.html_key) own.push(row.html_key);
 		this.ctx.storage.transactionSync(() => {
+			for (const key of own) this.sql.exec(`INSERT OR IGNORE INTO trash (r2_key) VALUES (?1)`, key);
 			this.sql.exec(`DELETE FROM messages_fts WHERE rowid = ?1`, row.rowid);
 			this.sql.exec(`DELETE FROM outbox WHERE message_id = ?1`, messageId);
 			this.sql.exec(`DELETE FROM message_labels WHERE message_id = ?1`, messageId);
@@ -859,11 +869,7 @@ export class Mailbox extends DurableObject<Env> {
 				this.touchThread(row.thread_id, m.date, m.snippet, [JSON.parse(m.from_json), ...JSON.parse(m.to_json), ...JSON.parse(m.cc_json)]);
 			}
 		});
-		// One that's been tried has copied its files (an attempt still copying clears up after itself).
-		if (row.attempts > 0) {
-			const payload: OutboxPayload = JSON.parse(row.payload);
-			await this.deleteCopies(messageId, payload.attachments);
-		}
+		await this.emptyTrash();
 		await this.scheduleOutbox();
 		this.broadcast({ type: "threads.changed", threadIds: [row.thread_id] });
 		return true;
