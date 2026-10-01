@@ -166,8 +166,9 @@ export const MIGRATIONS: string[] = [
 	WHERE direction = 'out' AND provider_message_id IS NOT NULL AND message_id_header IS NOT NULL;
 	`,
 	`
-	-- R2 objects to delete that nothing else points at any more (a cancelled send's attachment copies), kept until R2
-	-- has deleted them so a failure is tried again.
+	-- R2 objects to delete (a cancelled send's attachment copies), kept until R2 has deleted them so a failure is tried
+	-- again. One a forward still sends from waits until no message has it, which the index makes cheap to ask.
 	CREATE TABLE trash (r2_key TEXT PRIMARY KEY);
+	CREATE INDEX attachments_r2_key ON attachments(r2_key);
 	`,
 ];

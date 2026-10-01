@@ -305,6 +305,7 @@ const mb = new Hono<AppEnv>()
 			localRecipients: local,
 			localOnly: local.length === recipients.length,
 		});
+		if (!queued) return c.json({ error: "The message to forward is gone" }, 404);
 		return c.json(queued, 202);
 	})
 

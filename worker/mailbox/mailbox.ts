@@ -43,6 +43,8 @@ const SUBJECT_FALLBACK_WINDOW_MS = 30 * 24 * 3600 * 1000;
 const MAX_SEND_ATTEMPTS = 8;
 /** How soon R2 objects it wouldn't delete are tried again. */
 const TRASH_RETRY_MS = 60_000;
+/** Keys in trash no message has any more. A forward sends from the original's keys, so one can outlive its message. */
+const DELETABLE_TRASH = `SELECT r2_key FROM trash t WHERE NOT EXISTS (SELECT 1 FROM attachments a WHERE a.r2_key = t.r2_key)`;
 const OUTBOX_BATCH = 10;
 const MAX_PARTICIPANTS = 12;
 /** Longer than the inbound queue keeps retrying a message (wrangler.jsonc: 10 retries, at most an hour apart). */
@@ -710,7 +712,8 @@ export class Mailbox extends DurableObject<Env> {
 
 	// ─── Outbound ───────────────────────────────────────────────────────────
 
-	async enqueueSend(input: SendInput): Promise<SendQueued> {
+	/** Null when a forward's original was cancelled while the forward was put together, taking its files with it. */
+	async enqueueSend(input: SendInput): Promise<SendQueued | null> {
 		this.bindMailboxId(input.mailboxId);
 		const now = Date.now();
 		const id = ulid(now);
@@ -773,7 +776,11 @@ export class Mailbox extends DurableObject<Env> {
 		};
 
 		const snippet = makeSnippet(text);
+		// A forward's files are the original's (keepAttachments copies only uploads). Asked in the same turn as the insert,
+		// so either the original's cancel sees this message has them (emptyTrash) or this sees they're gone.
+		const forwarded = attachments.filter((a) => !isUpload(a)).map((a) => a.r2Key);
 		const threadId = this.ctx.storage.transactionSync(() => {
+			if (forwarded.some((key) => this.sql.exec(`SELECT 1 FROM attachments WHERE r2_key = ?1`, key).toArray().length === 0)) return null;
 			const threadId = parent?.thread_id ?? this.createThread(input.subject, now);
 			const { rowid } = this.sql
 				.exec<{ rowid: number }>(
@@ -805,6 +812,11 @@ export class Mailbox extends DurableObject<Env> {
 			this.sql.exec(`INSERT INTO outbox (message_id, send_at, payload) VALUES (?1, ?2, ?3)`, id, sendAt, JSON.stringify(payload));
 			return threadId;
 		});
+		if (threadId === null) {
+			if (htmlKey) this.sql.exec(`INSERT OR IGNORE INTO trash (r2_key) VALUES (?1)`, htmlKey);
+			await this.emptyTrash();
+			return null;
+		}
 
 		await this.scheduleOutbox();
 		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
@@ -928,7 +940,7 @@ export class Mailbox extends DurableObject<Env> {
 
 	private async scheduleOutbox(): Promise<void> {
 		const due = this.sql.exec<{ at: number | null }>(`SELECT min(send_at) AS at FROM outbox`).one().at;
-		const retry = this.sql.exec(`SELECT 1 FROM trash LIMIT 1`).toArray().length > 0 ? Date.now() + TRASH_RETRY_MS : null;
+		const retry = this.sql.exec(`${DELETABLE_TRASH} LIMIT 1`).toArray().length > 0 ? Date.now() + TRASH_RETRY_MS : null;
 		const next = due === null ? retry : retry === null ? due : Math.min(due, retry);
 		if (next === null) {
 			await this.ctx.storage.deleteAlarm();
@@ -1084,11 +1096,12 @@ export class Mailbox extends DurableObject<Env> {
 		await this.emptyTrash();
 	}
 
-	/** Deletes what's in trash from R2. Whatever R2 refuses stays, and scheduleOutbox brings the alarm back for it. */
+	/**
+	 * Deletes from R2 what's in trash and no message has. Whatever R2 refuses stays, and scheduleOutbox brings the alarm
+	 * back for it, as it does once the last message to have one is cancelled too.
+	 */
 	private async emptyTrash(): Promise<void> {
-		// A forward sends the original's files from the original's keys, so one another message still has isn't deleted.
-		this.sql.exec(`DELETE FROM trash WHERE EXISTS (SELECT 1 FROM attachments a WHERE a.r2_key = trash.r2_key)`);
-		const keys = this.sql.exec<{ r2_key: string }>(`SELECT r2_key FROM trash LIMIT 1000`).toArray().map((r) => r.r2_key);
+		const keys = this.sql.exec<{ r2_key: string }>(`${DELETABLE_TRASH} LIMIT 1000`).toArray().map((r) => r.r2_key);
 		if (keys.length === 0) return;
 		const deleted = await this.env.MAIL.delete(keys).then(
 			() => true,
