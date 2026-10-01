@@ -9,9 +9,17 @@ import {
 	type StoredAttachment,
 } from "#shared";
 import PostalMime, { type Address as ParsedAddress, type Email } from "postal-mime";
+import { mailboxExists } from "../directory";
 
 /** Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. */
 export async function ingest(env: Env, job: InboundJob): Promise<void> {
+	// The mailbox can be gone since this was queued: its person removed, or a failed add undone after its address took
+	// mail. Delivering would bring it back, mail and all, with nobody to open it.
+	if (!(await mailboxExists(env.DIRECTORY, job.mailboxId))) {
+		await dropOriginal(env, job.rawKey);
+		console.log(JSON.stringify({ msg: "mailbox gone", ingestId: job.ingestId, mailboxId: job.mailboxId }));
+		return;
+	}
 	const raw = await env.MAIL.get(job.rawKey);
 	if (!raw) {
 		// Nothing to retry against. Logged for the DLQ/ops trail.
@@ -76,6 +84,19 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 
 	const result = await env.MAILBOX.getByName(job.mailboxId).ingest(input);
 	console.log(JSON.stringify({ msg: "ingested", ingestId: job.ingestId, mailboxId: job.mailboxId, ...result }));
+}
+
+/**
+ * Deletes an original none of whose mailboxes is left, since none will hold it to delete it later. One that doesn't
+ * list them is kept, as Mailbox.deleteOriginals keeps it.
+ */
+async function dropOriginal(env: Env, rawKey: string): Promise<void> {
+	const listed = (await env.MAIL.head(rawKey))?.customMetadata?.mailboxes;
+	if (!listed) return;
+	const left = await env.DIRECTORY.prepare(`SELECT 1 AS ok FROM mailboxes WHERE id IN (SELECT value FROM json_each(?1)) LIMIT 1`)
+		.bind(JSON.stringify(listed.split(",")))
+		.first();
+	if (left === null) await env.MAIL.delete(rawKey);
 }
 
 function flatten(list: ParsedAddress[] | undefined): Address[] {
