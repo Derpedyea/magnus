@@ -41,6 +41,8 @@ import { MIGRATIONS } from "./schema";
 
 const SUBJECT_FALLBACK_WINDOW_MS = 30 * 24 * 3600 * 1000;
 const MAX_SEND_ATTEMPTS = 8;
+/** How soon R2 objects it wouldn't delete are tried again. */
+const TRASH_RETRY_MS = 60_000;
 const OUTBOX_BATCH = 10;
 const MAX_PARTICIPANTS = 12;
 /** Longer than the inbound queue keeps retrying a message (wrangler.jsonc: 10 retries, at most an hour apart). */
@@ -925,7 +927,9 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	private async scheduleOutbox(): Promise<void> {
-		const next = this.sql.exec<{ at: number | null }>(`SELECT min(send_at) AS at FROM outbox`).one().at;
+		const due = this.sql.exec<{ at: number | null }>(`SELECT min(send_at) AS at FROM outbox`).one().at;
+		const retry = this.sql.exec(`SELECT 1 FROM trash LIMIT 1`).toArray().length > 0 ? Date.now() + TRASH_RETRY_MS : null;
+		const next = due === null ? retry : retry === null ? due : Math.min(due, retry);
 		if (next === null) {
 			await this.ctx.storage.deleteAlarm();
 			return;
@@ -956,6 +960,7 @@ export class Mailbox extends DurableObject<Env> {
 
 	/** Drains due outbox rows. Each message is handled independently so one failure can't block the rest. */
 	override async alarm(): Promise<void> {
+		await this.emptyTrash();
 		const due = this.sql
 			.exec<{ message_id: string; attempts: number; payload: string; delivery_status: DeliveryStatus; thread_id: string }>(
 				`SELECT o.message_id, o.attempts, o.payload, m.delivery_status, m.thread_id
@@ -1068,10 +1073,26 @@ export class Mailbox extends DurableObject<Env> {
 		return this.sql.exec(`SELECT 1 FROM outbox WHERE message_id = ?1`, messageId).toArray().length > 0;
 	}
 
-	/** Removes what keepAttachments made for a message that won't be sent. Its uploads stay: Undo reopens the draft with them. */
+	/**
+	 * Removes what keepAttachments made for a message that won't be sent. Its uploads stay: Undo reopens the draft with
+	 * them. The copies go through trash, so any R2 won't delete now are tried again rather than left for good.
+	 */
 	private async deleteCopies(messageId: string, attachments: StoredAttachment[]): Promise<void> {
-		const copies = attachments.filter(isUpload).map((a) => r2Keys.attachment(this.mailboxId(), messageId, a.id));
-		if (copies.length > 0) await this.env.MAIL.delete(copies).catch(() => {});
+		for (const a of attachments.filter(isUpload)) {
+			this.sql.exec(`INSERT OR IGNORE INTO trash (r2_key) VALUES (?1)`, r2Keys.attachment(this.mailboxId(), messageId, a.id));
+		}
+		await this.emptyTrash();
+	}
+
+	/** Deletes what's in trash from R2. Whatever R2 refuses stays, and scheduleOutbox brings the alarm back for it. */
+	private async emptyTrash(): Promise<void> {
+		const keys = this.sql.exec<{ r2_key: string }>(`SELECT r2_key FROM trash LIMIT 1000`).toArray().map((r) => r.r2_key);
+		if (keys.length === 0) return;
+		const deleted = await this.env.MAIL.delete(keys).then(
+			() => true,
+			() => false,
+		);
+		if (deleted) this.sql.exec(`DELETE FROM trash WHERE r2_key IN (SELECT value FROM json_each(?1))`, JSON.stringify(keys));
 	}
 
 	private finishSend(

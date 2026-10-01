@@ -165,4 +165,9 @@ export const MIGRATIONS: string[] = [
 	SELECT message_id_header, id FROM messages
 	WHERE direction = 'out' AND provider_message_id IS NOT NULL AND message_id_header IS NOT NULL;
 	`,
+	`
+	-- R2 objects to delete that nothing else points at any more (a cancelled send's attachment copies), kept until R2
+	-- has deleted them so a failure is tried again.
+	CREATE TABLE trash (r2_key TEXT PRIMARY KEY);
+	`,
 ];
