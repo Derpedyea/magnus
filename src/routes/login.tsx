@@ -1,4 +1,4 @@
-import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { useState } from "react";
@@ -9,6 +9,7 @@ import { InputOTP, InputOTPGroup, InputOTPSeparator, InputOTPSlot } from "@/comp
 import { Spinner } from "@/components/ui/spinner";
 import { authClient } from "../api";
 import { configQuery } from "../queries";
+import { endSession } from "../session";
 
 export const Route = createFileRoute("/login")({
 	validateSearch: (search: Record<string, unknown>): { redirect?: string; error?: string } => ({
@@ -108,12 +109,17 @@ function Login() {
 }
 
 function CodeForm(props: { email: string; returnTo: string; onBack: () => void }) {
+	const qc = useQueryClient();
 	const navigate = useNavigate();
 	const [code, setCode] = useState("");
 	const verify = useMutation({
 		mutationFn: (otp: string) => authClient.signIn.emailOtp({ email: props.email, otp }),
-		// The session cookie is set; the app's route guard picks it up from here.
-		onSuccess: () => navigate({ href: props.returnTo }),
+		// The session cookie is set; the app's route guard picks it up from here. Back can bring you to this page
+		// still signed in, so whatever that account left in the tab goes first.
+		onSuccess: () => {
+			endSession(qc);
+			return navigate({ href: props.returnTo });
+		},
 		onError: () => setCode(""),
 	});
 	// Only emails a new code; nothing cached changes.

@@ -14,18 +14,20 @@ import { useForm, useSelector } from "@tanstack/react-form";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { shallow } from "@tanstack/react-store";
 import { ForwardIcon, LinkIcon, PaperclipIcon, XIcon } from "lucide-react";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FieldError } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { toast } from "@/components/ui/toast-manager";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { api, type Identity } from "../api";
-import { withSignature } from "../compose";
+import { api, errorMessage, type Identity } from "../api";
+import { closeDraft, compose, openDraft, withSignature } from "../compose";
 import { normalizeMarkdown } from "../markdown";
+import { currentSession } from "../session";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { RecipientField } from "./RecipientField";
 import { toastUndoSend } from "./UndoToast";
@@ -51,10 +53,14 @@ const UNDO_SECONDS = 10;
 export function Composer(props: {
 	/** Every identity the user can send as, across mailboxes. */
 	identities: Identity[];
+	/** This opening (compose.ts). A send outlives it: the draft can be closed, or another opened, while it goes. */
+	id: number;
 	initial: Draft;
-	onClose: () => void;
+	/** Came back through Undo or Reopen (compose.ts). */
+	restored: boolean;
 }) {
 	const qc = useQueryClient();
+	const close = () => closeDraft(props.id);
 	const send = useMutation({
 		mutationFn: (draft: Draft) =>
 			api.send(draft.mailboxId, {
@@ -73,16 +79,24 @@ export function Composer(props: {
 				attachments: draft.attachments,
 				delaySeconds: UNDO_SECONDS,
 			}),
-		onSuccess: (queued, draft) => {
+		onMutate: currentSession,
+		onSuccess: (queued, draft, session) => {
+			if (session !== currentSession()) return;
 			// The live socket reports this too, but it may be reconnecting.
 			void qc.invalidateQueries({ queryKey: ["mail"] });
 			// Whoever this went to is suggested next time.
 			void qc.invalidateQueries({ queryKey: ["contacts"] });
-			props.onClose();
+			close();
 			toastUndoSend(queued, draft, qc);
+		},
+		// The form shows it while it's open. Once it isn't, this is all that's left of the draft.
+		onError: (error, draft, session) => {
+			if (session === currentSession() && compose.state?.id !== props.id) toastReopen(draft, `Couldn't send: ${errorMessage(error)}`);
 		},
 	});
 	const form = useForm({ defaultValues: props.initial, onSubmit: ({ value }) => send.mutate(value) });
+	// Set once this draft gives way to another with an upload still going, so the upload finishes it (see below).
+	const gaveWay = useRef(false);
 	// Uploads only feed the draft's own attachment list; no cached query reads them.
 	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
 	const upload = useMutation({
@@ -91,8 +105,27 @@ export function Composer(props: {
 			if (tooBig) throw new Error(`Files can be up to ${formatBytes(MAX_UPLOAD_BYTES)}. ${tooBig.name} is ${formatBytes(tooBig.size)}.`);
 			return Promise.all(files.map((f) => api.upload(form.getFieldValue("mailboxId"), f)));
 		},
+		onMutate: currentSession,
 		onSuccess: (refs) => form.setFieldValue("attachments", (prev) => [...prev, ...refs]),
+		// Outlives the composer: a draft that gave way mid-upload is offered back once its files are in, or failed.
+		onSettled: (_refs, error, _files, session) => {
+			if (!gaveWay.current || session !== currentSession()) return;
+			toastReopen(form.state.values, error ? `Draft closed. Couldn't attach: ${errorMessage(error)}` : undefined);
+		},
 	});
+	// Opening another draft takes this one's place, so what was typed here, or brought back, and not sent stays a
+	// click away. Close throws it out, as before.
+	const unsent = send.isIdle || send.isError;
+	const uploading = upload.isPending;
+	useEffect(
+		() => () => {
+			const open = compose.state;
+			if (!unsent || !open || open.id === props.id) return;
+			if (uploading) gaveWay.current = true;
+			else if (props.restored || form.state.isDirty) toastReopen(form.state.values);
+		},
+		[unsent, uploading, form, props.id, props.restored],
+	);
 	const [showCc, setShowCc] = useState(props.initial.cc.length + props.initial.bcc.length > 0);
 	const filePicker = useRef<HTMLInputElement>(null);
 	const mailboxId = useSelector(form.store, (s) => s.values.mailboxId);
@@ -156,7 +189,7 @@ export function Composer(props: {
 		>
 			<div className="flex items-center justify-between border-b bg-muted/50 py-1 pr-1 pl-3">
 				<span className="font-medium">{props.initial.forward ? "Forward" : props.initial.replyToMessageId ? "Reply" : "New message"}</span>
-				<Button variant="ghost" size="icon-sm" onClick={props.onClose} aria-label="Close">
+				<Button variant="ghost" size="icon-sm" onClick={close} aria-label="Close">
 					<XIcon />
 				</Button>
 			</div>
@@ -316,4 +349,23 @@ const FIELD = "h-9 rounded-none border-0 border-b px-3 focus-visible:border-ring
 function invalidAddresses(list: Address[]): string | undefined {
 	const bad = list.filter((a) => !isValidAddress(a.address));
 	return bad.length ? `Not an email address: ${bad.map((a) => a.address).join(", ")}` : undefined;
+}
+
+/**
+ * For a draft that's no longer open, and held nowhere else. With an `error`, it stays until dismissed; otherwise as
+ * long as an Undo would. Reopening it takes the place of whatever draft is open.
+ */
+function toastReopen(draft: Draft, error?: string) {
+	const id = toast.add({
+		title: error ?? "Draft closed",
+		type: error ? "error" : undefined,
+		timeout: error ? 0 : UNDO_SECONDS * 1000,
+		actionProps: {
+			children: "Reopen",
+			onClick: () => {
+				toast.close(id);
+				openDraft(draft, true);
+			},
+		},
+	});
 }

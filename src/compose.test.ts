@@ -1,7 +1,28 @@
 import { noteBody } from "#shared/markdown";
 import { describe, expect, it } from "vitest";
-import { quote, withSignature } from "./compose";
+import type { Draft } from "./components/Composer";
+import { closeDraft, compose, openDraft, quote, withSignature } from "./compose";
 import { normalizeMarkdown as normalize } from "./markdown";
+
+describe("openDraft", () => {
+	const draft: Draft = { mailboxId: "mbx", from: "me@example.com", to: [], cc: [], bcc: [], subject: "", text: "", attachments: [] };
+	it("gives every opening its own id, even of the same draft, as Undo send does", () => {
+		openDraft(draft);
+		const first = compose.state;
+		openDraft(draft);
+		expect(compose.state?.draft).toBe(draft);
+		expect(compose.state?.id).not.toBe(first?.id);
+	});
+	it("closes only the opening it's given", () => {
+		openDraft(draft);
+		const earlier = compose.state?.id;
+		openDraft(draft);
+		closeDraft(earlier);
+		expect(compose.state?.draft).toBe(draft);
+		closeDraft(compose.state?.id);
+		expect(compose.state).toBeNull();
+	});
+});
 
 describe("withSignature", () => {
 	const reply = `Thanks!${quote({ date: 0, from: { address: "ann@example.com" }, text: "Hi" })}`;

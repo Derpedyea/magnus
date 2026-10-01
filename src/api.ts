@@ -1,4 +1,4 @@
-import type { Address, StepId } from "#shared";
+import { type Address, formatScope, type StepId } from "#shared";
 import { adminClient, emailOTPClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/client";
 import { hc, type InferRequestType, parseResponse } from "hono/client";
@@ -62,9 +62,6 @@ const client = hc<AppType>("/", {
 /** A route's JSON body, for wrappers that pass one straight through. */
 type Json<Route> = InferRequestType<Route> extends { json: infer Body } ? Body : never;
 
-/** `?in=` for cross-mailbox reads; an empty scope means every address. */
-const scoped = (scope: string[]) => (scope.length ? scope.join(",") : undefined);
-
 const mailbox = client.mailboxes[":mailboxId"];
 
 export const api = {
@@ -74,10 +71,10 @@ export const api = {
 	contacts: () => parseResponse(client.contacts.$get()),
 	/** One page of a list; `cursor` is the previous page's `next`, or "" for the first. */
 	threads: (scope: string[], label: string, cursor: string) =>
-		parseResponse(client.threads.$get({ query: { in: scoped(scope), label, cursor: cursor || undefined } })),
+		parseResponse(client.threads.$get({ query: { in: formatScope(scope), label, cursor: cursor || undefined } })),
 	search: (scope: string[], q: string, cursor: string) =>
-		parseResponse(client.search.$get({ query: { in: scoped(scope), q, cursor: cursor || undefined } })),
-	counts: (scope: string[]) => parseResponse(client.counts.$get({ query: { in: scoped(scope) } })),
+		parseResponse(client.search.$get({ query: { in: formatScope(scope), q, cursor: cursor || undefined } })),
+	counts: (scope: string[]) => parseResponse(client.counts.$get({ query: { in: formatScope(scope) } })),
 	thread: (mailboxId: string, threadId: string) => parseResponse(mailbox.threads[":threadId"].$get({ param: { mailboxId, threadId } })),
 	modify: (mailboxId: string, threadIds: string[], add: string[], remove: string[]) =>
 		parseResponse(mailbox.threads.modify.$post({ param: { mailboxId }, json: { threadIds, add, remove } })),

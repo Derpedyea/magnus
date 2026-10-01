@@ -4,10 +4,12 @@ import { useEffect, useState } from "react";
 import { toast } from "@/components/ui/toast-manager";
 import { api, errorMessage } from "../api";
 import { openDraft } from "../compose";
+import { currentSession } from "../session";
 import type { Draft } from "./Composer";
 
 /** Shows a send while it waits in the Mailbox DO's outbox; Undo pulls it back out and reopens the draft. */
 export function toastUndoSend(queued: SendQueued, draft: Draft, qc: QueryClient) {
+	const session = currentSession();
 	let undoing = false;
 	const id = toast.add({
 		title: <Countdown until={queued.sendAt} />,
@@ -21,9 +23,10 @@ export function toastUndoSend(queued: SendQueued, draft: Draft, qc: QueryClient)
 				window.clearTimeout(sent);
 				api.cancel(draft.mailboxId, queued.id).then(
 					() => {
+						if (session !== currentSession()) return;
 						void qc.invalidateQueries({ queryKey: ["mail"] });
 						toast.close(id);
-						openDraft(draft);
+						openDraft(draft, true);
 					},
 					(error: unknown) => toast.update(id, { title: errorMessage(error), type: "error", actionProps: undefined, timeout: 5000 }),
 				);

@@ -20,8 +20,8 @@ import {
 	useSidebar,
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { Me } from "#shared";
-import { formatScope, parseScope, useScope } from "../hooks";
+import { formatScope, type Me, parseScope } from "#shared";
+import { useScope } from "../hooks";
 import { countsQuery } from "../queries";
 
 const SYSTEM_VIEWS = [

@@ -1,7 +1,7 @@
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { LIVE_RECHECK, type Me } from "#shared";
+import { LIVE_RECHECK, type Me, parseScope } from "#shared";
 import type { Identity } from "./api";
 import { meQuery } from "./queries";
 
@@ -36,9 +36,6 @@ const mail = getRouteApi("/_app/_mail");
 export function useScope(): string[] {
 	return parseScope(mail.useSearch({ select: (s) => s.in }));
 }
-
-export const parseScope = (param: string | undefined) => param?.split(",").filter(Boolean) ?? [];
-export const formatScope = (scope: string[]) => (scope.length ? scope.join(",") : undefined);
 
 /** Subscribes to each mailbox's Durable Object and refetches mail whenever any of them changes. */
 export function useLive(mailboxIds: string[]): boolean {

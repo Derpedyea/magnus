@@ -1,8 +1,8 @@
+import { parseScope } from "#shared";
 import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { Spinner } from "@/components/ui/spinner";
 import { errorMessage } from "../api";
 import { ThreadList } from "../components/ThreadList";
-import { parseScope } from "../hooks";
 import { listQuery } from "../queries";
 
 /** A label (/inbox, /receipts, …) or /search?q=…: the thread list, with the open thread beside it. */
