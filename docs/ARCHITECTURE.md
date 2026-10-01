@@ -144,6 +144,10 @@ Everything a mailbox owns sits under `m/<mailboxId>/`, so deleting a mailbox (re
 originals under `raw/` go too, unless another mailbox holds that message or is still due it from the queue. The raw archive
 means any parsing bug can be fixed by re-queuing `InboundJob`s. Ingest is idempotent.
 
+Every `m/` object is referenced by a row (`messages.html_key`, `attachments.r2_key`) or waits in the Mailbox's `trash`.
+It's deleted only through `trash`, which keeps a key another row still has and retries until R2 deletes it; deleting a
+whole mailbox is the one exception. Code that writes or drops `m/` objects keeps to this.
+
 ## 4. Flows
 
 ### 4.1 Inbound
