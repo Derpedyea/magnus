@@ -240,6 +240,10 @@ export function addAddress(db: D1Database, address: string, displayName: string 
 	];
 }
 
+export async function addressExists(db: D1Database, address: string): Promise<boolean> {
+	return (await db.prepare(`SELECT 1 AS ok FROM addresses WHERE address = ?1`).bind(address).first()) !== null;
+}
+
 export async function removeAddress(db: D1Database, address: string): Promise<void> {
 	await db.prepare(`DELETE FROM addresses WHERE address = ?1`).bind(address).run();
 }
@@ -267,13 +271,17 @@ export async function soleMailboxes(db: D1Database, userId: string): Promise<str
 
 /** Addresses that delivered only to these mailboxes are removed too, so they start bouncing instead. */
 export async function deleteMailboxes(db: D1Database, ids: string[]): Promise<void> {
-	if (ids.length === 0) return;
+	if (ids.length > 0) await db.batch(deleteMailboxStatements(db, ids));
+}
+
+/** deleteMailboxes as statements, for a batch that has to undo more along with them. */
+export function deleteMailboxStatements(db: D1Database, ids: string[]): D1PreparedStatement[] {
 	const list = JSON.stringify(ids);
-	await db.batch([
+	return [
 		db.prepare(
 			`DELETE FROM addresses WHERE address IN (SELECT address FROM address_routes WHERE mailbox_id IN (SELECT value FROM json_each(?1)))
 			 AND address NOT IN (SELECT address FROM address_routes WHERE mailbox_id NOT IN (SELECT value FROM json_each(?1)))`,
 		).bind(list),
 		db.prepare(`DELETE FROM mailboxes WHERE id IN (SELECT value FROM json_each(?1))`).bind(list),
-	]);
+	];
 }

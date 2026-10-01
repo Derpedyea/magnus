@@ -158,9 +158,11 @@ means any parsing bug can be fixed by re-queuing `InboundJob`s. Ingest is idempo
 3. The raw bytes are buffered once and written to R2. Then one `InboundJob` per target mailbox is enqueued
    (group aliases fan out here). Returning ends the SMTP transaction. If R2 or the queue fails, the handler
    throws instead of returning, so the message is never silently accepted (see §7 for the exact SMTP reply).
-4. `queue()` parses with postal-mime, writes the HTML and attachments to R2, extracts the
-   `Authentication-Results` verdicts, applies first-pass triage (DMARC fail → `spam`), and calls
-   `Mailbox.ingest()`.
+4. `queue()` first checks the target mailbox is still in the directory: one deleted since (its person removed,
+   or a failed add undone) gets nothing, and its original goes once no mailbox it was queued for is left. Then it
+   parses with postal-mime, writes the HTML and attachments to R2, extracts the `Authentication-Results`
+   verdicts, applies first-pass triage (DMARC fail → `spam`), and calls `Mailbox.ingest()`. If the mailbox was
+   deleted while that ran, it's cleared again (`destroy()`), in case its deletion got there first.
 5. `ingest()` is idempotent. It dedupes on `ingestId` and on `Message-ID`, so the same mail arriving via two
    of our addresses, or our own outbound copy coming back, is stored once with merged labels. It then threads
    the message (§5.5), indexes it for search, and broadcasts `threads.changed` over WebSocket.
