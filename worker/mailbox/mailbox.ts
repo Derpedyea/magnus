@@ -1086,6 +1086,8 @@ export class Mailbox extends DurableObject<Env> {
 
 	/** Deletes what's in trash from R2. Whatever R2 refuses stays, and scheduleOutbox brings the alarm back for it. */
 	private async emptyTrash(): Promise<void> {
+		// A forward sends the original's files from the original's keys, so one another message still has isn't deleted.
+		this.sql.exec(`DELETE FROM trash WHERE EXISTS (SELECT 1 FROM attachments a WHERE a.r2_key = trash.r2_key)`);
 		const keys = this.sql.exec<{ r2_key: string }>(`SELECT r2_key FROM trash LIMIT 1000`).toArray().map((r) => r.r2_key);
 		if (keys.length === 0) return;
 		const deleted = await this.env.MAIL.delete(keys).then(
