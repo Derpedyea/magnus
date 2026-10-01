@@ -13,6 +13,7 @@ import {
 	blockSender,
 	createMailbox,
 	deleteMailboxes,
+	deleteMailboxStatements,
 	getDirectory,
 	getDomain,
 	removeAddress,
@@ -147,9 +148,9 @@ export const admin = new Hono<AppEnv>()
 				await db.batch([...mailbox.statements, ...(address ? addAddress(db, address, body.name, [mailbox.id]) : [])]);
 			} catch (error) {
 				// Another admin just took the address, or D1 failed. Undo both sides so nothing blocks a retry: D1 can report
-				// a failure for writes it applied, and if the batch did roll back, removing the mailbox finds nothing.
-				await deleteMailboxes(db, [mailbox.id]);
-				await db.prepare(`DELETE FROM auth_users WHERE id = ?1`).bind(user.id).run();
+				// a failure for writes it applied, and if the batch did roll back, removing the mailbox finds nothing. One batch,
+				// so a failure here can't leave the person without the rest.
+				await db.batch([...deleteMailboxStatements(db, [mailbox.id]), db.prepare(`DELETE FROM auth_users WHERE id = ?1`).bind(user.id)]);
 				if (address && (await addressExists(db, address))) return c.json({ error: "That address is already taken." }, 409);
 				throw error;
 			}
