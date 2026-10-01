@@ -30,6 +30,7 @@ import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
 import { findQuote, isForward, splitQuote } from "../quotes";
 import { type Branch, replyTree } from "../replies";
+import { currentSession } from "../session";
 import { appearance } from "../theme";
 import { BlockSender } from "./BlockSender";
 import type { Draft } from "./Composer";
@@ -46,20 +47,25 @@ export function ThreadView() {
 	const { data } = useSuspenseQuery(threadQuery(mailboxId, threadId));
 	const close = () => void navigate({ to: "/$view", params: { view }, search: true });
 	const invalidate = () => qc.invalidateQueries({ queryKey: ["mail"] });
-	// Most actions close the thread without waiting, so a failure can only show up as a toast.
-	const failed = (verb: string, error: Error) => toast.add({ title: `Couldn't ${verb}: ${errorMessage(error)}`, type: "error" });
+	// Most actions close the thread without waiting, so a failure can only show up as a toast, and only in the session
+	// that asked (session.ts).
+	const failed = (verb: string, error: Error, session: number | undefined) => {
+		if (session === currentSession()) toast.add({ title: `Couldn't ${verb}: ${errorMessage(error)}`, type: "error" });
+	};
 
 	const modify = useMutation({
 		mutationFn: (v: { verb: string; add?: string[]; remove?: string[] }) => api.modify(mailboxId, [threadId], v.add ?? [], v.remove ?? []),
+		onMutate: currentSession,
 		onSuccess: invalidate,
-		onError: (error, v) => failed(v.verb, error),
+		onError: (error, v, session) => failed(v.verb, error, session),
 	});
 	const markRead = useMutation({
 		mutationFn: (read: boolean) => api.markRead(mailboxId, [threadId], read),
+		onMutate: currentSession,
 		onSuccess: invalidate,
 		// Only when asked for: marking read happens by itself on opening, and the next opening tries again.
-		onError: (error, read) => {
-			if (!read) failed("mark unread", error);
+		onError: (error, read, session) => {
+			if (!read) failed("mark unread", error, session);
 		},
 	});
 
