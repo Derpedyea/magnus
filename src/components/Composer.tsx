@@ -91,20 +91,12 @@ export function Composer(props: {
 		},
 		// The form shows it while it's open. Once it isn't, this is all that's left of the draft.
 		onError: (error, draft, session) => {
-			if (session === currentSession() && compose.state?.id !== props.id) toastReopen(draft, error);
+			if (session === currentSession() && compose.state?.id !== props.id) toastReopen(draft, `Couldn't send: ${errorMessage(error)}`);
 		},
 	});
 	const form = useForm({ defaultValues: props.initial, onSubmit: ({ value }) => send.mutate(value) });
-	// Opening another draft takes this one's place, so what was typed here, or brought back, and not sent stays a
-	// click away. Close throws it out, as before.
-	const unsent = send.isIdle || send.isError;
-	useEffect(
-		() => () => {
-			const open = compose.state;
-			if (unsent && open && open.id !== props.id && (props.restored || form.state.isDirty)) toastReopen(form.state.values);
-		},
-		[unsent, form, props.id, props.restored],
-	);
+	// Set once this draft gives way to another with an upload still going, so the upload finishes it (see below).
+	const gaveWay = useRef(false);
 	// Uploads only feed the draft's own attachment list; no cached query reads them.
 	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
 	const upload = useMutation({
@@ -113,8 +105,27 @@ export function Composer(props: {
 			if (tooBig) throw new Error(`Files can be up to ${formatBytes(MAX_UPLOAD_BYTES)}. ${tooBig.name} is ${formatBytes(tooBig.size)}.`);
 			return Promise.all(files.map((f) => api.upload(form.getFieldValue("mailboxId"), f)));
 		},
+		onMutate: currentSession,
 		onSuccess: (refs) => form.setFieldValue("attachments", (prev) => [...prev, ...refs]),
+		// Outlives the composer: a draft that gave way mid-upload is offered back once its files are in, or failed.
+		onSettled: (_refs, error, _files, session) => {
+			if (!gaveWay.current || session !== currentSession()) return;
+			toastReopen(form.state.values, error ? `Draft closed. Couldn't attach: ${errorMessage(error)}` : undefined);
+		},
 	});
+	// Opening another draft takes this one's place, so what was typed here, or brought back, and not sent stays a
+	// click away. Close throws it out, as before.
+	const unsent = send.isIdle || send.isError;
+	const uploading = upload.isPending;
+	useEffect(
+		() => () => {
+			const open = compose.state;
+			if (!unsent || !open || open.id === props.id) return;
+			if (uploading) gaveWay.current = true;
+			else if (props.restored || form.state.isDirty) toastReopen(form.state.values);
+		},
+		[unsent, uploading, form, props.id, props.restored],
+	);
 	const [showCc, setShowCc] = useState(props.initial.cc.length + props.initial.bcc.length > 0);
 	const filePicker = useRef<HTMLInputElement>(null);
 	const mailboxId = useSelector(form.store, (s) => s.values.mailboxId);
@@ -341,14 +352,14 @@ function invalidAddresses(list: Address[]): string | undefined {
 }
 
 /**
- * For a draft that's no longer open, and held nowhere else. One that failed to send stays until dismissed; one that
- * gave way to another, as long as an Undo would. Reopening it takes the place of whatever draft is open.
+ * For a draft that's no longer open, and held nowhere else. With an `error`, it stays until dismissed; otherwise as
+ * long as an Undo would. Reopening it takes the place of whatever draft is open.
  */
-function toastReopen(draft: Draft, failed?: Error) {
+function toastReopen(draft: Draft, error?: string) {
 	const id = toast.add({
-		title: failed ? `Couldn't send: ${errorMessage(failed)}` : "Draft closed",
-		type: failed ? "error" : undefined,
-		timeout: failed ? 0 : UNDO_SECONDS * 1000,
+		title: error ?? "Draft closed",
+		type: error ? "error" : undefined,
+		timeout: error ? 0 : UNDO_SECONDS * 1000,
 		actionProps: {
 			children: "Reopen",
 			onClick: () => {
