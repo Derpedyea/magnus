@@ -5,6 +5,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import type { Identity } from "./api";
 import { compose, openDraft, withSignature } from "./compose";
 import { AccountMenu } from "./components/AccountMenu";
 import { Centered } from "./components/Centered";
@@ -24,7 +25,6 @@ export function App() {
 	const navigate = useNavigate();
 	const q = useSearch({ strict: false, select: (s) => s.q });
 	const [search, setSearch] = useState(q ?? "");
-	const composing = useSelector(compose, (s) => s);
 	const live = useLive(mailboxes.map((m) => m.id));
 	const status = live ? "Live updates connected" : "Reconnecting…";
 	// Fetched now, so it opens at once.
@@ -83,12 +83,25 @@ export function App() {
 				</div>
 			</SidebarInset>
 
-			{/* Keyed by opening: the composer's form only reads its draft when it mounts. */}
-			<Suspense>{composing ? <Composer key={composing.id} id={composing.id} identities={identities} initial={composing.draft} /> : null}</Suspense>
+			<OpenDraft identities={identities} />
 
 			<Suspense>
 				<Devtools />
 			</Suspense>
 		</SidebarProvider>
+	);
+}
+
+/**
+ * The open draft. Only this follows the compose store, so opening or closing one leaves the layout be: a session that
+ * ends mid-use closes the draft while the account is already gone, and App, re-rendered then, would suspend on it.
+ */
+function OpenDraft(props: { identities: Identity[] }) {
+	const open = useSelector(compose, (s) => s);
+	// Keyed by opening: the composer's form only reads its draft when it mounts.
+	return (
+		<Suspense>
+			{open ? <Composer key={open.id} id={open.id} identities={props.identities} initial={open.draft} restored={open.restored} /> : null}
+		</Suspense>
 	);
 }

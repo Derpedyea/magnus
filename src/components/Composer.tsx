@@ -56,6 +56,8 @@ export function Composer(props: {
 	/** This opening (compose.ts). A send outlives it: the draft can be closed, or another opened, while it goes. */
 	id: number;
 	initial: Draft;
+	/** Came back through Undo or Reopen (compose.ts). */
+	restored: boolean;
 }) {
 	const qc = useQueryClient();
 	const close = () => closeDraft(props.id);
@@ -89,19 +91,19 @@ export function Composer(props: {
 		},
 		// The form shows it while it's open. Once it isn't, this is all that's left of the draft.
 		onError: (error, draft, session) => {
-			if (session === currentSession() && compose.state?.id !== props.id) toastReopen(`Couldn't send: ${errorMessage(error)}`, draft, "error");
+			if (session === currentSession() && compose.state?.id !== props.id) toastReopen(draft, error);
 		},
 	});
 	const form = useForm({ defaultValues: props.initial, onSubmit: ({ value }) => send.mutate(value) });
-	// Opening another draft takes this one's place, so what was typed here and not sent stays a click away. Close
-	// throws it out, as before.
+	// Opening another draft takes this one's place, so what was typed here, or brought back, and not sent stays a
+	// click away. Close throws it out, as before.
 	const unsent = send.isIdle || send.isError;
 	useEffect(
 		() => () => {
 			const open = compose.state;
-			if (unsent && open && open.id !== props.id && form.state.isDirty) toastReopen("Draft closed", form.state.values);
+			if (unsent && open && open.id !== props.id && (props.restored || form.state.isDirty)) toastReopen(form.state.values);
 		},
-		[unsent, form, props.id],
+		[unsent, form, props.id, props.restored],
 	);
 	// Uploads only feed the draft's own attachment list; no cached query reads them.
 	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
@@ -338,16 +340,20 @@ function invalidAddresses(list: Address[]): string | undefined {
 	return bad.length ? `Not an email address: ${bad.map((a) => a.address).join(", ")}` : undefined;
 }
 
-/** For a draft that's no longer open. Reopening it takes the place of whatever draft is. */
-function toastReopen(title: string, draft: Draft, type?: "error") {
+/**
+ * For a draft that's no longer open, and held nowhere else. One that failed to send stays until dismissed; one that
+ * gave way to another, as long as an Undo would. Reopening it takes the place of whatever draft is open.
+ */
+function toastReopen(draft: Draft, failed?: Error) {
 	const id = toast.add({
-		title,
-		type,
+		title: failed ? `Couldn't send: ${errorMessage(failed)}` : "Draft closed",
+		type: failed ? "error" : undefined,
+		timeout: failed ? 0 : UNDO_SECONDS * 1000,
 		actionProps: {
 			children: "Reopen",
 			onClick: () => {
 				toast.close(id);
-				openDraft(draft);
+				openDraft(draft, true);
 			},
 		},
 	});

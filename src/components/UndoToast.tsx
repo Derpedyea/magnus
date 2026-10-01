@@ -26,7 +26,7 @@ export function toastUndoSend(queued: SendQueued, draft: Draft, qc: QueryClient)
 						if (session !== currentSession()) return;
 						void qc.invalidateQueries({ queryKey: ["mail"] });
 						toast.close(id);
-						openDraft(draft);
+						openDraft(draft, true);
 					},
 					(error: unknown) => toast.update(id, { title: errorMessage(error), type: "error", actionProps: undefined, timeout: 5000 }),
 				);

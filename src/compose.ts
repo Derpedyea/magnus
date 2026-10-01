@@ -5,12 +5,13 @@ import type { Draft } from "./components/Composer";
 /**
  * The open composer. It floats above whatever route is showing, so any view can start a draft
  * (Compose, Reply, Undo send) without threading callbacks through the router. Each opening has its own `id`, so
- * the composer starts over for it rather than keeping what was typed into the one before.
+ * the composer starts over for it rather than keeping what was typed into the one before. A `restored` draft came
+ * back through Undo or Reopen and is held nowhere else, so it's worth keeping even untouched.
  */
-export const compose = createStore<{ id: number; draft: Draft } | null>(null);
+export const compose = createStore<{ id: number; draft: Draft; restored: boolean } | null>(null);
 
 let opened = 0;
-export const openDraft = (draft: Draft) => compose.setState(() => ({ id: ++opened, draft }));
+export const openDraft = (draft: Draft, restored = false) => compose.setState(() => ({ id: ++opened, draft, restored }));
 /** With `id`, only if that opening is still the open one: a send that finishes after you've opened another draft leaves it be. */
 export const closeDraft = (id?: number) => compose.setState((open) => (id === undefined || open?.id === id ? null : open));
 
