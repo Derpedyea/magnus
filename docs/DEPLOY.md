@@ -46,8 +46,8 @@ page leads to `/setup`:
 3. **Create your account:** your name, your new address, and a *sign-in email* somewhere else (your current
    inbox), where sign-in codes go.
 4. **Turn on the domain.** Magnus does it, one step at a time:
-   Email Routing, a catch-all rule sending every address to this Worker, Email Sending, and a delivery-event
-   subscription. Sending usually waits a minute for DNS; *Check again* picks it up.
+   Email Routing, a catch-all rule sending every address to this Worker, Email Sending, a delivery-event
+   subscription, and MTA-STS. Sending usually waits a minute for DNS; *Check again* picks it up.
 
 Then you're in. Everything else happens under **Admin** in the sidebar.
 
@@ -60,7 +60,8 @@ Then you're in. Everything else happens under **Admin** in the sidebar.
 | Account · Email Sending · Edit | Turn on sending for a domain |
 | Zone · Zone · Read | List your domains |
 | Zone · Zone Settings · Edit | Turn on Email Routing |
-| Zone · DNS · Edit | Read MX records, and remove another provider's when you move a domain |
+| Zone · DNS · Edit | Read MX records, remove another provider's when you move a domain, and publish MTA-STS |
+| Zone · Workers Routes · Edit | Serve the MTA-STS policy at `mta-sts.<domain>` from this Worker |
 | Zone · Email Routing Rules · Edit | Point the catch-all at this Worker |
 
 The token is saved encrypted. A Durable Object holds the key and D1 holds only the ciphertext, so a D1 backup
@@ -68,6 +69,9 @@ or an R2 or D1 API token reveals nothing. Adding and turning on domains use it w
 token* in the Turn on dialog replaces it, and *Forget it* under the domain list deletes it. Cloudflare's 30-day
 recovery can still bring a forgotten one back, so to end a token for certain, revoke it in Cloudflare. Magnus
 then says so the next time it needs one, and *Use a different token* takes a new one.
+
+Installs from before MTA-STS have a token without Workers Routes · Edit. The MTA-STS step says so; create a
+new token and give it to *Use a different token*.
 
 ## 3. Admin
 
@@ -87,6 +91,9 @@ away**, and Magnus asks you to confirm first. Before you do:
 
 1. Export your old mail (usually to `.eml`). Importing it is on the [roadmap](ARCHITECTURE.md#8-roadmap).
 2. Lower the TTL on the existing MX records a day ahead, so the switch spreads quickly.
+
+Moving also replaces the old provider's MTA-STS records, if it had any: their policy names its own mail servers,
+so senders that check it would refuse to deliver to Cloudflare's.
 
 Afterwards, remove the old provider's SPF `include:`, DKIM records, and verification TXT from the zone, and
 tighten DMARC to `v=DMARC1; p=quarantine; rua=mailto:dmarc@example.net` (then `p=reject` once the reports

@@ -201,6 +201,11 @@ export async function getDomain(db: D1Database, name: string): Promise<{ name: s
 	return row ? { name: row.name, zoneId: row.zone_id } : null;
 }
 
+/** Email Routing hands this domain's mail to Magnus (connect.ts keeps the flag in line with Cloudflare). */
+export async function receivesMail(db: D1Database, name: string): Promise<boolean> {
+	return (await db.prepare(`SELECT 1 AS hit FROM domains WHERE name = ?1 AND receiving = 1`).bind(name).first()) !== null;
+}
+
 export async function addDomain(db: D1Database, name: string, zoneId: string): Promise<void> {
 	await db.prepare(`INSERT INTO domains (name, zone_id) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET zone_id = excluded.zone_id`).bind(name, zoneId).run();
 }

@@ -18,7 +18,8 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
   click. Group addresses like `family@` deliver a copy to each person.
 - **`+tag` becomes a label.** Mail to `me+receipts@` lands under *receipts* automatically.
 - **Set up and run from the app.** Add domains, people, and addresses in the admin pages. Magnus turns on
-  Email Routing and Email Sending in Cloudflare for you.
+  Email Routing and Email Sending in Cloudflare for you, and MTA-STS, so other servers deliver your mail only
+  over an encrypted connection.
 - **Rejects during the SMTP session.** Unknown recipients and blocked senders bounce before the message is
   accepted, so Magnus never sends backscatter.
 - **Real threading** by `Message-ID`/`References`, with a careful subject fallback. Replies thread in Gmail,
