@@ -2,6 +2,7 @@ import { isCloudflareMx, mailHost, type StepId, type StepStatus } from "#shared"
 import { z } from "zod";
 import { type Cloudflare, mxRecords } from "./cloudflare";
 import { setDomainFlag } from "./directory";
+import { mtaStsStatus, publishMtaSts } from "./mta-sts";
 import type { Install } from "./settings";
 
 // Turning a domain on in Cloudflare, one step at a time (shared/cloudflare.ts STEPS), so the page can show each
@@ -85,13 +86,20 @@ const STATUS: Record<StepId, (ctx: DomainContext) => Promise<StepStatus>> = {
 	"catch-all": catchAllStatus,
 	sending: sendingStatus,
 	events: eventsStatus,
+	"mta-sts": mtaStsStatus,
 };
 
 /** Every step's state, read-only apart from syncing the domain's flags. */
 export async function domainStatus(ctx: DomainContext): Promise<Record<StepId, StepStatus>> {
-	const [routing, catchAll, sending, events] = await Promise.all([routingStatus(ctx), catchAllStatus(ctx), sendingStatus(ctx), eventsStatus(ctx)]);
+	const [routing, catchAll, sending, events, policy] = await Promise.all([
+		routingStatus(ctx),
+		catchAllStatus(ctx),
+		sendingStatus(ctx),
+		eventsStatus(ctx),
+		mtaStsStatus(ctx),
+	]);
 	await syncFlags(ctx, { receiving: routing.state === "done" && catchAll.state === "done", sending: sending.state === "done" });
-	return { routing, "catch-all": catchAll, sending, events };
+	return { routing, "catch-all": catchAll, sending, events, "mta-sts": policy };
 }
 
 export async function runStep(ctx: DomainContext, step: StepId, options: RunOptions): Promise<StepStatus> {
@@ -140,6 +148,8 @@ async function act(ctx: DomainContext, step: StepId, options: RunOptions, before
 			});
 			return done;
 		}
+		case "mta-sts":
+			return publishMtaSts(ctx, options, before);
 	}
 }
 

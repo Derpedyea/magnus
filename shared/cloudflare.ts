@@ -10,6 +10,7 @@ export const PERMISSIONS = {
 	zone: { label: "Zone · Read", key: { key: "zone", type: "read" } },
 	zoneSettings: { label: "Zone Settings · Edit", key: { key: "zone_settings", type: "edit" } },
 	dns: { label: "DNS · Edit", key: { key: "dns", type: "edit" } },
+	routes: { label: "Workers Routes · Edit", key: { key: "workers_routes", type: "edit" } },
 	routingRules: { label: "Email Routing Rules · Edit", key: { key: "email_routing_rule", type: "edit" } },
 	sending: { label: "Email Sending · Edit", key: { key: "email_sending", type: "edit" } },
 } as const;
@@ -24,7 +25,7 @@ export function tokenTemplateUrl(): string {
 }
 
 /** Turning a domain on, in order. Each is safe to repeat. */
-export const STEP_IDS = ["routing", "catch-all", "sending", "events"] as const;
+export const STEP_IDS = ["routing", "catch-all", "sending", "events", "mta-sts"] as const;
 
 export type StepId = (typeof STEP_IDS)[number];
 
@@ -33,6 +34,7 @@ export const STEP_LABELS: Record<StepId, string> = {
 	"catch-all": "Deliver every address to Magnus",
 	sending: "Send mail with Email Sending",
 	events: "Track delivery",
+	"mta-sts": "Require encryption for incoming mail",
 };
 
 export interface StepStatus {

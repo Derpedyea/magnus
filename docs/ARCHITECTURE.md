@@ -57,7 +57,7 @@ Constraints worth being honest about:
 | --- | --- | --- |
 | `email()` | `worker/mail/inbound.ts` | SMTP-time accept/reject, raw capture to R2, enqueue |
 | `queue()` | `worker/mail/` | Parse inbound mail into its mailbox; apply delivery events. Messages are told apart by shape, since queues can be renamed at deploy |
-| `fetch()` | `worker/api.ts`, `worker/links.ts`, `src/` | The React app (static assets), `/api/*` (mail, `/setup`, `/admin`, Better Auth), and `/f/*` downloads for files sent as links |
+| `fetch()` | `worker/api.ts`, `worker/links.ts`, `worker/mta-sts.ts`, `src/` | The React app (static assets), `/api/*` (mail, `/setup`, `/admin`, Better Auth), `/f/*` downloads for files sent as links, and each domain's MTA-STS policy |
 | `Mailbox` | `worker/mailbox/` | The Durable Object class that owns all mail data and the outbox |
 
 Why one Worker: it's what the Deploy to Cloudflare button can install in one click, it deploys as a unit, and
@@ -307,11 +307,35 @@ Worker is still found. The claim is a single `INSERT OR IGNORE` into `settings`,
 both win. The first admin is created server-side with the admin plugin and signed in with a one-time code that
 never leaves the Worker.
 
-Turning a domain on (`worker/connect.ts`) is four idempotent steps, each checked before it acts:
+Turning a domain on (`worker/connect.ts`) is five idempotent steps, each checked before it acts:
 Email Routing on the zone (removing another provider's MX records only after the admin confirms), a catch-all
-rule sending every address to this Worker, Email Sending on the domain, and an event subscription from Email
-Sending to the queue this Worker consumes but doesn't produce to. The directory's `receiving` and `sending`
-flags follow what Cloudflare reports after every step. Setup and the admin Domains page run the same steps.
+rule sending every address to this Worker, Email Sending on the domain, an event subscription from Email
+Sending to the queue this Worker consumes but doesn't produce to, and MTA-STS. The directory's `receiving` and
+`sending` flags follow what Cloudflare reports after every step. Setup and the admin Domains page run the same
+steps.
+
+MTA-STS (RFC 8461, `worker/mta-sts.ts`) makes servers that support it deliver only over TLS to the MX hosts a
+policy names, so an attacker on the path can't strip encryption or redirect the mail. Cloudflare publishes the
+policy for Email Routing's MX hosts and keeps its id current, so Magnus follows
+[Cloudflare's recipe](https://developers.cloudflare.com/email-service/configuration/mta-sts/) and owns neither:
+`_mta-sts.<domain>` is a CNAME to Cloudflare's id, and a Workers route on a proxied `mta-sts.<domain>` sends
+`/.well-known/mta-sts.txt` to this Worker, which proxies Cloudflare's policy.
+
+- **A route, not a custom domain.** Attaching a custom domain needs Workers Scripts · Edit, which would let the
+  saved token replace this Worker and read every mailbox. A route needs Workers Routes · Edit, which adds
+  little to the DNS · Edit the token already has.
+- **The policy is published before it's announced.** The host and route go in before the CNAME, so a sender
+  that finds the id can always fetch the policy.
+- **The policy only stays up while it's true.** The Worker serves it only while the domain is in the directory,
+  receiving, and its live MX records (DNS-over-HTTPS) are Cloudflare's. Otherwise it answers 404, and senders'
+  cached copies expire within a day (`max_age: 86400`). Without this, a domain that left for another provider
+  would keep telling senders to deliver only to Cloudflare. If Cloudflare's policy can't be fetched, the Worker
+  answers 502. It never makes up a policy, since a wrong one turns mail away.
+- **Another policy already there** is replaced only while moving mail here, which the admin confirmed with the
+  MX records. It names the old provider's servers, so leaving it would bounce mail. Otherwise the step stops
+  and names the records to delete.
+
+TLS reporting (TLS-RPT) isn't set up. Its reports would arrive as mail that nothing reads yet.
 
 The token setup is given is saved, so admins don't paste one again. The `Vault` Durable Object encrypts it
 (AES-256-GCM) and keeps the key, which never leaves the object; only the ciphertext goes in `settings`
