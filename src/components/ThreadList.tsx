@@ -6,12 +6,15 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { formatDate } from "../dates";
 import { useAccount } from "../hooks";
 import { listQuery } from "../queries";
+import { viewName } from "../views";
 import { PermanentDelete } from "./PermanentDelete";
 
 const route = getRouteApi("/_app/_mail/$view");
 
+/** Below lg an open thread covers the list (routes/_app._mail.$view.tsx), which stays laid out so it keeps its scroll. */
 export function ThreadList({ threadOpen }: { threadOpen: boolean }) {
 	const { view } = route.useParams();
 	const { scope, q } = route.useLoaderDeps();
@@ -28,9 +31,12 @@ function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]
 	const colors = account.addresses.length > 1 && scope.length !== 1 ? account.colors : null;
 
 	const scrollRef = useRef<HTMLElement>(null);
+	const listRef = useRef<HTMLUListElement>(null);
 	const rows = useVirtualizer({
 		count: hasNextPage ? threads.length + 1 : threads.length,
 		getScrollElement: () => scrollRef.current,
+		// Whatever sits above the rows in the scroller (the phone title, the empty note).
+		scrollMargin: listRef.current?.offsetTop ?? 0,
 		// Three lines of text; each row is measured once rendered.
 		estimateSize: () => 85,
 		overscan: 10,
@@ -61,15 +67,21 @@ function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]
 	});
 
 	return (
-		<section ref={scrollRef} className={cn("w-full min-w-0 shrink-0 overflow-y-auto border-r lg:w-96", threadOpen && "hidden lg:block")}>
+		<section ref={scrollRef} className={cn("relative w-full min-w-0 overflow-y-auto max-md:pb-24 lg:w-96 lg:shrink-0 lg:border-r", threadOpen && "max-lg:invisible")}>
 			{view === "trash" ? (
 				<div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b bg-background px-4 py-3">
 					<h2 className="font-medium">Trash</h2>
 					<PermanentDelete scope={scope} disabled={threads.length === 0} />
 				</div>
-			) : null}
+			) : (
+				// Phones keep the sidebar in a drawer, so the list says where you are. Trash's own header does that.
+				<h1 className="flex min-w-0 items-baseline gap-2 px-4 pt-3 pb-1 md:hidden">
+					<span className="shrink-0 font-heading text-lg font-semibold">{viewName(view)}</span>
+					{scope.length ? <span className="truncate text-muted-foreground">{scope.join(", ")}</span> : null}
+				</h1>
+			)}
 			{threads.length === 0 ? <p className="p-4 text-muted-foreground">{view === "search" ? "No matches." : view === "trash" ? "Trash is empty." : "Nothing here."}</p> : null}
-			<ul className="relative" style={{ height: rows.getTotalSize() }}>
+			<ul ref={listRef} className="relative" style={{ height: rows.getTotalSize() }}>
 				{items.map((item) => {
 					const t = threads[item.index];
 					return (
@@ -80,7 +92,7 @@ function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]
 							aria-posinset={item.index + 1}
 							aria-setsize={hasNextPage ? -1 : threads.length}
 							className="absolute inset-x-0 top-0"
-							style={{ transform: `translateY(${item.start}px)` }}
+							style={{ transform: `translateY(${item.start - rows.options.scrollMargin}px)` }}
 						>
 							{t ? (
 								<ThreadRow thread={t} view={view} colors={colors} />
@@ -130,12 +142,4 @@ function ThreadRow({ thread: t, view, colors }: { thread: MailboxThread; view: s
 			<div className="truncate text-muted-foreground">{t.snippet}</div>
 		</Link>
 	);
-}
-
-function formatDate(ms: number): string {
-	const d = new Date(ms);
-	const now = new Date();
-	if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-	if (d.getFullYear() === now.getFullYear()) return d.toLocaleDateString([], { month: "short", day: "numeric" });
-	return d.toLocaleDateString();
 }

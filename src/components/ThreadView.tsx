@@ -11,9 +11,9 @@ import {
 	type ThreadMessage,
 } from "#shared";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { getRouteApi } from "@tanstack/react-router";
+import { getRouteApi, useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, ArrowLeftIcon, CircleAlertIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, CircleAlertIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon, type LucideIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +26,7 @@ import { toast } from "@/components/ui/toast-manager";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, errorMessage, formatList, type Identity, messageUrl } from "../api";
 import { openDraft, quote, withSignature } from "../compose";
+import { formatDate } from "../dates";
 import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
 import { findQuote, isForward, splitQuote } from "../quotes";
@@ -41,12 +42,11 @@ const route = getRouteApi("/_app/_mail/$view/$mailboxId/$threadId");
 
 export function ThreadView() {
 	const { view, mailboxId, threadId } = route.useParams();
-	const navigate = route.useNavigate();
 	// Replies must be sent from the thread's own mailbox.
 	const identities = useAccount().identities.filter((i) => i.mailboxId === mailboxId);
 	const qc = useQueryClient();
 	const { data } = useSuspenseQuery(threadQuery(mailboxId, threadId));
-	const close = () => void navigate({ to: "/$view", params: { view }, search: true });
+	const close = useCloseThread();
 	const invalidate = () => qc.invalidateQueries({ queryKey: ["mail"] });
 	// Most actions close the thread without waiting, so a failure can only show up as a toast, and only in the session
 	// that asked (session.ts).
@@ -87,32 +87,32 @@ export function ThreadView() {
 	// An inbox conversation with an older trashed message still needs a way to trash its remaining replies.
 	const deleteForever = trashed > 0 && (view === "trash" || trashed === messages.length);
 
-	const action = (icon: React.ReactNode, label: string, onClick: () => void) => (
-		<Button variant="ghost" size="sm" onClick={onClick} className="text-muted-foreground">
-			{icon}
-			{label}
+	// Phones show icons alone, bigger, like Gmail's toolbar; the label stays for screen readers.
+	const action = (Icon: LucideIcon, label: string, onClick: () => void) => (
+		<Button variant="ghost" size="sm" onClick={onClick} className="text-muted-foreground max-md:size-10 max-md:px-0">
+			<Icon className="size-3.5 max-md:size-5" />
+			<span className="max-md:sr-only">{label}</span>
 		</Button>
 	);
 
 	return (
-		<article className="mx-auto max-w-4xl p-6">
-			<Button variant="ghost" size="sm" className="mb-3 lg:hidden" onClick={close}>
-				<ArrowLeftIcon data-icon="inline-start" /> Back
-			</Button>
-			<div className="mb-4 flex flex-wrap items-center gap-1 border-b pb-3">
+		<article className="mx-auto max-w-4xl px-4 pb-6 lg:p-6">
+			{/* Stacked over the list, the toolbar stays on screen and leads with the way back. */}
+			<div className="sticky top-0 z-10 -mx-4 mb-4 flex items-center gap-1 border-b bg-background px-2 py-2 lg:static lg:mx-0 lg:flex-wrap lg:px-0 lg:pt-0 lg:pb-3">
+				<BackToList className="mr-auto" />
 				{inInbox
-					? action(<ArchiveIcon />, "Archive", () => (modify.mutate({ verb: "archive", remove: ["inbox"] }), close()))
-					: action(<InboxIcon />, "Move to inbox", () => modify.mutate({ verb: "move to inbox", add: ["inbox"], remove: ["trash", "spam"] }))}
+					? action(ArchiveIcon, "Archive", () => (modify.mutate({ verb: "archive", remove: ["inbox"] }), close()))
+					: action(InboxIcon, "Move to inbox", () => modify.mutate({ verb: "move to inbox", add: ["inbox"], remove: ["trash", "spam"] }))}
 				{deleteForever
 					? <PermanentDelete key={`${mailboxId}/${threadId}`} thread={{ mailboxId, id: threadId, subject: summary.subject, count: trashed }} />
-					: action(<Trash2Icon />, "Trash", () => (modify.mutate({ verb: "move to trash", add: ["trash"] }), close()))}
-				{action(<OctagonAlertIcon />, "Spam", () => (modify.mutate({ verb: "mark as spam", add: ["spam"] }), close()))}
+					: action(Trash2Icon, "Trash", () => (modify.mutate({ verb: "move to trash", add: ["trash"] }), close()))}
+				{action(OctagonAlertIcon, "Spam", () => (modify.mutate({ verb: "mark as spam", add: ["spam"] }), close()))}
 				{starred
-					? action(<StarOffIcon />, "Unstar", () => modify.mutate({ verb: "unstar", remove: ["starred"] }))
-					: action(<StarIcon />, "Star", () => modify.mutate({ verb: "star", add: ["starred"] }))}
-				{action(<MailIcon />, "Mark unread", () => (markRead.mutate(false), close()))}
+					? action(StarOffIcon, "Unstar", () => modify.mutate({ verb: "unstar", remove: ["starred"] }))
+					: action(StarIcon, "Star", () => modify.mutate({ verb: "star", add: ["starred"] }))}
+				{action(MailIcon, "Mark unread", () => (markRead.mutate(false), close()))}
 			</div>
-			<h1 className="mb-6 font-heading text-xl font-semibold">{summary.subject}</h1>
+			<h1 className="mb-6 font-heading text-xl font-semibold break-words">{summary.subject}</h1>
 			<div>
 				{replyTree(messages).map((branch) => (
 					<BranchView
@@ -143,6 +143,34 @@ export function ThreadView() {
 				))}
 			</div>
 		</article>
+	);
+}
+
+/** Below lg, where the thread covers the list (routes/_app._mail.$view.tsx). Matches Tailwind's `max-lg:`. */
+const stacked = () => matchMedia("(width < 64rem)").matches;
+
+/**
+ * Leaves the thread for its list. Stacked, the thread is a screen pushed over the list, so this goes back to it, as
+ * the phone's own back gesture would, rather than pushing the list again for Back to return to the thread.
+ */
+function useCloseThread() {
+	const view = route.useParams({ select: (p) => p.view });
+	const navigate = route.useNavigate();
+	const router = useRouter();
+	const canGoBack = useCanGoBack();
+	return () => {
+		if (canGoBack && stacked()) router.history.back();
+		else void navigate({ to: "/$view", params: { view }, search: true });
+	};
+}
+
+/** The way back to the list, where the thread covers it. Also on the thread's loading and error screens. */
+export function BackToList({ className }: { className?: string }) {
+	const close = useCloseThread();
+	return (
+		<Button variant="ghost" size="icon" aria-label="Back" onClick={close} className={cn("text-muted-foreground max-md:size-10 lg:hidden", className)}>
+			<ArrowLeftIcon className="size-4 max-md:size-5" />
+		</Button>
 	);
 }
 
@@ -310,16 +338,17 @@ function Message(props: {
 						onOpenChange={(open) => setViewing({ ...viewing, open })}
 					/>
 				) : null}
-				<div className="mt-4 flex flex-wrap items-center gap-2">
-					<Button variant="outline" size="sm" onClick={() => props.onReply(false)}>
+				{/* On phones the three answers share one row evenly. */}
+				<div className="mt-4 flex flex-wrap items-center gap-2 max-md:gap-1.5">
+					<Button variant="outline" size="sm" onClick={() => props.onReply(false)} className="max-md:flex-1 max-md:px-2">
 						<ReplyIcon />
 						Reply
 					</Button>
-					<Button variant="outline" size="sm" onClick={() => props.onReply(true)}>
+					<Button variant="outline" size="sm" onClick={() => props.onReply(true)} className="max-md:flex-1 max-md:px-2">
 						<ReplyAllIcon />
 						Reply all
 					</Button>
-					<Button variant="outline" size="sm" onClick={props.onForward}>
+					<Button variant="outline" size="sm" onClick={props.onForward} className="max-md:flex-1 max-md:px-2">
 						<ForwardIcon />
 						Forward
 					</Button>
@@ -353,7 +382,11 @@ function MessageHeader(props: { message: MessageDetail; open: boolean; fold: boo
 				<span className="truncate text-xs text-muted-foreground">{m.from.address}</span>
 			) : null}
 			{props.outgoing ? <DeliveryBadge message={m} /> : null}
-			<time className="ml-auto shrink-0 text-xs text-muted-foreground">{new Date(m.date).toLocaleString()}</time>
+			{/* Phones have room for the short form only. */}
+			<time dateTime={new Date(m.date).toISOString()} className="ml-auto shrink-0 text-xs text-muted-foreground">
+				<span className="md:hidden">{formatDate(m.date)}</span>
+				<span className="max-md:hidden">{new Date(m.date).toLocaleString()}</span>
+			</time>
 		</CollapsibleTrigger>
 	);
 }
@@ -380,9 +413,9 @@ function TextBody({ text, fold }: { text: string; fold: boolean }) {
 	const { body, quote } = fold ? splitQuote(text) : { body: text, quote: "" };
 	return (
 		<>
-			<pre className="font-sans whitespace-pre-wrap">{body}</pre>
+			<pre className="font-sans break-words whitespace-pre-wrap">{body}</pre>
 			{/* Below the quote once shown, like HTML bodies, whose toggle sits under the frame. */}
-			{quote && showQuote ? <pre className="mt-4 font-sans whitespace-pre-wrap text-muted-foreground">{quote}</pre> : null}
+			{quote && showQuote ? <pre className="mt-4 font-sans break-words whitespace-pre-wrap text-muted-foreground">{quote}</pre> : null}
 			{quote ? <QuoteToggle open={showQuote} onToggle={() => setShowQuote(!showQuote)} /> : null}
 		</>
 	);
@@ -461,14 +494,34 @@ function HtmlBody({
 	const measure = (doc: Document) => {
 		const frame = ref.current;
 		if (!frame) return;
+		const scroller = doc.scrollingElement ?? doc.documentElement;
+		// Mail laid out wider than the frame (a newsletter's 600px table, on a phone) shrinks to fit, like Gmail's,
+		// rather than scrolling sideways.
+		doc.documentElement.style.zoom = "";
+		const fit = frame.clientWidth / scroller.scrollWidth;
+		if (fit < 1) doc.documentElement.style.zoom = String(fit);
 		// Mail without a doctype renders in quirks mode, where the body stretches to fill the frame: shrink the frame
 		// first, or it could only ever grow (and hiding a quote again wouldn't give its space back).
 		frame.style.height = "0px";
 		// The document's own height, margins included, in either mode.
-		const next = (doc.scrollingElement ?? doc.documentElement).scrollHeight + 4;
+		const next = scroller.scrollHeight + 4;
 		frame.style.height = `${next}px`;
 		setHeight(next);
 	};
+	// A new width (a phone turned sideways, the sidebar folded) reflows the mail, so it's fitted and measured again.
+	const onResize = useEffectEvent((doc: Document) => measure(doc));
+	useEffect(() => {
+		const frame = ref.current;
+		if (!doc || !frame) return;
+		let width = frame.clientWidth;
+		const observer = new ResizeObserver(() => {
+			if (frame.clientWidth === width) return;
+			width = frame.clientWidth;
+			onResize(doc);
+		});
+		observer.observe(frame);
+		return () => observer.disconnect();
+	}, [doc]);
 	const onLoad = () => {
 		const doc = ref.current?.contentDocument;
 		if (!doc) return;

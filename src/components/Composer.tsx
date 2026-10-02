@@ -147,6 +147,25 @@ export function Composer(props: {
 	});
 	const [showCc, setShowCc] = useState(Boolean(props.initial.cc.length + props.initial.bcc.length || props.initial.recipientInputs?.cc || props.initial.recipientInputs?.bcc));
 	const filePicker = useRef<HTMLInputElement>(null);
+	const sheet = useRef<HTMLFormElement>(null);
+	// Phones: the composer fills what the on-screen keyboard leaves of the screen. The keyboard only shrinks the
+	// visual viewport, so without this Send and the caret could end up behind it.
+	useEffect(() => {
+		const viewport = window.visualViewport;
+		const form = sheet.current;
+		if (!viewport || !form) return;
+		const fit = () => {
+			form.style.setProperty("--visible-top", `${viewport.offsetTop}px`);
+			form.style.setProperty("--visible-height", `${viewport.height}px`);
+		};
+		fit();
+		viewport.addEventListener("resize", fit);
+		viewport.addEventListener("scroll", fit);
+		return () => {
+			viewport.removeEventListener("resize", fit);
+			viewport.removeEventListener("scroll", fit);
+		};
+	}, []);
 	const mailboxId = useSelector(form.store, (s) => s.values.mailboxId);
 	// Replies, forwards, and uploads belong to one mailbox, so From can't move them to another.
 	const pinned = useSelector(form.store, (s) => Boolean(s.values.replyToMessageId || s.values.forward) || s.values.attachments.length > 0);
@@ -202,23 +221,45 @@ export function Composer(props: {
 		</form.Field>
 	);
 
+	// On phones it leads the title bar, where the keyboard can't cover it, as in Apple Mail; elsewhere it leads the footer.
+	const sendButton = (className: string) => (
+		<form.Subscribe selector={(s) => s.values.from !== ""}>
+			{(ready) => (
+				<Button type="submit" disabled={!ready || send.isPending || upload.isPending || discard.isPending || entry?.removing || entry?.status === "conflict"} className={cn("px-4", className)}>
+					{send.isPending ? <Spinner data-icon="inline-start" /> : null}
+					{entry?.state === "sending" && !send.isPending ? "Retry Send" : "Send"}
+				</Button>
+			)}
+		</form.Subscribe>
+	);
+
 	return (
+		// A sheet over the whole screen on phones, like every phone mail app's; a window docked bottom right elsewhere.
 		<form
+			ref={sheet}
 			onSubmit={(e) => {
 				e.preventDefault();
 				void form.handleSubmit();
 			}}
 			aria-label="Message composer"
-			className="fixed inset-x-0 bottom-0 z-30 flex max-h-[100dvh] flex-col overflow-hidden rounded-t-xl border bg-popover text-popover-foreground shadow-2xl sm:right-6 sm:left-auto sm:w-[36rem] sm:max-w-[calc(100vw-3rem)]"
+			className="fixed z-30 flex flex-col overflow-hidden bg-popover text-popover-foreground max-md:inset-x-0 max-md:top-[var(--visible-top,0px)] max-md:h-[var(--visible-height,100dvh)] max-md:bg-background md:right-6 md:bottom-0 md:max-h-[100dvh] md:w-[36rem] md:max-w-[calc(100vw-3rem)] md:rounded-t-xl md:border md:shadow-2xl"
 		>
-			<div className="flex items-center justify-between border-b bg-muted/50 py-1 pr-1 pl-3">
-				<span className="font-medium">{props.initial.forward ? "Forward" : props.initial.replyToMessageId ? "Reply" : "New message"}</span>
+			<div className="flex shrink-0 items-center justify-between gap-2 border-b bg-muted/50 py-1 pr-1 pl-3 max-md:h-14 max-md:bg-transparent max-md:px-2">
+				<span className="truncate font-medium max-md:flex-1">{props.initial.forward ? "Forward" : props.initial.replyToMessageId ? "Reply" : "New message"}</span>
+				{sendButton("h-9 md:hidden")}
 				<Tooltip>
-				<TooltipTrigger render={<Button variant="ghost" size="icon-sm" onClick={close} disabled={discard.isPending} aria-label="Close and save draft"><XIcon /></Button>} />
-				<TooltipContent>Save and close</TooltipContent>
+					<TooltipTrigger
+						render={
+							<Button variant="ghost" size="icon-sm" onClick={close} disabled={discard.isPending} aria-label="Close and save draft" className="max-md:order-first max-md:size-10">
+								<XIcon className="size-4 max-md:size-5" />
+							</Button>
+						}
+					/>
+					<TooltipContent>Save and close</TooltipContent>
 				</Tooltip>
 			</div>
-			<fieldset disabled={locked} className="min-h-0 overflow-y-auto">
+			{/* On phones a column, so the message takes whatever height the fields leave. */}
+			<fieldset disabled={locked} className="min-h-0 overflow-y-auto max-md:flex max-md:flex-1 max-md:flex-col">
 			<form.Field name="from">
 				{(f) => (
 					<div className="flex items-center border-b pl-3 focus-within:border-ring">
@@ -276,8 +317,8 @@ export function Composer(props: {
 						onChange={f.handleChange}
 						aria-label="Message"
 						editable={!locked}
-						// The height of 14 lines, or 8 above a forward.
-						className={cn("overflow-y-auto px-3 py-2.5 text-base md:text-sm", props.initial.forward ? "h-45" : "h-75")}
+						// The height of 14 lines, or 8 above a forward; on phones, whatever the fields leave.
+						className={cn("overflow-y-auto px-3 py-2.5 text-base max-md:min-h-24 max-md:flex-1 md:text-sm", props.initial.forward ? "md:h-45" : "md:h-75")}
 						autoFocus={!props.initial.replyToMessageId && props.initial.to.length > 0}
 					/>
 				)}
@@ -309,15 +350,8 @@ export function Composer(props: {
 			{entry?.state === "sending" && !send.isPending ? <p className="px-3 pb-2 text-xs text-muted-foreground">Send wasn't confirmed. Retry Send to check its status.</p> : null}
 			{entry?.status === "conflict" ? <p className="px-3 pb-2 text-xs text-destructive">{entry.error}</p> : null}
 			{entry?.status === "error" ? <p role="alert" className="px-3 pb-2 text-xs text-destructive">{entry.error}</p> : null}
-			<div className="flex items-center gap-1 border-t px-3 py-2">
-				<form.Subscribe selector={(s) => s.values.from !== ""}>
-					{(ready) => (
-						<Button type="submit" disabled={!ready || send.isPending || upload.isPending || discard.isPending || entry?.removing || entry?.status === "conflict"} className="mr-1 px-4">
-							{send.isPending ? <Spinner data-icon="inline-start" /> : null}
-							{entry?.state === "sending" && !send.isPending ? "Retry Send" : "Send"}
-						</Button>
-					)}
-				</form.Subscribe>
+			<div className="flex shrink-0 items-center gap-1 border-t px-3 py-2">
+				{sendButton("mr-1 max-md:hidden")}
 				<Tooltip>
 					<TooltipTrigger
 						render={

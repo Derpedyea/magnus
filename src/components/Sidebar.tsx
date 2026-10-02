@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { ClockIcon, FilePenIcon, InboxIcon, MailsIcon, OctagonAlertIcon, SendIcon, SettingsIcon, ShieldIcon, SquarePenIcon, StarIcon, TagIcon, Trash2Icon, type LucideIcon } from "lucide-react";
+import { SettingsIcon, ShieldIcon, SquarePenIcon, TagIcon, type LucideIcon } from "lucide-react";
 import { useEffect, useEffectEvent, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -23,19 +23,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { formatScope, type Me, parseScope } from "#shared";
 import { useScope } from "../hooks";
 import { countsQuery } from "../queries";
+import { SYSTEM, SYSTEM_VIEWS } from "../views";
 import { useDraftList } from "./DraftList";
-
-const SYSTEM_VIEWS = [
-	{ label: "inbox", name: "Inbox", icon: InboxIcon },
-	{ label: "starred", name: "Starred", icon: StarIcon },
-	{ label: "drafts", name: "Drafts", icon: FilePenIcon },
-	{ label: "sent", name: "Sent", icon: SendIcon },
-	{ label: "outbox", name: "Outbox", icon: ClockIcon },
-	{ label: "all", name: "All mail", icon: MailsIcon },
-	{ label: "spam", name: "Spam", icon: OctagonAlertIcon },
-	{ label: "trash", name: "Trash", icon: Trash2Icon },
-];
-const SYSTEM = new Set(SYSTEM_VIEWS.map((v) => v.label));
 
 export function Sidebar(props: {
 	mailboxes: Me["mailboxes"];
@@ -160,24 +149,20 @@ export function Sidebar(props: {
 					<img src="/favicon.svg" alt="" className="size-5 shrink-0" />
 					<span className="truncate group-data-[collapsible=icon]:hidden">Magnus Mail</span>
 				</div>
-				<Tooltip disabled={!iconsOnly}>
-					<TooltipTrigger
-						render={
-							<Button
-								aria-label="Compose"
-								className="group-data-[collapsible=icon]:px-0!"
-								onClick={() => {
-									setOpenMobile(false);
-									props.onCompose();
-								}}
-							>
-								<SquarePenIcon data-icon="inline-start" />
-								<span className="group-data-[collapsible=icon]:hidden">Compose</span>
-							</Button>
-						}
-					/>
-					<TooltipContent side="right">Compose</TooltipContent>
-				</Tooltip>
+				{/* Phones compose from the button floating over the list (App). */}
+				{isMobile ? null : (
+					<Tooltip disabled={!iconsOnly}>
+						<TooltipTrigger
+							render={
+								<Button aria-label="Compose" className="group-data-[collapsible=icon]:px-0!" onClick={props.onCompose}>
+									<SquarePenIcon data-icon="inline-start" />
+									<span className="group-data-[collapsible=icon]:hidden">Compose</span>
+								</Button>
+							}
+						/>
+						<TooltipContent side="right">Compose</TooltipContent>
+					</Tooltip>
+				)}
 			</SidebarHeader>
 			{/* The rail scrolls too, or a short window would cut off the last rows. */}
 			<SidebarContent className="group-data-[collapsible=icon]:overflow-x-hidden group-data-[collapsible=icon]:overflow-y-auto">

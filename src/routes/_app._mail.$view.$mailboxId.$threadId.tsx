@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Spinner } from "@/components/ui/spinner";
 import { errorMessage } from "../api";
-import { ThreadView } from "../components/ThreadView";
+import { BackToList, ThreadView } from "../components/ThreadView";
 import { threadQuery } from "../queries";
 
 export const Route = createFileRoute("/_app/_mail/$view/$mailboxId/$threadId")({
@@ -9,10 +9,17 @@ export const Route = createFileRoute("/_app/_mail/$view/$mailboxId/$threadId")({
 	// Another thread starts fresh: messages re-collapse and the remote-images prompt resets.
 	remountDeps: ({ params }) => params,
 	component: ThreadView,
+	// Where the thread covers the list, these do too, so they keep the way back.
 	pendingComponent: () => (
-		<div className="p-6 text-muted-foreground">
-			<Spinner />
+		<div className="p-2 text-muted-foreground lg:p-6">
+			<BackToList />
+			<Spinner className="m-4 lg:m-0" />
 		</div>
 	),
-	errorComponent: ({ error }) => <p className="p-6 text-destructive">{errorMessage(error)}</p>,
+	errorComponent: ({ error }) => (
+		<div className="p-2 lg:p-6">
+			<BackToList />
+			<p className="m-4 text-destructive lg:m-0">{errorMessage(error)}</p>
+		</div>
+	),
 });
