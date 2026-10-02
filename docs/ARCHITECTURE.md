@@ -333,7 +333,7 @@ policy for Email Routing's MX hosts and keeps its id current, so Magnus follows
   answers 502. It never makes up a policy, since a wrong one turns mail away.
 - **Another policy already there** is replaced only while moving mail here, which the admin confirmed with the
   MX records. It names the old provider's servers, so leaving it would bounce mail. Otherwise the step stops
-  and names the records to delete.
+  and names the records or route to delete. Records that don't route requests, like a verification TXT, stay.
 
 TLS reporting (TLS-RPT) isn't set up. Its reports would arrive as mail that nothing reads yet.
 

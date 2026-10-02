@@ -1,4 +1,4 @@
-import { isCloudflareMx, type StepStatus } from "#shared";
+import { isCloudflareMx, type Permission, type StepStatus } from "#shared";
 import { z } from "zod";
 import type { DomainContext, RunOptions } from "./connect";
 
@@ -50,7 +50,16 @@ async function mxIsCloudflare(domain: string): Promise<boolean> {
 type ZoneContext = Omit<DomainContext, "db">;
 
 const DnsRecord = z.object({ id: z.string(), type: z.string(), name: z.string(), content: z.string(), proxied: z.boolean().default(false) });
-const Route = z.object({ pattern: z.string(), script: z.string().optional() });
+const Route = z.object({ id: z.string(), pattern: z.string(), script: z.string().optional() });
+/** Records that decide where requests for a name go; others (a verification TXT, say) can stay beside ours. */
+const ADDRESS = new Set(["A", "AAAA", "CNAME"]);
+
+/** Something another MTA-STS setup left that stops ours from working, and how to delete it. */
+interface Blocker {
+	label: string;
+	need: Permission;
+	path: string;
+}
 
 /**
  * The three parts: the `_mta-sts` CNAME to Cloudflare's policy id, a proxied `mta-sts.<domain>` for requests to
@@ -64,22 +73,32 @@ async function parts(ctx: ZoneContext) {
 		records(`mta-sts.${ctx.domain}`),
 		ctx.cf.get(z.array(Route), "routes", `/zones/${ctx.zoneId}/workers/routes`),
 	]);
-	const ours = (r: z.infer<typeof DnsRecord>) => r.type === "CNAME" && r.content.toLowerCase().replace(/\.$/, "") === POLICY_ID;
+	// Proxied, the CNAME would hide Cloudflare's TXT record from senders.
+	const ours = (r: z.infer<typeof DnsRecord>) => r.type === "CNAME" && !r.proxied && r.content.toLowerCase().replace(/\.$/, "") === POLICY_ID;
+	const existing = routes.find((r) => r.pattern === pattern);
+	const record = (r: z.infer<typeof DnsRecord>): Blocker => ({ label: `the ${r.type} record at ${r.name}`, need: "dns", path: `/zones/${ctx.zoneId}/dns_records/${r.id}` });
 	return {
 		pattern,
 		id: ids.find(ours),
 		host: hosts.find((r) => r.proxied),
-		route: routes.find((r) => r.pattern === pattern && r.script === ctx.install.workerName),
-		// Another policy (usually the old provider's, naming its MX hosts), or a host requests can't reach us on.
-		inTheWay: [...ids.filter((r) => !ours(r)), ...hosts.filter((r) => !r.proxied)],
+		route: existing?.script === ctx.install.workerName ? existing : undefined,
+		// Another policy (usually the old provider's, naming its MX hosts): its id, a host requests can't reach us on,
+		// or a route sending the policy path to another Worker.
+		inTheWay: [
+			...ids.filter((r) => !ours(r)).map(record),
+			...hosts.filter((r) => ADDRESS.has(r.type) && !r.proxied).map(record),
+			...(existing && existing.script !== ctx.install.workerName
+				? [{ label: `the Workers route ${existing.pattern}`, need: "routes" as const, path: `/zones/${ctx.zoneId}/workers/routes/${existing.id}` }]
+				: []),
+		],
 	};
 }
 
 export async function mtaStsStatus(ctx: ZoneContext): Promise<StepStatus> {
 	const { id, host, route, inTheWay } = await parts(ctx);
 	if (inTheWay.length > 0) {
-		const records = inTheWay.map((r) => `the ${r.type} record at ${r.name}`).join(" and ");
-		return { state: "failed", detail: `${ctx.domain} already has an MTA-STS policy. Delete ${records} in Cloudflare DNS, then check again.` };
+		const labels = inTheWay.map((b) => b.label).join(" and ");
+		return { state: "failed", detail: `${ctx.domain} already has an MTA-STS policy. Delete ${labels} in Cloudflare, then check again.` };
 	}
 	return id && host && route ? { state: "done" } : { state: "todo" };
 }
@@ -89,7 +108,7 @@ export async function publishMtaSts(ctx: ZoneContext, options: RunOptions, befor
 	// Moving mail here (confirmed with the MX records) takes the old provider's policy with it: left in place, senders
 	// that check it would refuse to deliver to Cloudflare. Anything else is the admin's to remove.
 	if (inTheWay.length > 0 && !options.moveMail) return before;
-	for (const record of inTheWay) await ctx.cf.delete("dns", `/zones/${ctx.zoneId}/dns_records/${record.id}`);
+	for (const blocker of inTheWay) await ctx.cf.delete(blocker.need, blocker.path);
 	// Serve the policy before announcing it, so a sender that finds the id can always fetch the policy.
 	// 100:: is Cloudflare's documented placeholder for a proxied host that only a Worker answers.
 	if (!host) {

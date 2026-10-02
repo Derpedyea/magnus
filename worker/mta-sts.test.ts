@@ -53,8 +53,7 @@ const DnsInput = z.object({ type: z.string(), name: z.string(), content: z.strin
 const RouteInput = z.object({ pattern: z.string(), script: z.string() });
 
 /** Just enough of Cloudflare's DNS and Workers routes API, keeping what's written so a second run sees it. */
-function fakeZone(records: (z.infer<typeof DnsInput> & { id: string })[]) {
-	const routes: z.infer<typeof RouteInput>[] = [];
+function fakeZone(records: (z.infer<typeof DnsInput> & { id: string })[], routes: (z.infer<typeof RouteInput> & { id: string })[] = []) {
 	const writes: string[] = [];
 	vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
 		const url = new URL(input);
@@ -69,12 +68,14 @@ function fakeZone(records: (z.infer<typeof DnsInput> & { id: string })[]) {
 			writes.push(`add ${record.type} ${record.name}`);
 		} else if (method === "POST" && url.pathname.endsWith("/workers/routes")) {
 			const route = RouteInput.parse(body);
-			routes.push(route);
+			routes.push({ ...route, id: `w${routes.length + 1}` });
 			writes.push(`route ${route.pattern} → ${route.script}`);
 		} else if (method === "DELETE") {
-			const at = records.findIndex((r) => r.id === url.pathname.split("/").pop());
-			writes.push(`delete ${records[at]?.name}`);
-			records.splice(at, 1);
+			const id = url.pathname.split("/").pop();
+			const list = url.pathname.includes("/workers/routes/") ? routes : records;
+			const at = list.findIndex((r) => r.id === id);
+			const [gone] = list.splice(at, 1);
+			writes.push(`delete ${gone && "name" in gone ? gone.name : gone?.pattern}`);
 		} else throw new Error(`unexpected ${method} ${url.pathname}`);
 		return ok({});
 	});
@@ -102,13 +103,32 @@ describe("the MTA-STS step", () => {
 		const before = await mtaStsStatus(ctx);
 		expect(before).toEqual({
 			state: "failed",
-			detail: "example.com already has an MTA-STS policy. Delete the TXT record at _mta-sts.example.com in Cloudflare DNS, then check again.",
+			detail: "example.com already has an MTA-STS policy. Delete the TXT record at _mta-sts.example.com in Cloudflare, then check again.",
 		});
 		expect(await publishMtaSts(ctx, {}, before)).toBe(before);
 		expect(writes).toEqual([]);
 
 		expect(await publishMtaSts(ctx, { moveMail: true }, before)).toEqual({ state: "done" });
 		expect(writes[0]).toBe("delete _mta-sts.example.com");
+		expect(await mtaStsStatus(ctx)).toEqual({ state: "done" });
+	});
+
+	it("moves a policy that's proxied or served by another Worker, and keeps records beside it", async () => {
+		const verification = { id: "v", type: "TXT", name: "mta-sts.example.com", content: '"site-verification=abc"', proxied: false };
+		const proxiedId = { id: "p", type: "CNAME", name: "_mta-sts.example.com", content: "_mta-sts.mx.cloudflare.net", proxied: true };
+		const writes = fakeZone([verification, proxiedId], [{ id: "old-route", pattern: "mta-sts.example.com/.well-known/mta-sts.txt", script: "mta-sts-proxy" }]);
+		expect(await mtaStsStatus(ctx)).toMatchObject({
+			state: "failed",
+			detail: expect.stringContaining("Delete the CNAME record at _mta-sts.example.com and the Workers route mta-sts.example.com/.well-known/mta-sts.txt"),
+		});
+		expect(await publishMtaSts(ctx, { moveMail: true }, { state: "failed" })).toEqual({ state: "done" });
+		expect(writes).toEqual([
+			"delete _mta-sts.example.com",
+			"delete mta-sts.example.com/.well-known/mta-sts.txt",
+			"add AAAA mta-sts.example.com",
+			"route mta-sts.example.com/.well-known/mta-sts.txt → magnus",
+			"add CNAME _mta-sts.example.com",
+		]);
 		expect(await mtaStsStatus(ctx)).toEqual({ state: "done" });
 	});
 });
