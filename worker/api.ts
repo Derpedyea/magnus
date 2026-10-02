@@ -106,6 +106,18 @@ async function readPage(
 }
 
 const views = new Hono<AppEnv>()
+	.delete("/trash", zValidator("query", ScopeQuery), async (c) => {
+		const queries = (await planRequest(c, c.req.valid("query").in)).filter(canMatch);
+		// Each mailbox commits independently. Retrying after a partial failure is safe.
+		let deleted = 0;
+		for (const q of queries) {
+			const result = await c.env.MAILBOX.getByName(q.mailboxId).deleteTrash({ addresses: q.addresses });
+			if (result.blocked) return c.json({ error: "Mail is still queued or sending. Undo the send or wait for it to finish, then try again." }, 409);
+			deleted += result.deleted;
+		}
+		return c.json({ deleted });
+	})
+
 	.get("/threads", zValidator("query", ThreadsQuery), async (c) => {
 		const { label, cursor, in: scope } = c.req.valid("query");
 		return c.json(await readPage(c, scope, cursor, (stub, q, page) => stub.listThreads({ label, ...page, addresses: q.addresses })));
@@ -161,6 +173,13 @@ const mb = new Hono<AppEnv>()
 	.get("/threads/:threadId", async (c) => {
 		const detail = await c.var.mailbox.getThread(c.req.param("threadId"));
 		return detail ? c.json(detail) : c.json({ error: "Not found" }, 404);
+	})
+
+	.delete("/threads/:threadId", async (c) => {
+		const result = await c.var.mailbox.deleteTrash({ threadId: c.req.param("threadId") });
+		return result.blocked
+			? c.json({ error: "Mail is still queued or sending. Undo the send or wait for it to finish, then try again." }, 409)
+			: c.json({ deleted: result.deleted });
 	})
 
 	.post("/threads/modify", zValidator("json", ModifyThreadsSchema), async (c) => {

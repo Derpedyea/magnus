@@ -241,8 +241,10 @@ export class Mailbox extends DurableObject<Env> {
 	async destroy(): Promise<void> {
 		const mailboxId = this.ctx.id.name;
 		if (!mailboxId) return;
-		// If another mailbox can't be asked, keeping the originals is the safe side; the rest still goes.
-		await this.deleteOriginals().catch((err) => console.error(JSON.stringify({ msg: "originals kept", mailboxId, error: String(err) })));
+		// Preserve pending mail cleanup too. A failed check or delete leaves storage and this alarm for a retry.
+		await this.ctx.storage.setAlarm(Date.now() + TRASH_RETRY_MS);
+		this.sql.exec(`INSERT OR REPLACE INTO _meta (key, value) VALUES ('destroying', '1')`);
+		await this.deleteOriginals();
 		for (const prefix of [r2Keys.mailbox(mailboxId), r2Keys.upload(mailboxId, "")]) {
 			let cursor: string | undefined;
 			do {
@@ -252,8 +254,8 @@ export class Mailbox extends DurableObject<Env> {
 			} while (cursor);
 		}
 		for (const ws of this.ctx.getWebSockets()) ws.close(1000, "mailbox deleted");
-		await this.ctx.storage.deleteAlarm();
 		await this.ctx.storage.deleteAll();
+		await this.ctx.storage.deleteAlarm();
 	}
 
 	/**
@@ -263,7 +265,10 @@ export class Mailbox extends DurableObject<Env> {
 	 */
 	private async deleteOriginals(): Promise<void> {
 		const rows = this.sql
-			.exec<{ id: string; raw_key: string; received_at: number }>(`SELECT id, raw_key, received_at FROM messages WHERE raw_key IS NOT NULL`)
+			.exec<{ id: string; raw_key: string; received_at: number }>(
+				`SELECT id, raw_key, received_at FROM messages WHERE raw_key IS NOT NULL
+				 UNION SELECT id, raw_key, received_at FROM deleted_messages WHERE raw_key IS NOT NULL`,
+			)
 			.toArray();
 		const { results } = await this.env.DIRECTORY.prepare(`SELECT id FROM mailboxes`).all<{ id: string }>();
 		const others = new Set(results.map((r) => r.id));
@@ -298,7 +303,21 @@ export class Mailbox extends DurableObject<Env> {
 
 	// ─── Inbound ────────────────────────────────────────────────────────────
 
-	async ingest(input: IngestInput): Promise<{ threadId: string; duplicate: boolean }> {
+	async ingest(input: IngestInput): Promise<{ threadId: string; duplicate: boolean } | { deleted: true }> {
+		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) return { deleted: true };
+		if (this.sql.exec(`SELECT 1 FROM deleted_messages WHERE id = ?1`, input.id).toArray().length > 0) {
+			// The parser may already have rewritten these objects before it reached the tombstone.
+			// Arm recovery before recording cleanup, so a crash cannot strand those bytes.
+			await this.ctx.storage.setAlarm(Date.now());
+			this.ctx.storage.transactionSync(() => {
+				if (input.htmlKey) this.queueTrash(input.htmlKey);
+				for (const a of input.attachments) this.queueTrash(a.r2Key);
+				this.sql.exec(`UPDATE deleted_messages SET raw_key = ?2 WHERE id = ?1`, input.id, input.rawKey);
+			});
+			await this.emptyTrash();
+			await this.scheduleOutbox();
+			return { deleted: true };
+		}
 		const existing = this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM messages WHERE id = ?1`, input.id).toArray()[0];
 		if (existing) return { threadId: existing.thread_id, duplicate: true };
 
@@ -669,6 +688,61 @@ export class Mailbox extends DurableObject<Env> {
 
 	// ─── Mutations ──────────────────────────────────────────────────────────
 
+	/** Deletes only mail still in Trash at commit time, never an untrashed reply or an active send. Idempotent. */
+	async deleteTrash(input: AddressFilter & { threadId?: string }): Promise<{ blocked: boolean; deleted: number }> {
+		// This alarm is durable before the transaction. It recovers cleanup after a crash or a lost response.
+		await this.ctx.storage.setAlarm(Date.now());
+		const result = this.ctx.storage.transactionSync(() => {
+			const messages = this.sql.exec<{
+				id: string; thread_id: string; html_key: string | null; raw_key: string | null; received_at: number; pending: number;
+			}>(
+				`SELECT m.id, m.thread_id, m.html_key, m.raw_key, m.received_at,
+					EXISTS (SELECT 1 FROM outbox o WHERE o.message_id = m.id) OR m.delivery_status = 'sending' AS pending
+				 FROM messages m JOIN message_labels l ON l.message_id = m.id AND l.label = 'trash'
+				 WHERE (?1 IS NULL OR m.thread_id = ?1) AND ${IN_ADDRESSES("?2")}`,
+				input.threadId ?? null, addressParam(input),
+			).toArray();
+			if (messages.some((m) => m.pending)) return { blocked: true, deleted: 0, threadIds: [] };
+			const ids = JSON.stringify(messages.map((m) => m.id));
+			const attachments = this.sql.exec<{ r2_key: string }>(
+				`SELECT r2_key FROM attachments WHERE message_id IN (SELECT value FROM json_each(?1))`, ids,
+			).toArray();
+			for (const a of attachments) this.queueTrash(a.r2_key);
+			for (const m of messages) {
+				if (m.html_key) this.queueTrash(m.html_key);
+				this.sql.exec(`INSERT INTO deleted_messages (id, raw_key, received_at) VALUES (?1, ?2, ?3)`, m.id, m.raw_key, m.received_at);
+			}
+			this.sql.exec(`DELETE FROM messages_fts WHERE rowid IN (SELECT rowid FROM messages WHERE id IN (SELECT value FROM json_each(?1)))`, ids);
+			// Foreign keys cascade labels, addresses, files, delivery state, and send ids together.
+			this.sql.exec(`DELETE FROM messages WHERE id IN (SELECT value FROM json_each(?1))`, ids);
+			const threadIds = [...new Set(messages.map((m) => m.thread_id))];
+			for (const id of threadIds) this.rebuildThread(id);
+			return { blocked: false, deleted: messages.length, threadIds };
+		});
+		if (result.threadIds.length > 0) this.broadcast({ type: "threads.changed", threadIds: result.threadIds });
+		await this.emptyTrash();
+		await this.deleteTrashedOriginals();
+		await this.scheduleOutbox();
+		return { blocked: result.blocked, deleted: result.deleted };
+	}
+
+	private queueTrash(key: string): void {
+		this.sql.exec(`INSERT OR IGNORE INTO trash (r2_key) VALUES (?1)`, key);
+	}
+
+	/** Rebuild previews from surviving messages so deleted text and participants never linger in the list. */
+	private rebuildThread(threadId: string): void {
+		const left = this.sql.exec<{ date: number; snippet: string; from_json: string; to_json: string; cc_json: string }>(
+			`SELECT date, snippet, from_json, to_json, cc_json FROM messages WHERE thread_id = ?1 ORDER BY date, id`, threadId,
+		).toArray();
+		if (left.length === 0) {
+			this.sql.exec(`DELETE FROM threads WHERE id = ?1`, threadId);
+			return;
+		}
+		this.sql.exec(`UPDATE threads SET snippet = '', last_message_at = 0, participants = '[]' WHERE id = ?1`, threadId);
+		for (const m of left) this.touchThread(threadId, m.date, m.snippet, [JSON.parse(m.from_json), ...JSON.parse(m.to_json), ...JSON.parse(m.cc_json)]);
+	}
+
 	async modifyThreads(input: { threadIds: string[]; add?: string[]; remove?: string[] }): Promise<void> {
 		const add = input.add ?? [];
 		// Trash and spam imply leaving the inbox.
@@ -945,9 +1019,15 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	private async scheduleOutbox(): Promise<void> {
+		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) {
+			await this.ctx.storage.setAlarm(Date.now() + TRASH_RETRY_MS);
+			return;
+		}
 		const due = this.sql.exec<{ at: number | null }>(`SELECT min(send_at) AS at FROM outbox`).one().at;
 		const retry = this.sql.exec(`${DELETABLE_TRASH} LIMIT 1`).toArray().length > 0 ? Date.now() + TRASH_RETRY_MS : null;
-		const next = due === null ? retry : retry === null ? due : Math.min(due, retry);
+		const raw = this.sql.exec<{ at: number | null }>(`SELECT min(received_at) + ?1 AS at FROM deleted_messages WHERE raw_key IS NOT NULL`, INGEST_WINDOW_MS).one().at;
+		const times = [due, retry, raw === null ? null : Math.max(raw, Date.now() + TRASH_RETRY_MS)].filter((at) => at !== null);
+		const next = times.length > 0 ? Math.min(...times) : null;
 		if (next === null) {
 			await this.ctx.storage.deleteAlarm();
 			return;
@@ -978,7 +1058,9 @@ export class Mailbox extends DurableObject<Env> {
 
 	/** Drains due outbox rows. Each message is handled independently so one failure can't block the rest. */
 	override async alarm(): Promise<void> {
+		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) return this.destroy();
 		await this.emptyTrash();
+		await this.deleteTrashedOriginals();
 		const due = this.sql
 			.exec<{ message_id: string; attempts: number; payload: string; delivery_status: DeliveryStatus; thread_id: string }>(
 				`SELECT o.message_id, o.attempts, o.payload, m.delivery_status, m.thread_id
@@ -1112,8 +1194,29 @@ export class Mailbox extends DurableObject<Env> {
 			() => false,
 		);
 		if (deleted) this.sql.exec(`DELETE FROM trash WHERE r2_key IN (SELECT value FROM json_each(?1))`, JSON.stringify(keys));
-		// Here rather than left to each caller, so none can return without it.
-		else await this.scheduleOutbox();
+		// More than one batch, or an R2 failure: remaining work always gets another alarm.
+		await this.scheduleOutbox();
+	}
+
+	/** Shared originals wait out inbound retries, then go only if every other mailbox has let them go. */
+	private async deleteTrashedOriginals(): Promise<void> {
+		const rows = this.sql.exec<{ id: string; raw_key: string }>(
+			`SELECT id, raw_key FROM deleted_messages WHERE raw_key IS NOT NULL AND received_at <= ?1 LIMIT 1000`,
+			Date.now() - INGEST_WINDOW_MS,
+		).toArray();
+		if (rows.length === 0) return;
+		try {
+			const { results } = await this.env.DIRECTORY.prepare(`SELECT id FROM mailboxes WHERE id != ?1`).bind(this.mailboxId()).all<{ id: string }>();
+			const held = new Set((await Promise.all(results.map((m) => this.env.MAILBOX.getByName(m.id).holding(rows.map((r) => r.id))))).flat());
+			const keys = rows.filter((r) => !held.has(r.id)).map((r) => r.raw_key);
+			if (keys.length > 0) await this.env.MAIL.delete(keys);
+			// Another holder owns its original's eventual cleanup. Keep the id even after cleanup to block replay.
+			for (const row of rows) this.sql.exec(`UPDATE deleted_messages SET raw_key = NULL WHERE id = ?1 AND raw_key = ?2`, row.id, row.raw_key);
+		} catch (error) {
+			console.error(JSON.stringify({ msg: "deleted originals cleanup failed", mailboxId: this.mailboxId(), error: String(error) }));
+			// Fail closed: keep the jobs and retry both failed checks and failed R2 deletes.
+			await this.scheduleOutbox();
+		}
 	}
 
 	private finishSend(

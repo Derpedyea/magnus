@@ -76,6 +76,8 @@ export const api = {
 		parseResponse(client.search.$get({ query: { in: formatScope(scope), q, cursor: cursor || undefined } })),
 	counts: (scope: string[]) => parseResponse(client.counts.$get({ query: { in: formatScope(scope) } })),
 	thread: (mailboxId: string, threadId: string) => parseResponse(mailbox.threads[":threadId"].$get({ param: { mailboxId, threadId } })),
+	deleteThread: (mailboxId: string, threadId: string) => parseResponse(mailbox.threads[":threadId"].$delete({ param: { mailboxId, threadId } })),
+	emptyTrash: (scope: string[]) => parseResponse(client.trash.$delete({ query: { in: formatScope(scope) } })),
 	modify: (mailboxId: string, threadIds: string[], add: string[], remove: string[]) =>
 		parseResponse(mailbox.threads.modify.$post({ param: { mailboxId }, json: { threadIds, add, remove } })),
 	markRead: (mailboxId: string, threadIds: string[], read: boolean) =>

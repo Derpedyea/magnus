@@ -171,4 +171,9 @@ export const MIGRATIONS: string[] = [
 	CREATE TABLE trash (r2_key TEXT PRIMARY KEY);
 	CREATE INDEX attachments_r2_key ON attachments(r2_key);
 	`,
+	`
+	-- A queue replay must not resurrect permanently deleted mail. Keep only its ingest id; raw_key is
+	-- a cleanup job until no other mailbox/queued delivery needs the shared original.
+	CREATE TABLE deleted_messages (id TEXT PRIMARY KEY, raw_key TEXT, received_at INTEGER NOT NULL);
+	`,
 ];

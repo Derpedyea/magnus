@@ -13,7 +13,7 @@ import {
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, CircleAlertIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, CircleAlertIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +35,7 @@ import { appearance } from "../theme";
 import { BlockSender } from "./BlockSender";
 import type { Draft } from "./Composer";
 import { FileViewer } from "./FileViewer";
+import { PermanentDelete } from "./PermanentDelete";
 
 const route = getRouteApi("/_app/_mail/$view/$mailboxId/$threadId");
 
@@ -82,6 +83,9 @@ export function ThreadView() {
 	const inView = (address: string) => scope.size === 0 || scope.has(address.toLowerCase());
 	const starred = summary.labels.includes("starred");
 	const inInbox = summary.labels.includes("inbox");
+	const trashed = messages.filter((m) => m.labels.includes("trash")).length;
+	// An inbox conversation with an older trashed message still needs a way to trash its remaining replies.
+	const deleteForever = trashed > 0 && (view === "trash" || trashed === messages.length);
 
 	const action = (icon: React.ReactNode, label: string, onClick: () => void) => (
 		<Button variant="ghost" size="sm" onClick={onClick} className="text-muted-foreground">
@@ -92,11 +96,16 @@ export function ThreadView() {
 
 	return (
 		<article className="mx-auto max-w-4xl p-6">
+			<Button variant="ghost" size="sm" className="mb-3 lg:hidden" onClick={close}>
+				<ArrowLeftIcon data-icon="inline-start" /> Back
+			</Button>
 			<div className="mb-4 flex flex-wrap items-center gap-1 border-b pb-3">
 				{inInbox
 					? action(<ArchiveIcon />, "Archive", () => (modify.mutate({ verb: "archive", remove: ["inbox"] }), close()))
 					: action(<InboxIcon />, "Move to inbox", () => modify.mutate({ verb: "move to inbox", add: ["inbox"], remove: ["trash", "spam"] }))}
-				{action(<Trash2Icon />, "Trash", () => (modify.mutate({ verb: "move to trash", add: ["trash"] }), close()))}
+				{deleteForever
+					? <PermanentDelete key={`${mailboxId}/${threadId}`} thread={{ mailboxId, id: threadId, subject: summary.subject, count: trashed }} />
+					: action(<Trash2Icon />, "Trash", () => (modify.mutate({ verb: "move to trash", add: ["trash"] }), close()))}
 				{action(<OctagonAlertIcon />, "Spam", () => (modify.mutate({ verb: "mark as spam", add: ["spam"] }), close()))}
 				{starred
 					? action(<StarOffIcon />, "Unstar", () => modify.mutate({ verb: "unstar", remove: ["starred"] }))
