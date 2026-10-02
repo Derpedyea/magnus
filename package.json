@@ -13,12 +13,13 @@
   },
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "pnpm typecheck && pnpm test && vite build && pnpm test:setup",
     "preview": "vite preview",
-    "deploy": "pnpm typecheck && pnpm test && pnpm run build && wrangler deploy",
+    "deploy": "pnpm run build && wrangler deploy",
     "postinstall": "tsc -p tsconfig.worker.json --noCheck",
     "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.app.json && tsc -p tsconfig.test.json",
     "test": "vitest run",
+    "test:setup": "node --test scripts/setup.test.mjs",
     "cf-typegen": "wrangler types --strict-vars=false",
     "db:seed:local": "wrangler d1 migrations apply DIRECTORY --local && wrangler d1 execute DIRECTORY --local --file scripts/seed-dev.sql",
     "mail:test": "node scripts/send-test-email.mjs"
@@ -65,6 +66,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "miniflare": "5.20260926.1-alpha",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.1",

@@ -402,7 +402,10 @@ const routes = app
 	})
 
 	/** What the app needs before anyone signs in: whether to show /setup, and which sign-in options exist. */
-	.get("/config", async (c) => c.json({ setupRequired: !(await getInstall(c.env.DIRECTORY)), google: googleEnabled() }))
+	.get("/config", async (c) => {
+		const install = await getInstall(c.env.DIRECTORY);
+		return c.json({ setupRequired: !install || Boolean(install.setup), google: googleEnabled() });
+	})
 
 	.route("/setup", setup)
 

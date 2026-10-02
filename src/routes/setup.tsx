@@ -29,18 +29,30 @@ function Setup() {
 	const qc = useQueryClient();
 	const navigate = useNavigate();
 	const [token, setToken] = useState("");
-	// Reads Cloudflare and caches nothing.
-	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
-	const verify = useMutation({ mutationFn: setupApi.verify });
 	const [claimed, setClaimed] = useState<Claimed | null>(null);
 	const connect = useDomainConnect();
+	const onClaimed = (target: Claimed) => {
+		setClaimed(target);
+		connect.run({ domain: target.domain, moveMail: target.moveMail });
+	};
+	const verify = useMutation({
+		mutationFn: setupApi.verify,
+		onSuccess: (account) => {
+			if (account.claimed) onClaimed(account.claimed);
+		},
+		onSettled: () => qc.invalidateQueries({ queryKey: ["me"] }),
+	});
 	const account = verify.data;
 
-	// Setup is over. The app's guards read config from the cache, so fetch it fresh before going in.
-	const openInbox = async () => {
-		await qc.fetchQuery({ ...configQuery, staleTime: 0 });
-		await navigate({ to: "/" });
-	};
+	const finish = useMutation({
+		mutationFn: () => setupApi.finish(token),
+		onSuccess: async () => {
+			// The server confirmed activation. Fetch the guards' config fresh before navigating.
+			await qc.fetchQuery({ ...configQuery, staleTime: 0 });
+			await navigate({ to: "/" });
+		},
+		onSettled: () => qc.invalidateQueries({ queryKey: ["config"] }),
+	});
 
 	return (
 		<main className="flex min-h-full justify-center px-6 py-16 text-sm">
@@ -64,15 +76,7 @@ function Setup() {
 				</Section>
 
 				{account ? (
-					<ClaimForm
-						token={token}
-						zones={account.zones}
-						claimed={claimed}
-						onClaimed={(target) => {
-							setClaimed(target);
-							connect.run({ domain: target.domain, moveMail: target.moveMail });
-						}}
-					/>
+					<ClaimForm token={token} zones={account.zones} claimed={claimed} onClaimed={onClaimed} />
 				) : (
 					<>
 						<Section index={2} title="Your domain" />
@@ -86,7 +90,8 @@ function Setup() {
 							<ConnectChecklist steps={connect.steps} />
 							{connect.running ? null : (
 								<div className="flex gap-2">
-									<Button onClick={() => void openInbox()} variant={connect.done ? "default" : "outline"}>
+									<Button onClick={() => finish.mutate()} disabled={!connect.done || finish.isPending}>
+										{finish.isPending ? <Spinner data-icon="inline-start" /> : null}
 										Open inbox
 									</Button>
 									{connect.done ? null : (
@@ -96,6 +101,7 @@ function Setup() {
 									)}
 								</div>
 							)}
+							{finish.error ? <FieldError>{finish.error.message}</FieldError> : null}
 						</div>
 					) : null}
 				</Section>
@@ -146,7 +152,7 @@ function ClaimForm(props: { token: string; zones: Zone[]; claimed: Claimed | nul
 	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
 	const complete = useMutation({
 		mutationFn: setupApi.complete,
-		onSuccess: (_, input) => zone && props.onClaimed({ domain: zone.name, address: `${input.localPart}@${zone.name}`, moveMail }),
+		onSuccess: props.onClaimed,
 	});
 
 	if (props.claimed) {
@@ -163,7 +169,12 @@ function ClaimForm(props: { token: string; zones: Zone[]; claimed: Claimed | nul
 			<Section index={2} title="Your domain">
 				<p className="text-muted-foreground">
 					This Cloudflare account has no active domains.{" "}
-					<a className="text-foreground underline underline-offset-4" href="https://dash.cloudflare.com/?to=/:account/add-site" target="_blank" rel="noreferrer">
+					<a
+						className="text-foreground underline underline-offset-4"
+						href="https://dash.cloudflare.com/?to=/:account/add-site"
+						target="_blank"
+						rel="noreferrer"
+					>
 						Add one
 					</a>
 					, then connect again.
@@ -177,7 +188,7 @@ function ClaimForm(props: { token: string; zones: Zone[]; claimed: Claimed | nul
 			className="flex flex-col gap-10"
 			onSubmit={(e) => {
 				e.preventDefault();
-				complete.mutate({ token: props.token, zoneId, name: name.trim(), localPart: localPart.trim(), email: email.trim() });
+				complete.mutate({ token: props.token, zoneId, name: name.trim(), localPart: localPart.trim(), email: email.trim(), moveMail });
 			}}
 		>
 			<Section index={2} title="Your domain">
@@ -230,7 +241,15 @@ function ClaimForm(props: { token: string; zones: Zone[]; claimed: Claimed | nul
 					</Field>
 					<Field>
 						<FieldLabel htmlFor="email">Sign-in email</FieldLabel>
-						<Input id="email" type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@gmail.com" />
+						<Input
+							id="email"
+							type="email"
+							required
+							autoComplete="email"
+							value={email}
+							onChange={(e) => setEmail(e.target.value)}
+							placeholder="you@gmail.com"
+						/>
 						<FieldDescription>Sign-in codes go here, so use an address outside {zone?.name}.</FieldDescription>
 					</Field>
 					{complete.error ? <FieldError>{complete.error.message}</FieldError> : null}

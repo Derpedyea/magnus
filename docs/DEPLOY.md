@@ -11,14 +11,19 @@ and a domain whose DNS is on Cloudflare.
 Cloudflare copies the repository to your GitHub, creates the D1 database, R2 bucket, and queues, and deploys
 the Worker. Every push to that copy triggers Workers Builds.
 
-In the Worker's **Settings → Builds → Build configuration**, set **Build command** to:
+The button pre-fills **Build command** with `pnpm run build` and **Deploy command** with `pnpm run deploy`.
+Keep both defaults. The build script runs:
 
 ```sh
-pnpm typecheck && pnpm test && pnpm run build
+pnpm typecheck && pnpm test && vite build && pnpm test:setup
 ```
 
-Keep **Deploy command** as `npx wrangler deploy`. A failed typecheck, test, or build stops deployment;
-the current version keeps running. Build settings live in Cloudflare, so set this for each install.
+The deploy script also runs the build before publishing, so command-line deployments have the same checks.
+A failed typecheck, test, or build stops deployment; the current version keeps running. No build settings
+need changing after installation.
+
+`test:setup` runs the built Worker against fresh local D1, Durable Objects, and auth, with Cloudflare API
+responses supplied by a test fixture. It covers first-run setup, rollback, competing requests, and resume.
 
 **From the command line** instead:
 
@@ -50,6 +55,10 @@ page leads to `/setup`:
    subscription, and MTA-STS. Sending usually waits a minute for DNS; *Check again* picks it up.
 
 Then you're in. Everything else happens under **Admin** in the sidebar.
+
+Setup stays open until Cloudflare confirms all four steps. If you refresh, lose the connection, or close the
+page partway through, open the Worker again and paste your token to resume the same account and domain.
+It won't create a second account or repeat a pending DNS setup.
 
 ### The token's permissions
 

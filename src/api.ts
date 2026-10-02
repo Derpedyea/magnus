@@ -106,6 +106,7 @@ export const api = {
 export const setupApi = {
 	verify: (token: string) => parseResponse(client.setup.verify.$post({ json: { token } })),
 	complete: (json: Json<typeof client.setup.complete.$post>) => parseResponse(client.setup.complete.$post({ json })),
+	finish: (token: string) => parseResponse(client.setup.finish.$post({ json: { token } })),
 };
 
 const admin = client.admin;
