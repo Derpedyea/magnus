@@ -38,10 +38,13 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
 - **Big files go as links.** Whatever doesn't fit in a message is sent as a download link, like Gmail's Drive
   links. It keeps working until you stop sharing it from Sent.
 - **Live updates** over hibernatable WebSockets, so idle tabs cost nothing.
+- **Trash you can empty.** Permanently delete trashed messages in a conversation or empty Trash for the addresses
+  in view, with confirmation. Files still used by other mail stay; failed storage cleanup retries automatically.
 - **Hostile HTML stays contained**: streaming sanitizer, strict CSP, sandboxed iframe, and remote images
   blocked until you ask.
 - **Sign in with an emailed code**, or Google if you add it. There's no sign-up; only people you add can get in.
-- **Every raw message is kept in R2**, so a parsing bug is fixed by replaying the queue, not by losing mail.
+- **Raw messages are kept in R2**, so a parsing bug can be fixed by replaying the queue. Permanent deletion removes
+  unshared originals after the inbound retry window, and a replay cannot restore deleted mail.
 
 ## Deploy
 

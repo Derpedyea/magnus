@@ -5,20 +5,22 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import { useAccount } from "../hooks";
 import { listQuery } from "../queries";
+import { PermanentDelete } from "./PermanentDelete";
 
 const route = getRouteApi("/_app/_mail/$view");
 
-export function ThreadList() {
+export function ThreadList({ threadOpen }: { threadOpen: boolean }) {
 	const { view } = route.useParams();
 	const { scope, q } = route.useLoaderDeps();
 	// Another list starts at the top, not at the last one's scroll offset.
-	return <Threads key={`${view}/${scope.join()}/${q}`} view={view} scope={scope} q={q} />;
+	return <Threads key={`${view}/${scope.join()}/${q}`} view={view} scope={scope} q={q} threadOpen={threadOpen} />;
 }
 
 /** Only the rows near the viewport are rendered, and the next page loads as its placeholder row nears it. */
-function Threads({ view, scope, q }: { view: string; scope: string[]; q: string }) {
+function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]; q: string; threadOpen: boolean }) {
 	const account = useAccount();
 	const { data, hasNextPage, isFetching, isFetchNextPageError, fetchNextPage } = useSuspenseInfiniteQuery(listQuery(scope, view, q));
 	const threads = data.pages.flatMap((p) => p.threads);
@@ -59,8 +61,14 @@ function Threads({ view, scope, q }: { view: string; scope: string[]; q: string 
 	});
 
 	return (
-		<section ref={scrollRef} className="w-96 shrink-0 overflow-y-auto border-r">
-			{threads.length === 0 ? <p className="p-4 text-muted-foreground">{view === "search" ? "No matches." : "Nothing here."}</p> : null}
+		<section ref={scrollRef} className={cn("w-full min-w-0 shrink-0 overflow-y-auto border-r lg:w-96", threadOpen && "hidden lg:block")}>
+			{view === "trash" ? (
+				<div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b bg-background px-4 py-3">
+					<h2 className="font-medium">Trash</h2>
+					<PermanentDelete scope={scope} disabled={threads.length === 0} />
+				</div>
+			) : null}
+			{threads.length === 0 ? <p className="p-4 text-muted-foreground">{view === "search" ? "No matches." : view === "trash" ? "Trash is empty." : "Nothing here."}</p> : null}
 			<ul className="relative" style={{ height: rows.getTotalSize() }}>
 				{items.map((item) => {
 					const t = threads[item.index];
