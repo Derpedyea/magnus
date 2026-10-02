@@ -15,7 +15,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "deploy": "vite build && wrangler deploy",
+    "deploy": "pnpm typecheck && pnpm test && pnpm run build && wrangler deploy",
     "postinstall": "tsc -p tsconfig.worker.json --noCheck",
     "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.app.json",
     "test": "vitest run",

@@ -9,7 +9,16 @@ and a domain whose DNS is on Cloudflare.
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Derpedyea/magnus)
 
 Cloudflare copies the repository to your GitHub, creates the D1 database, R2 bucket, and queues, and deploys
-the Worker. Every push to that copy redeploys it.
+the Worker. Every push to that copy triggers Workers Builds.
+
+In the Worker's **Settings → Builds → Build configuration**, set **Build command** to:
+
+```sh
+pnpm typecheck && pnpm test && pnpm run build
+```
+
+Keep **Deploy command** as `npx wrangler deploy`. A failed typecheck, test, or build stops deployment;
+the current version keeps running. Build settings live in Cloudflare, so set this for each install.
 
 **From the command line** instead:
 
@@ -19,11 +28,10 @@ pnpm install
 npx wrangler login
 npx wrangler queues create magnus-inbound       # once; wrangler doesn't create queues itself
 npx wrangler queues create magnus-email-events
-pnpm run deploy        # creates the database and bucket on first run
+pnpm run deploy        # typechecks, tests, and builds; creates the database and bucket on first deploy
 ```
 
-Either way, nothing needs configuring: the D1 schema is applied by the Worker itself, and the session secret
-is generated on first run.
+The Worker applies the D1 schema itself and generates the session secret on first run.
 
 ## 2. Set up
 
@@ -108,15 +116,16 @@ Only people already added can sign in with Google, matched by their sign-in emai
 ## Updating
 
 With the button, your copy is a new repository in your GitHub account. Pull this one into it and push, and
-Workers Builds redeploys:
+Workers Builds runs the checks above before redeploying:
 
 ```sh
 git remote add upstream https://github.com/Derpedyea/magnus   # once
 git pull upstream main && git push
 ```
 
-From the command line, `git pull && pnpm run deploy`. New D1 migrations apply themselves when the updated
-Worker first runs.
+From the command line, `git pull && pnpm run deploy` runs the same checks before deployment. If an automatic
+build fails, open the Worker's **Deployments** page for its build log, fix the error, and push again. New D1
+migrations apply themselves when the updated Worker first runs.
 
 ## Operations cheat sheet
 
