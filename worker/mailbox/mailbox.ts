@@ -1039,9 +1039,7 @@ export class Mailbox extends DurableObject<Env> {
 			}
 
 			this.finishSend(row.message_id, row.thread_id, { status: "sent", providerMessageId, payload, handoff });
-			// It went from the kept copies, so the uploads can go. Any left behind are reaped by the uploads/ lifecycle rule.
-			const uploads = payload.attachments.filter(isUpload).map((a) => a.r2Key);
-			if (uploads.length > 0) await this.env.MAIL.delete(uploads).catch(() => {});
+			await this.emptyTrash();
 		}
 
 		await this.scheduleOutbox();
@@ -1142,6 +1140,10 @@ export class Mailbox extends DurableObject<Env> {
 				now,
 			);
 			if (!sent) return outcome.status;
+			// Commit upload cleanup with the completed send. A failure or restart retries deletion without resending.
+			for (const a of sent.payload.attachments.filter(isUpload)) {
+				this.sql.exec(`INSERT OR IGNORE INTO trash (r2_key) VALUES (?1)`, a.r2Key);
+			}
 			this.removeLabels([messageId], ["outbox"]);
 			this.addLabels([messageId], ["sent"]);
 			if (headerId) {

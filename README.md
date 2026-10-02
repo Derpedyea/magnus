@@ -105,8 +105,8 @@ Nothing is really sent locally. Outbound mail, sign-in codes included, is writte
 | Command | What it does |
 | --- | --- |
 | `pnpm dev` | The app and Worker in watch mode, with local D1/R2/Queues in `.wrangler/state/` |
-| `pnpm typecheck` | `tsc` for the app and the Worker |
-| `pnpm test` | Unit tests |
+| `pnpm typecheck` | `tsc` for the app, Worker, and test fixtures |
+| `pnpm test` | Unit tests and isolated Worker tests for mail, send alarms, and multi-user API permissions |
 | `pnpm run deploy` | Typecheck, test, build, then deploy to your Cloudflare account |
 | `pnpm cf-typegen` | Regenerate `worker-configuration.d.ts` after changing `wrangler.jsonc` |
 

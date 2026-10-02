@@ -17,7 +17,7 @@
     "preview": "vite preview",
     "deploy": "pnpm typecheck && pnpm test && pnpm run build && wrangler deploy",
     "postinstall": "tsc -p tsconfig.worker.json --noCheck",
-    "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.app.json",
+    "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.app.json && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "cf-typegen": "wrangler types --strict-vars=false",
     "db:seed:local": "wrangler d1 migrations apply DIRECTORY --local && wrangler d1 execute DIRECTORY --local --file scripts/seed-dev.sql",

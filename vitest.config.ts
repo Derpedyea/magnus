@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
 
-// Tests cover plain logic in shared/ and worker/, so they skip vite.config.ts and its Workers runtime.
+// Logic tests run in Node; tests/ starts isolated Workers through Wrangler's local test harness.
+// Both skip the app's Vite config so the test run doesn't start a development server.
 export default defineConfig({});
