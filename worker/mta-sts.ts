@@ -50,7 +50,8 @@ async function mxIsCloudflare(domain: string): Promise<boolean> {
 type ZoneContext = Omit<DomainContext, "db">;
 
 const DnsRecord = z.object({ id: z.string(), type: z.string(), name: z.string(), content: z.string(), proxied: z.boolean().default(false) });
-const Route = z.object({ id: z.string(), pattern: z.string(), script: z.string().optional() });
+// A route with no script (null) turns Workers off for its pattern.
+const Route = z.object({ id: z.string(), pattern: z.string(), script: z.string().nullish() });
 /** Records that decide where requests for a name go; others (a verification TXT, say) can stay beside ours. */
 const ADDRESS = new Set(["A", "AAAA", "CNAME"]);
 

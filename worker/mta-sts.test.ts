@@ -53,7 +53,7 @@ const DnsInput = z.object({ type: z.string(), name: z.string(), content: z.strin
 const RouteInput = z.object({ pattern: z.string(), script: z.string() });
 
 /** Just enough of Cloudflare's DNS and Workers routes API, keeping what's written so a second run sees it. */
-function fakeZone(records: (z.infer<typeof DnsInput> & { id: string })[], routes: (z.infer<typeof RouteInput> & { id: string })[] = []) {
+function fakeZone(records: (z.infer<typeof DnsInput> & { id: string })[], routes: { id: string; pattern: string; script: string | null }[] = []) {
 	const writes: string[] = [];
 	vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
 		const url = new URL(input);
@@ -87,7 +87,8 @@ const OLD_POLICY = { id: "old", type: "TXT", name: "_mta-sts.example.com", conte
 
 describe("the MTA-STS step", () => {
 	it("serves the policy before announcing it, and then has nothing left to do", async () => {
-		const writes = fakeZone([]);
+		// An unrelated route that turns Workers off has no script.
+		const writes = fakeZone([], [{ id: "off", pattern: "example.com/static/*", script: null }]);
 		expect(await mtaStsStatus(ctx)).toEqual({ state: "todo" });
 		expect(await publishMtaSts(ctx, {}, { state: "todo" })).toEqual({ state: "done" });
 		expect(writes).toEqual([
