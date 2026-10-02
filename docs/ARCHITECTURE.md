@@ -137,6 +137,7 @@ locally, so suggestions need no round trip.
 raw/2026/09/26/<ingestId>.eml          raw inbound, shared across fan-out, kept while a mailbox has it (source of truth)
 m/<mailboxId>/<messageId>/body.html     HTML body (served through the sanitizer)
 m/<mailboxId>/<messageId>/att/<attId>   attachments (inbound, and outbound once the outbox picks them up)
+m/<mailboxId>/draft-files/<userId>/<uuid> account-owned draft sources; conflict copies can share one source
 uploads/<mailboxId>/<uuid>              composer uploads; a lifecycle rule (DEPLOY.md) can reap abandoned ones
 ```
 
@@ -197,12 +198,14 @@ no dead-letter queue: the Deploy button can't be relied on to create one.)
    never as links. The forward joins the original's thread, with the same threading headers as a reply.
 3. **Undo send / scheduled send:** until `send_at`, `cancelSend()` removes the message. The UI shows a 10 s
    undo toast. Delays up to 7 days work as scheduled send.
-4. `alarm()` drains due rows. Each first copies its attachments from `uploads/` to `m/…`, and reads the attached
+4. `alarm()` drains due rows. Each first copies its composer attachments to permanent message keys under `m/…`, and reads the attached
    ones, while still `queued`, so Undo still works and a copy cut short is redone. Undo deletes the message's own
    files from R2 (copies, a retry's files, its body), retried by the alarm if R2 refuses, except any a forward still
    sends from: a forward uses the original's files. Then
    it's marked `sending` → `env.EMAIL.send()` → marked `sent`, with the platform `messageId` stored as
-   `provider_message_id` and registered in `thread_refs`, and the uploads are deleted.
+   `provider_message_id` and registered in `thread_refs`, and legacy uploads enter retryable cleanup.
+   Account-owned draft sources remain available to other drafts and queued sends. Only hourly draft cleanup
+   removes them when no references remain and they are at least 24 hours old, including after a failed send is deleted.
    Transient errors (`E_RATE_LIMIT_EXCEEDED`, `E_DAILY_LIMIT_EXCEEDED`, `E_INTERNAL_SERVER_ERROR`,
    `E_DELIVERY_FAILED`, and `E_STORAGE` when R2 fails a copy or read) back off from 30 s up to 1 h, for at most 8
    attempts. Other errors are permanent and marked `failed` with the code.

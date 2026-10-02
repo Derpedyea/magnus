@@ -4,11 +4,13 @@
  *   raw/2026/09/26/<ingestId>.eml             raw inbound message, shared across fan-out
  *   m/<mailboxId>/<messageId>/body.html        rendered HTML body (cid: rewritten)
  *   m/<mailboxId>/<messageId>/att/<attId>      attachment bytes
+ *   m/<mailboxId>/draft-files/<userId>/<uuid> account-owned draft sources, shared by conflict copies
  *   uploads/<mailboxId>/<uuid>                 composer uploads awaiting send
  *
  * Everything a mailbox keeps sits under m/<mailboxId>/ so deleting a mailbox is a prefix delete, plus its originals
  * under raw/ that no other mailbox holds (Mailbox.deleteOriginals()).
  * Uploads are copied under m/ as their message goes out; put a 14-day lifecycle rule on "uploads/" to reap abandoned ones.
+ * Draft sources also get per-message copies; only reference-aware draft cleanup removes the sources.
  */
 export const r2Keys = {
 	raw(ingestId: string, receivedAt: number): string {

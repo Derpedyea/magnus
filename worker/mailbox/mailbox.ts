@@ -740,6 +740,8 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	private queueTrash(key: string): void {
+		// Draft sources can still belong to another draft. Only the account's reference-aware cleanup owns them.
+		if (isDraftFile(key)) return;
 		this.sql.exec(`INSERT OR IGNORE INTO trash (r2_key) VALUES (?1)`, key);
 	}
 
@@ -883,9 +885,9 @@ export class Mailbox extends DurableObject<Env> {
 		};
 
 		const snippet = makeSnippet(text);
-		// A forward's files are the original's (keepAttachments copies only uploads). Asked in the same turn as the insert,
+		// A forward's files are the original's (keepAttachments copies only composer sources). Asked with the insert,
 		// so either the original's cancel sees this message has them (emptyTrash) or this sees they're gone.
-		const forwarded = attachments.filter((a) => !isUpload(a)).map((a) => a.r2Key);
+		const forwarded = attachments.filter((a) => !needsAttachmentCopy(a)).map((a) => a.r2Key);
 		const threadId = this.ctx.storage.transactionSync(() => {
 			// Another retry can commit while HTML is written. Check in the insert's transaction, after the await.
 			const existing = this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM messages WHERE id = ?1`, id).toArray()[0];
@@ -947,7 +949,7 @@ export class Mailbox extends DurableObject<Env> {
 			.toArray()[0];
 		if (!row) return false;
 		// Its own files in R2 go with it: copies an attempt made (keepAttachments), a retry's, and its body. A forward's are
-		// the original's, and trash keeps any another message still has. Uploads stay: Undo reopens the draft with them.
+		// the original's, and trash keeps any another message still has. Composer sources stay for Undo's new draft.
 		// (An attempt still copying clears up after itself.)
 		const own = this.sql
 			.exec<{ id: string; r2_key: string }>(`SELECT id, r2_key FROM attachments WHERE message_id = ?1`, messageId)
@@ -1177,15 +1179,15 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	/**
-	 * Uploads live under a lifecycle-reaped prefix, so each gets a permanent copy with the message before it's sent,
-	 * and is sent from there: nothing after the send can lose it. Returns the attachments at their permanent keys.
-	 * The payload still names the uploads, so a retry skips any whose row already moved.
+	 * Composer files get a permanent copy with each sent message. Legacy uploads may expire; account-owned draft
+	 * sources can be shared by conflict copies and are kept until draft cleanup finds no references.
+	 * The payload still names the sources, so a retry skips any whose row already moved.
 	 * Streamed rather than buffered: linked files run up to MAX_UPLOAD_BYTES.
 	 */
 	private async keepAttachments(messageId: string, attachments: StoredAttachment[]): Promise<StoredAttachment[]> {
 		const kept: StoredAttachment[] = [];
 		for (const a of attachments) {
-			if (!isUpload(a)) {
+			if (!needsAttachmentCopy(a)) {
 				kept.push(a);
 				continue;
 			}
@@ -1208,11 +1210,11 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	/**
-	 * Removes what keepAttachments made for a message that won't be sent. Its uploads stay: Undo reopens the draft with
-	 * them. The copies go through trash, so any R2 won't delete now are tried again rather than left for good.
+	 * Removes what keepAttachments made for a message that won't be sent. Its sources stay for Undo's new draft.
+	 * The copies go through trash, so any R2 won't delete now are tried again rather than left for good.
 	 */
 	private async deleteCopies(messageId: string, attachments: StoredAttachment[]): Promise<void> {
-		for (const a of attachments.filter(isUpload)) {
+		for (const a of attachments.filter(needsAttachmentCopy)) {
 			this.sql.exec(`INSERT OR IGNORE INTO trash (r2_key) VALUES (?1)`, r2Keys.attachment(this.mailboxId(), messageId, a.id));
 		}
 		await this.emptyTrash();
@@ -1279,8 +1281,8 @@ export class Mailbox extends DurableObject<Env> {
 				now,
 			);
 			if (!sent) return outcome.status;
-			// Commit upload cleanup with the completed send. A failure or restart retries deletion without resending.
-			for (const a of sent.payload.attachments.filter(isUpload)) {
+			// Commit legacy-upload cleanup with the send. Shared draft sources belong to cleanDraftFiles instead.
+			for (const a of sent.payload.attachments.filter((file) => file.r2Key.startsWith("uploads/"))) {
 				this.sql.exec(`INSERT OR IGNORE INTO trash (r2_key) VALUES (?1)`, a.r2Key);
 			}
 			this.removeLabels([messageId], ["outbox"]);
@@ -1372,10 +1374,12 @@ export class Mailbox extends DurableObject<Env> {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-/** A composer upload that hasn't been given a permanent copy yet (see Mailbox.keepAttachments). */
-function isUpload(a: StoredAttachment): boolean {
-	return a.r2Key.startsWith("uploads/") || /^m\/[^/]+\/draft-files\//.test(a.r2Key);
+/** Composer sources need per-message copies, independently of who owns their eventual cleanup. */
+function needsAttachmentCopy(a: StoredAttachment): boolean {
+	return a.r2Key.startsWith("uploads/") || isDraftFile(a.r2Key);
 }
+
+function isDraftFile(key: string): boolean { return /^m\/[^/]+\/draft-files\//.test(key); }
 
 /** R2 failing mid-copy passes, so it's retried like a transient send error. */
 function storageFailed(err: unknown): never {
