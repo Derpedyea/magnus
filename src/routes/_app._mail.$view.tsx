@@ -5,12 +5,14 @@ import { cn } from "@/lib/utils";
 import { errorMessage } from "../api";
 import { ThreadList } from "../components/ThreadList";
 import { listQuery } from "../queries";
+import { DraftList } from "../components/DraftList";
+import { Centered } from "../components/Centered";
 
 /** A label (/inbox, /receipts, …) or /search?q=…: the thread list, with the open thread beside it. */
 export const Route = createFileRoute("/_app/_mail/$view")({
 	validateSearch: (search: Record<string, unknown>): { q?: string } => ({ q: typeof search.q === "string" ? search.q : undefined }),
 	loaderDeps: ({ search }) => ({ scope: parseScope(search.in), q: search.q ?? "" }),
-	loader: ({ context, params, deps }) => context.queryClient.ensureInfiniteQueryData(listQuery(deps.scope, params.view, deps.q)),
+	loader: ({ context, params, deps }) => params.view === "drafts" ? undefined : context.queryClient.ensureInfiniteQueryData(listQuery(deps.scope, params.view, deps.q)),
 	component: MailView,
 	pendingComponent: () => (
 		<div className="w-96 shrink-0 border-r p-4 text-muted-foreground">
@@ -23,6 +25,9 @@ export const Route = createFileRoute("/_app/_mail/$view")({
 /** On narrow screens the list and conversation take turns, keeping Trash actions reachable. */
 function MailView() {
 	const threadOpen = Boolean(useMatch({ from: "/_app/_mail/$view/$mailboxId/$threadId", shouldThrow: false }));
+	const { view } = Route.useParams();
+	const { scope } = Route.useLoaderDeps();
+	if (view === "drafts") return <><DraftList scope={scope} /><main className="hidden min-w-0 flex-1 md:block"><Centered>Select a draft to continue</Centered></main></>;
 	return (
 		<>
 			<ThreadList threadOpen={threadOpen} />

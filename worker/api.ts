@@ -28,6 +28,7 @@ import { ComposeSchema, MarkReadSchema, MAX_ATTACHMENTS, ModifyThreadsSchema, Sh
 import { isAPIError } from "better-auth/api";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
+import { DraftSchema } from "#shared/drafts";
 import { admin } from "./admin";
 import { auth, currentUser, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
@@ -36,6 +37,8 @@ import { fileHeaders, renderEmailHtml, serveFile } from "./html";
 import type { Mailbox } from "./mailbox/mailbox";
 import { getInstall } from "./settings";
 import { setup } from "./setup";
+import { draftRoutes } from "./draft-api";
+import { claimDraft, finishDraftSend, readDraft } from "./drafts";
 
 type MailboxStub = DurableObjectStub<Mailbox>;
 
@@ -247,7 +250,10 @@ const mb = new Hono<AppEnv>()
 
 		const filename = decodeURIComponent(c.req.header("X-Filename") ?? "attachment").slice(0, 255);
 		const contentType = c.req.header("Content-Type") || "application/octet-stream";
-		const r2Key = r2Keys.upload(c.var.mailboxId, crypto.randomUUID());
+		const r2Key = r2Keys.draftFile(c.var.mailboxId, c.var.user.id, crypto.randomUUID());
+		// Register before object I/O: a failed/abandoned upload still has retryable cleanup work.
+		await c.env.DIRECTORY.prepare(`INSERT INTO draft_files (r2_key, mailbox_id, user_id, created_at) VALUES (?1, ?2, ?3, ?4)`)
+			.bind(r2Key, c.var.mailboxId, c.var.user.id, Date.now()).run();
 		const obj = await c.env.MAIL.put(r2Key, body, { httpMetadata: { contentType }, customMetadata: { filename } });
 		const ref: SendAttachmentRef = { r2Key, filename, contentType, size: obj.size };
 		return c.json(ref, 201);
@@ -255,6 +261,29 @@ const mb = new Hono<AppEnv>()
 
 	.post("/send", zValidator("json", ComposeSchema), async (c) => {
 		const req = c.req.valid("json");
+		const db = c.env.DIRECTORY;
+		const userId = c.var.user.id;
+		let saved = req.draft ? await readDraft(db, userId, req.draft.id) : null;
+		if (req.draft) {
+			if (!saved || saved.mailbox_id !== c.var.mailboxId || saved.revision !== req.draft.revision || saved.state === "deleted") {
+				return c.json({ error: "This draft changed on another device or was discarded" }, 409);
+			}
+			if (saved.state === "sent" && saved.queued) return c.json(QueuedSchema.parse(JSON.parse(saved.queued)), 202);
+			if (saved.state === "sending" && saved.send_id) {
+				const queued = await c.var.mailbox.queuedSend(saved.send_id);
+				if (queued) {
+					await finishDraftSend(db, userId, saved.id, queued);
+					return c.json(queued, 202);
+				}
+			}
+			const content = DraftSchema.parse(JSON.parse(saved.content));
+			const fields = { from: req.from, to: req.to, cc: req.cc, bcc: req.bcc, subject: req.subject, text: req.text, attachments: req.attachments, replyToMessageId: req.replyToMessageId };
+			const expected = { from: content.from, to: content.to, cc: content.cc, bcc: content.bcc, subject: content.subject, text: content.text, attachments: content.attachments, replyToMessageId: content.replyToMessageId };
+			if (JSON.stringify(fields) !== JSON.stringify(expected) || req.forward?.messageId !== content.forward?.message.id
+				|| JSON.stringify(req.forward?.attachmentIds) !== JSON.stringify(content.forward?.files.map((f) => f.id))) {
+				return c.json({ error: "Save your latest edits before sending" }, 409);
+			}
+		}
 
 		const identity = await sendIdentity(c, req.from);
 		if (!identity) return c.json({ error: `This mailbox can't send as ${req.from}` }, 403);
@@ -263,7 +292,8 @@ const mb = new Hono<AppEnv>()
 		const uploadPrefix = r2Keys.upload(c.var.mailboxId, "");
 		const attachments: SendAttachmentRef[] = [];
 		for (const a of req.attachments) {
-			if (!a.r2Key.startsWith(uploadPrefix)) return c.json({ error: "Unknown attachment" }, 400);
+			const draftPrefix = r2Keys.draftFile(c.var.mailboxId, userId, "");
+			if (!a.r2Key.startsWith(uploadPrefix) && !a.r2Key.startsWith(draftPrefix)) return c.json({ error: "Unknown attachment" }, 400);
 			const head = await c.env.MAIL.head(a.r2Key);
 			if (!head) return c.json({ error: `Attachment expired: ${a.filename}` }, 400);
 			attachments.push({ ...a, size: head.size });
@@ -307,7 +337,13 @@ const mb = new Hono<AppEnv>()
 		const recipients = [...new Set([...req.to, ...req.cc, ...req.bcc].map((a) => normalizeAddress(a.address)))];
 		const local = await localTo(c, identity.address, recipients);
 
+		// Freeze the revision before queueing. A crash leaves a recoverable send intent, retried with the same id.
+		if (req.draft) {
+			saved = await claimDraft(db, userId, req.draft.id, req.draft.revision, `draft-${req.draft.id}`);
+			if (!saved) return c.json({ error: "This draft changed on another device or was discarded" }, 409);
+		}
 		const queued = await c.var.mailbox.enqueueSend({
+			id: saved?.send_id ?? undefined,
 			mailboxId: c.var.mailboxId,
 			from: { address: identity.address, name: identity.displayName ?? c.var.user.name },
 			to: req.to,
@@ -324,7 +360,11 @@ const mb = new Hono<AppEnv>()
 			localRecipients: local,
 			localOnly: local.length === recipients.length,
 		});
-		if (!queued) return c.json({ error: "The message to forward is gone" }, 404);
+		if (!queued) {
+			if (saved) await db.prepare(`UPDATE drafts SET state = 'active', send_id = NULL WHERE id = ?1 AND user_id = ?2 AND state = 'sending'`).bind(saved.id, userId).run();
+			return c.json({ error: "The message to forward is gone" }, 404);
+		}
+		if (saved) await finishDraftSend(db, userId, saved.id, queued);
 		return c.json(queued, 202);
 	})
 
@@ -394,9 +434,12 @@ const routes = app
 	})
 
 	.route("/", views)
+	.route("/drafts", draftRoutes)
 	.route("/mailboxes/:mailboxId", mb);
 
 /** Every route the app calls, for its typed client (src/api.ts). */
 export type AppType = typeof routes;
 
 app.all("*", (c) => c.json({ error: "Not found" }, 404));
+
+const QueuedSchema = z.object({ id: z.string(), threadId: z.string(), sendAt: z.number() });

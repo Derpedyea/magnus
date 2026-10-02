@@ -447,7 +447,8 @@ The web app is the only client, so it has to be good on phones and good enough t
    manifest + service worker so it installs to the home screen on iOS and Android.
 2. **Push notifications** (Web Push, VAPID): the Mailbox DO already knows the moment mail lands. iOS only
    delivers web push to home-screen apps, which item 1 covers.
-3. **Drafts** (autosave into the DO).
+3. **Drafts**: implemented with private, account-scoped D1 storage, version checks, and a device-local recovery
+   journal. Attachments live outside the temporary upload prefix; hourly cleanup keeps referenced files.
 4. **Keyboard shortcuts** (j/k, e archive, r reply, c compose, / search), **bulk select**.
 5. **Mailbox import** from your previous provider (export to `.eml`, e.g. Proton's Import-Export app). Upload
    the raw files to R2 and enqueue `InboundJob`s; the existing ingest path does the rest.

@@ -139,9 +139,12 @@ migrations apply themselves when the updated Worker first runs.
 ```sh
 npx wrangler tail magnus                                      # live logs: accepted/rejected/ingested, sends
 npx wrangler d1 execute DIRECTORY --remote --command "SELECT address, domain FROM addresses"
-# Optional: delete attachments uploaded to drafts that were never sent, after 14 days.
+# Optional: reap legacy temporary uploads. Saved draft files use a separate prefix and do not expire.
 npx wrangler r2 bucket lifecycle add magnus-mail reap-uploads uploads/ --expire-days 14
 ```
+
+An hourly Worker cron cleans up unreferenced draft files after 24 hours. Saved drafts and queued sends retain
+their files; failed cleanup is retried on the next run. The cron is configured in `wrangler.jsonc`.
 
 A message that still fails to parse after its retries is logged as `queue message failed`, with its raw copy's
 R2 key. Send its job to the inbound queue again to replay it.

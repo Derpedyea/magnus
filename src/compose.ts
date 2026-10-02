@@ -1,17 +1,20 @@
 import { type Address, escapeMarkdown } from "#shared";
 import { createStore } from "@tanstack/react-store";
-import type { Draft } from "./components/Composer";
+import type { Draft, SavedDraft } from "#shared/drafts";
 
 /**
  * The open composer. It floats above whatever route is showing, so any view can start a draft
  * (Compose, Reply, Undo send) without threading callbacks through the router. Each opening has its own `id`, so
- * the composer starts over for it rather than keeping what was typed into the one before. A `restored` draft came
- * back through Undo or Reopen and is held nowhere else, so it's worth keeping even untouched.
+ * the composer starts over for it rather than keeping what was typed into the one before. `draftId` follows its
+ * persisted content across openings; Undo starts a new draft because sending consumed the old id.
  */
-export const compose = createStore<{ id: number; draft: Draft; restored: boolean } | null>(null);
+export const compose = createStore<{ id: number; draftId: string; draft: Draft; restored: boolean; saved?: SavedDraft } | null>(null);
 
 let opened = 0;
-export const openDraft = (draft: Draft, restored = false) => compose.setState(() => ({ id: ++opened, draft, restored }));
+export const openDraft = (draft: Draft, restored = false, saved?: SavedDraft) => compose.setState(() => ({ id: ++opened, draftId: saved?.id ?? crypto.randomUUID(), draft, restored, saved }));
+
+/** Recovery/conflict copies already have an id in this account's local journal. */
+export const openLocalDraft = (draftId: string, draft: Draft) => compose.setState(() => ({ id: ++opened, draftId, draft, restored: true }));
 /** With `id`, only if that opening is still the open one: a send that finishes after you've opened another draft leaves it be. */
 export const closeDraft = (id?: number) => compose.setState((open) => (id === undefined || open?.id === id ? null : open));
 

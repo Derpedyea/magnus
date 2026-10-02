@@ -638,6 +638,19 @@ export class Mailbox extends DurableObject<Env> {
 		};
 	}
 
+	/** Draft-file cleanup must keep originals until a queued send has copied them. */
+	async holdsFile(key: string): Promise<boolean> {
+		return this.sql.exec(`SELECT 1 FROM attachments WHERE r2_key = ?1 LIMIT 1`, key).toArray().length > 0;
+	}
+
+	/** A saved draft's stable send id also recovers an acknowledgement lost after the queue insert. */
+	async queuedSend(id: string): Promise<SendQueued | null> {
+		const row = this.sql.exec<{ thread_id: string; date: number }>(`SELECT thread_id, date FROM messages WHERE id = ?1`, id).toArray()[0];
+		if (!row) return null;
+		await this.scheduleOutbox();
+		return { id, threadId: row.thread_id, sendAt: row.date };
+	}
+
 	async getMessageBlobs(messageId: string): Promise<MessageBlobs | null> {
 		const msg = this.sql
 			.exec<{ raw_key: string | null; html_key: string | null }>(`SELECT raw_key, html_key FROM messages WHERE id = ?1`, messageId)
@@ -788,9 +801,29 @@ export class Mailbox extends DurableObject<Env> {
 
 	/** Null when a forward's original was cancelled while the forward was put together, taking its files with it. */
 	async enqueueSend(input: SendInput): Promise<SendQueued | null> {
+		if (!input.id) return this.enqueueSendOnce(input);
+		const pending = this.pendingSends.get(input.id);
+		if (pending) return pending;
+		// Coalesce concurrent retries before R2 I/O, so a duplicate cannot overwrite the HTML with new file-link tokens.
+		const task = this.enqueueSendOnce(input);
+		this.pendingSends.set(input.id, task);
+		try {
+			return await task;
+		} finally {
+			this.pendingSends.delete(input.id);
+		}
+	}
+
+	private readonly pendingSends = new Map<string, Promise<SendQueued | null>>();
+
+	private async enqueueSendOnce(input: SendInput): Promise<SendQueued | null> {
 		this.bindMailboxId(input.mailboxId);
+		if (input.id) {
+			const queued = await this.queuedSend(input.id);
+			if (queued) return queued;
+		}
 		const now = Date.now();
-		const id = ulid(now);
+		const id = input.id ?? ulid(now);
 		const sendAt = now + Math.max(0, input.delayMs);
 
 		const parent = input.parentMessageId
@@ -854,6 +887,9 @@ export class Mailbox extends DurableObject<Env> {
 		// so either the original's cancel sees this message has them (emptyTrash) or this sees they're gone.
 		const forwarded = attachments.filter((a) => !isUpload(a)).map((a) => a.r2Key);
 		const threadId = this.ctx.storage.transactionSync(() => {
+			// Another retry can commit while HTML is written. Check in the insert's transaction, after the await.
+			const existing = this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM messages WHERE id = ?1`, id).toArray()[0];
+			if (existing) return existing.thread_id;
 			if (forwarded.some((key) => this.sql.exec(`SELECT 1 FROM attachments WHERE r2_key = ?1`, key).toArray().length === 0)) return null;
 			const threadId = parent?.thread_id ?? this.createThread(input.subject, now);
 			const { rowid } = this.sql
@@ -894,7 +930,7 @@ export class Mailbox extends DurableObject<Env> {
 
 		await this.scheduleOutbox();
 		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
-		return { id, threadId, sendAt };
+		return this.queuedSend(id);
 	}
 
 	/**
@@ -1338,7 +1374,7 @@ export class Mailbox extends DurableObject<Env> {
 
 /** A composer upload that hasn't been given a permanent copy yet (see Mailbox.keepAttachments). */
 function isUpload(a: StoredAttachment): boolean {
-	return a.r2Key.startsWith("uploads/");
+	return a.r2Key.startsWith("uploads/") || /^m\/[^/]+\/draft-files\//.test(a.r2Key);
 }
 
 /** R2 failing mid-copy passes, so it's retried like a transient send error. */

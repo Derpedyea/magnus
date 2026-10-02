@@ -217,6 +217,8 @@ export interface SendAttachmentRef {
 }
 
 export interface SendInput {
+	/** Stable for retries of one saved draft's send; checked again after attachment I/O. */
+	id?: string;
 	/** Must equal the DO name; recorded so the outbox alarm can build R2 keys. */
 	mailboxId: string;
 	from: Address;

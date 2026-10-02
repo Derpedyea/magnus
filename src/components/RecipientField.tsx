@@ -16,6 +16,9 @@ export function RecipientField(props: {
 	label: string;
 	value: Address[];
 	onChange: (value: Address[]) => void;
+	/** Owned by the draft so uncommitted text also survives autosave and device changes. */
+	inputValue: string;
+	onInputChange: (value: string) => void;
 	onBlur: () => void;
 	/** Lowercase addresses in any recipient field, which aren't suggested again. */
 	taken: ReadonlySet<string>;
@@ -24,11 +27,10 @@ export function RecipientField(props: {
 	/** Trailing controls, like Cc/Bcc. */
 	children?: ReactNode;
 }) {
-	const { value, onChange } = props;
+	const { value, onChange, inputValue: typed, onInputChange: setTyped } = props;
 	const id = useId();
 	const anchor = useComboboxAnchor();
 	const contacts = useQuery(contactsQuery).data ?? [];
-	const [typed, setTyped] = useState("");
 	const [open, setOpen] = useState(false);
 	const highlighted = useRef<Address | undefined>(undefined);
 	const suggestions = matchContacts(contacts, typed, props.taken, SUGGESTIONS);

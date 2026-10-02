@@ -5,6 +5,8 @@ import { Centered } from "../components/Centered";
 import { SignOutButton } from "../components/SignOutButton";
 import { configQuery, meQuery } from "../queries";
 import { endSession } from "../session";
+import { DraftProvider } from "../drafts";
+import { useAccount } from "../hooks";
 
 /** Everything behind sign-in. Its guard runs before any child loads, so nothing fetches mail while signed out. */
 export const Route = createFileRoute("/_app")({
@@ -21,7 +23,7 @@ export const Route = createFileRoute("/_app")({
 			throw error;
 		}
 	},
-	component: Outlet,
+	component: SignedIn,
 	pendingComponent: () => (
 		<Centered>
 			<Spinner />
@@ -37,3 +39,8 @@ export const Route = createFileRoute("/_app")({
 		</Centered>
 	),
 });
+
+function SignedIn() {
+	const { user } = useAccount();
+	return <DraftProvider key={user.id} userId={user.id}><Outlet /></DraftProvider>;
+}

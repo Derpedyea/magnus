@@ -28,4 +28,8 @@ export const r2Keys = {
 	upload(mailboxId: string, uploadId: string): string {
 		return `uploads/${mailboxId}/${uploadId}`;
 	},
+	/** Account-owned draft files stay outside the lifecycle-reaped uploads/ prefix. */
+	draftFile(mailboxId: string, userId: string, uploadId: string): string {
+		return `m/${mailboxId}/draft-files/${userId}/${uploadId}`;
+	},
 };

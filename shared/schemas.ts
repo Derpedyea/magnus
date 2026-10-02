@@ -39,6 +39,8 @@ export const ComposeSchema = z
 			})
 			.optional(),
 		attachments: z.array(AttachmentRefSchema).max(MAX_ATTACHMENTS).default([]),
+		/** Saved draft consumed by this send. Its revision locks edits on other devices. */
+		draft: z.object({ id: z.uuid(), revision: z.number().int().positive() }).optional(),
 		/** Undo window. 0 sends on the next alarm tick; larger values are scheduled send. */
 		delaySeconds: z.number().int().min(0).max(7 * 24 * 3600).default(10),
 	})

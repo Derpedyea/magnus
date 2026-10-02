@@ -2,6 +2,7 @@ import { type Address, formatScope, type StepId } from "#shared";
 import { adminClient, emailOTPClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/client";
 import { hc, type InferRequestType, parseResponse } from "hono/client";
+import type { DraftWrite } from "#shared/drafts";
 // Built declarations, not the worker's source: see tsconfig.app.json.
 import type { AppType } from "#worker/api";
 
@@ -69,6 +70,10 @@ export const api = {
 	me: () => parseResponse(client.me.$get()),
 	saveSignature: (address: string, text: string) => parseResponse(client.signatures.$put({ json: { address, text } })),
 	contacts: () => parseResponse(client.contacts.$get()),
+	drafts: () => parseResponse(client.drafts.$get()),
+	draft: (id: string) => parseResponse(client.drafts[":id"].$get({ param: { id } })),
+	saveDraft: (id: string, json: DraftWrite, signal: AbortSignal) => parseResponse(client.drafts[":id"].$put({ param: { id }, json }, { init: { signal } })),
+	discardDraft: (id: string, revision: number, signal: AbortSignal) => parseResponse(client.drafts[":id"].$delete({ param: { id }, json: { revision } }, { init: { signal } })),
 	/** One page of a list; `cursor` is the previous page's `next`, or "" for the first. */
 	threads: (scope: string[], label: string, cursor: string) =>
 		parseResponse(client.threads.$get({ query: { in: formatScope(scope), label, cursor: cursor || undefined } })),
