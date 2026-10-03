@@ -84,7 +84,8 @@ export function MarkdownEditor({
 
 	return (
 		<>
-			<EditorContent editor={editor} />
+			{/* No box of its own, so the editable area sizes against the editor's container (a phone's composer fills with it). */}
+			<EditorContent editor={editor} className="contents" />
 			<Formatting editor={editor} />
 		</>
 	);

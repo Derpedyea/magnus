@@ -1,10 +1,12 @@
 import { useSelector } from "@tanstack/react-store";
-import { Outlet, useNavigate, useSearch } from "@tanstack/react-router";
-import { SearchIcon } from "lucide-react";
+import { Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { SearchIcon, SquarePenIcon } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import type { Identity } from "./api";
 import { compose, openDraft, withSignature } from "./compose";
 import { AccountMenu } from "./components/AccountMenu";
@@ -25,6 +27,8 @@ export function App() {
 	const navigate = useNavigate();
 	const q = useSearch({ strict: false, select: (s) => s.q });
 	const [search, setSearch] = useState(q ?? "");
+	// Below lg, an open thread covers the header and list (routes/_app._mail.$view.tsx).
+	const threadOpen = useParams({ strict: false, select: (p) => p.threadId !== undefined });
 	const live = useLive(mailboxes.map((m) => m.id));
 	const status = live ? "Live updates connected" : "Reconnecting…";
 	// Fetched now, so it opens at once.
@@ -53,7 +57,7 @@ export function App() {
 		<SidebarProvider defaultOpen={!document.cookie.includes("sidebar_state=false")} className="h-full text-sm">
 			<Sidebar mailboxes={mailboxes} addresses={addresses} colors={colors} isAdmin={user.isAdmin} onCompose={newDraft} />
 			<SidebarInset className="min-w-0">
-				<header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
+				<header className={cn("flex h-12 shrink-0 items-center gap-2 border-b px-3", threadOpen && "max-lg:invisible")}>
 					<SidebarTrigger />
 					<form
 						className="max-w-xl flex-1"
@@ -82,6 +86,14 @@ export function App() {
 					<Outlet />
 				</div>
 			</SidebarInset>
+
+			{/* Phones keep the sidebar in a drawer, so Compose floats over the list instead, like Gmail's. */}
+			{threadOpen ? null : (
+				<Button onClick={newDraft} className="fixed right-4 bottom-4 z-10 h-14 gap-2 rounded-2xl px-5 text-base shadow-lg md:hidden">
+					<SquarePenIcon className="size-5" />
+					Compose
+				</Button>
+			)}
 
 			<OpenDraft identities={identities} />
 

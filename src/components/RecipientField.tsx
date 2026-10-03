@@ -94,7 +94,7 @@ export function RecipientField(props: {
 						autoFocus={props.autoFocus}
 						autoComplete="off"
 						spellCheck={false}
-						className="h-7 bg-transparent"
+						className="h-7 bg-transparent text-base md:text-sm"
 						onKeyDown={(e) => {
 							const pick = showing ? highlighted.current : undefined;
 							if ((e.key === "," || e.key === ";") && typed.trim()) {

@@ -15,14 +15,18 @@ export const Route = createFileRoute("/_app/_mail/$view")({
 	loader: ({ context, params, deps }) => params.view === "drafts" ? undefined : context.queryClient.ensureInfiniteQueryData(listQuery(deps.scope, params.view, deps.q)),
 	component: MailView,
 	pendingComponent: () => (
-		<div className="w-96 shrink-0 border-r p-4 text-muted-foreground">
+		<div className="w-full p-4 text-muted-foreground lg:w-96 lg:shrink-0 lg:border-r">
 			<Spinner />
 		</div>
 	),
-	errorComponent: ({ error }) => <p className="w-96 shrink-0 border-r p-4 text-destructive">{errorMessage(error)}</p>,
+	errorComponent: ({ error }) => <p className="w-full p-4 text-destructive lg:w-96 lg:shrink-0 lg:border-r">{errorMessage(error)}</p>,
 });
 
-/** On narrow screens the list and conversation take turns, keeping Trash actions reachable. */
+/**
+ * Below lg there's room for one pane, so the list and the open thread take turns, like a phone's stack of screens:
+ * the thread covers the header and list, which stay laid out underneath (invisible, see App and ThreadList), so going
+ * back finds the list scrolled where it was.
+ */
 function MailView() {
 	const threadOpen = Boolean(useMatch({ from: "/_app/_mail/$view/$mailboxId/$threadId", shouldThrow: false }));
 	const { view } = Route.useParams();
@@ -31,7 +35,12 @@ function MailView() {
 	return (
 		<>
 			<ThreadList threadOpen={threadOpen} />
-			<main className={cn("min-w-0 flex-1 overflow-y-auto lg:block", !threadOpen && "hidden")}>
+			<main
+				className={cn(
+					"min-w-0 flex-1 overflow-y-auto",
+					threadOpen ? "max-lg:absolute max-lg:inset-0 max-lg:z-20 max-lg:bg-background motion-safe:max-lg:animate-in motion-safe:max-lg:fade-in motion-safe:max-lg:slide-in-from-right-8" : "max-lg:hidden",
+				)}
+			>
 				<Outlet />
 			</main>
 		</>
