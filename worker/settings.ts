@@ -3,25 +3,19 @@ import type { Sealed } from "./vault";
 
 // Install-wide values the Worker learns rather than being configured with, in D1's `settings` table.
 
-const InstallSchema = z.object({ accountId: z.string(), workerName: z.string() });
+const InstallSchema = z.object({
+	accountId: z.string(),
+	workerName: z.string(),
+	/** Kept until Cloudflare confirms every activation step. A lost response or restart can resume it. */
+	setup: z.object({ domain: z.string(), zoneId: z.string(), email: z.string(), address: z.string(), moveMail: z.boolean() }).optional(),
+});
 
-/** Where this install lives in Cloudflare, found by setup. Its presence means setup is done. */
+/** Where this install lives in Cloudflare. Existing installs without `setup` are already complete. */
 export type Install = z.infer<typeof InstallSchema>;
 
 export async function getInstall(db: D1Database): Promise<Install | null> {
 	const row = await db.prepare(`SELECT value FROM settings WHERE key = 'install'`).first<{ value: string }>();
 	return row ? InstallSchema.parse(JSON.parse(row.value)) : null;
-}
-
-/** The row doubles as a lock: of two setups racing, only one gets true. */
-export async function claimInstall(db: D1Database, install: Install): Promise<boolean> {
-	const { meta } = await db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('install', ?1)`).bind(JSON.stringify(install)).run();
-	return meta.changes === 1;
-}
-
-/** Undoes a claim whose setup failed, so it can be tried again. */
-export async function releaseInstall(db: D1Database): Promise<void> {
-	await db.prepare(`DELETE FROM settings WHERE key = 'install'`).run();
 }
 
 /**
@@ -52,10 +46,16 @@ type Stores = Pick<Env, "DIRECTORY" | "VAULT">;
 const vault = (env: Stores) => env.VAULT.getByName("vault");
 
 export async function saveCloudflareToken(env: Stores, token: string): Promise<void> {
+	await (await cloudflareTokenStatement(env, token)).run();
+}
+
+/** Setup includes the ciphertext in its account transaction; the vault key can safely be reused after rollback. */
+export async function cloudflareTokenStatement(env: Stores, token: string): Promise<D1PreparedStatement> {
 	const sealed = await vault(env).seal(token);
-	await env.DIRECTORY.prepare(`INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value`)
-		.bind(TOKEN, JSON.stringify(sealed))
-		.run();
+	return env.DIRECTORY.prepare(`INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value`).bind(
+		TOKEN,
+		JSON.stringify(sealed),
+	);
 }
 
 /** Null when none is saved, or the vault can't open it. */

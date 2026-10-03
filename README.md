@@ -55,7 +55,7 @@ You need a Cloudflare account on **Workers Paid** ($5/month, which includes 3,00
 domain on Cloudflare DNS. Everything else for a few people fits in the included usage.
 
 1. **Click Deploy to Cloudflare** above. Cloudflare copies Magnus to your GitHub, creates its database,
-   storage, and queues, and deploys it. There's nothing to fill in.
+   storage, and queues, and deploys it. Keep the pre-filled build and deploy commands; no secrets are needed here.
 2. **Open the Worker's URL** (`magnus.<your-subdomain>.workers.dev`). It starts at setup.
 3. **Paste a Cloudflare API token, pick your domain, and create your account.** Magnus turns the domain on
    and signs you in.

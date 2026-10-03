@@ -104,7 +104,8 @@ export async function domainStatus(ctx: DomainContext): Promise<Record<StepId, S
 
 export async function runStep(ctx: DomainContext, step: StepId, options: RunOptions): Promise<StepStatus> {
 	const before = await STATUS[step](ctx);
-	const status = before.state === "done" ? before : await act(ctx, step, options, before);
+	// Pending DNS is already provisioned. Repeating the create call can fail with "domain already exists".
+	const status = before.state === "done" || before.state === "pending" ? before : await act(ctx, step, options, before);
 	// Whether it just happened or was already so, the directory follows what Cloudflare says.
 	if (step === "catch-all") await syncFlags(ctx, { receiving: status.state === "done" && (await routingStatus(ctx)).state === "done" });
 	if (step === "sending") await syncFlags(ctx, { sending: status.state === "done" });
@@ -132,7 +133,7 @@ async function act(ctx: DomainContext, step: StepId, options: RunOptions, before
 				matchers: [{ type: "all" }],
 				actions: [{ type: "worker", value: [ctx.install.workerName] }],
 			});
-			return done;
+			return catchAllStatus(ctx);
 		case "sending":
 			await ctx.cf.post(z.unknown(), "sending", `/zones/${ctx.zoneId}/email/sending/subdomains`, { name: ctx.domain });
 			return sendingStatus(ctx);
@@ -146,7 +147,7 @@ async function act(ctx: DomainContext, step: StepId, options: RunOptions, before
 				destination: { type: "queues.queue", queue_id: queue.queue_id },
 				events: EVENTS,
 			});
-			return done;
+			return eventsStatus(ctx);
 		}
 		case "mta-sts":
 			return publishMtaSts(ctx, options, before);
