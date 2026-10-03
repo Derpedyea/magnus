@@ -122,7 +122,10 @@ Nothing is really sent locally. Outbound mail, sign-in codes included, is writte
 - **Outbound messages max out at 5 MiB** including attachments (inbound allows 25 MiB). Bigger files, up to
   100 MB each, go as download links instead.
 
-Next up: a mobile layout and installable app, push notifications, drafts, forwarding, and importing mail
+Drafts autosave to your account and are available from Drafts on any signed-in device. Close keeps a draft;
+the trash button discards it. Conflicting edits from two devices can be kept as a separate copy.
+
+Next up: a mobile layout and installable app, push notifications, forwarding, and importing mail
 from other providers. The full list is in [the roadmap](docs/ARCHITECTURE.md#8-roadmap).
 
 ## License

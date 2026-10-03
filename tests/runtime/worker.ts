@@ -6,6 +6,7 @@ import { signInWithoutCode } from "../../worker/auth";
 import { email, queue } from "../../worker/mail/inbound";
 import { ingest } from "../../worker/mail/ingest";
 import { Mailbox as ProductionMailbox } from "../../worker/mailbox/mailbox";
+import { cleanDraftFiles } from "../../worker/drafts";
 import { NOW } from "./clock";
 
 export { Vault } from "../../worker/vault";
@@ -128,6 +129,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	override async email(message: ForwardableEmailMessage) { await atTestTime(() => email(message, controlled(this.env))); }
 	login(address: string) { return signInWithoutCode(new Request("https://magnus.test/api/auth/sign-in/email-otp"), address); }
 	parse(job: InboundJob) { return ingest(controlled(this.env), job); }
+	cleanDrafts() { return cleanDraftFiles(controlled(this.env), now); }
 	setNow(value: number) { now = value; }
 	setSendErrors(codes: string[]) { sendErrors = codes; }
 	failNext(operation: Operation, prefix = "", count = 1) { failures.push({ operation, prefix, remaining: count }); }

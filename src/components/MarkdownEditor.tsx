@@ -24,6 +24,7 @@ export function MarkdownEditor({
 	onBlur,
 	placeholder,
 	autoFocus,
+	editable = true,
 	className,
 	"aria-label": label,
 	"aria-labelledby": labelledBy,
@@ -35,6 +36,7 @@ export function MarkdownEditor({
 	placeholder?: string;
 	/** Puts the cursor at the start, above any signature or quote. */
 	autoFocus?: boolean;
+	editable?: boolean;
 	className?: string;
 	"aria-label"?: string;
 	"aria-labelledby"?: string;
@@ -60,6 +62,7 @@ export function MarkdownEditor({
 	const editor = useEditor({
 		extensions,
 		content,
+		editable,
 		autofocus: autoFocus ? "start" : false,
 		editorProps,
 		onUpdate: ({ editor, transaction }) => {

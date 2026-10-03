@@ -10,6 +10,7 @@
 	// First visit goes to <name>.<subdomain>.workers.dev/setup. Add a custom domain whenever you like.
 	"workers_dev": true,
 	"preview_urls": false,
+	"triggers": { "crons": ["0 * * * *"] },
 	"observability": {
 		"enabled": true,
 		"head_sampling_rate": 1

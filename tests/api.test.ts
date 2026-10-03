@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fixture, type Fixture, inbound, type Mailboxes } from "./runtime/fixture";
 import { z } from "zod";
-import { r2Keys } from "#shared";
+import { r2Keys, type IngestInput } from "#shared";
 
 describe("API permissions", () => {
 	let f: Fixture;
@@ -18,11 +18,17 @@ describe("API permissions", () => {
 		await f.env.MAIL.put(message.htmlKey!, "<p>Secret content</p>");
 		await f.env.MAIL.put(message.rawKey, "From: sender@outside.test\r\n\r\nSecret content");
 		await f.env.MAIL.put(key, "%PDF");
-		({ threadId } = await f.env.MAILBOX.getByName(ids.bob).ingest({ ...message, attachments: [{
+		({ threadId } = await ingest(ids.bob, { ...message, attachments: [{
 			id: "file", filename: "receipt.pdf", contentType: "application/pdf", size: 4, contentId: null, inline: false,
 			r2Key: key, link: { token: "private-file", shared: true },
 		}] }));
 	});
+
+	async function ingest(mailboxId: string, input: IngestInput) {
+		const result = await f.env.MAILBOX.getByName(mailboxId).ingest(input);
+		if ("deleted" in result) throw new Error("Fixture message was deleted");
+		return result;
+	}
 
 	function request(path: string, method = "GET", body?: unknown, session = cookie) {
 		return f.worker.fetch(`https://magnus.test/api${path}`, {
@@ -61,7 +67,7 @@ describe("API permissions", () => {
 	});
 
 	it("lets the owner and shared mailbox members read, and checks membership again after revocation", async () => {
-		const shared = await f.env.MAILBOX.getByName(ids.shared).ingest(inbound(ids.shared, "shared-message"));
+		const shared = await ingest(ids.shared, inbound(ids.shared, "shared-message"));
 		const bob = await f.login("bob");
 		expect((await request(`/mailboxes/${ids.bob}/threads/${threadId}`, "GET", undefined, bob)).status).toBe(200);
 		for (const session of [cookie, bob]) {
@@ -78,7 +84,7 @@ describe("API permissions", () => {
 	});
 
 	it("scopes every aggregate view to memberships, including a forged address filter", async () => {
-		const own = await f.env.MAILBOX.getByName(ids.alice).ingest(inbound(ids.alice, "own-message"));
+		const own = await ingest(ids.alice, inbound(ids.alice, "own-message"));
 		const threads = await request("/threads");
 		expect(await threads.json()).toMatchObject({ threads: [{ id: own.threadId, mailboxId: ids.alice }], next: null });
 		expect(await (await request("/search?q=Secret")).json()).toMatchObject({ threads: [{ id: own.threadId, mailboxId: ids.alice }] });

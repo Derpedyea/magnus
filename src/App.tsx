@@ -101,7 +101,7 @@ function OpenDraft(props: { identities: Identity[] }) {
 	// Keyed by opening: the composer's form only reads its draft when it mounts.
 	return (
 		<Suspense>
-			{open ? <Composer key={open.id} id={open.id} identities={props.identities} initial={open.draft} restored={open.restored} /> : null}
+			{open ? <Composer key={open.id} id={open.id} draftId={open.draftId} saved={open.saved} identities={props.identities} initial={open.draft} restored={open.restored} /> : null}
 		</Suspense>
 	);
 }

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { ClockIcon, InboxIcon, MailsIcon, OctagonAlertIcon, SendIcon, SettingsIcon, ShieldIcon, SquarePenIcon, StarIcon, TagIcon, Trash2Icon, type LucideIcon } from "lucide-react";
+import { ClockIcon, FilePenIcon, InboxIcon, MailsIcon, OctagonAlertIcon, SendIcon, SettingsIcon, ShieldIcon, SquarePenIcon, StarIcon, TagIcon, Trash2Icon, type LucideIcon } from "lucide-react";
 import { useEffect, useEffectEvent, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -23,10 +23,12 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { formatScope, type Me, parseScope } from "#shared";
 import { useScope } from "../hooks";
 import { countsQuery } from "../queries";
+import { useDraftList } from "./DraftList";
 
 const SYSTEM_VIEWS = [
 	{ label: "inbox", name: "Inbox", icon: InboxIcon },
 	{ label: "starred", name: "Starred", icon: StarIcon },
+	{ label: "drafts", name: "Drafts", icon: FilePenIcon },
 	{ label: "sent", name: "Sent", icon: SendIcon },
 	{ label: "outbox", name: "Outbox", icon: ClockIcon },
 	{ label: "all", name: "All mail", icon: MailsIcon },
@@ -55,6 +57,7 @@ export function Sidebar(props: {
 	// Stays lit while a thread from this view is open.
 	const view = useParams({ strict: false, select: (p) => p.view });
 	const counts = useQuery(countsQuery(scope));
+	const draftList = useDraftList(scope);
 	const byLabel = new Map(counts.data?.labels.map((c) => [c.label, c]));
 	const unreadByAddress = new Map(counts.data?.addresses.map((a) => [a.address, a.unread]));
 	const userLabels = counts.data?.labels.filter((c) => !SYSTEM.has(c.label)).map((c) => c.label) ?? [];
@@ -129,6 +132,7 @@ export function Sidebar(props: {
 
 	const viewRow = (label: string, name: string, Icon: LucideIcon) => {
 		const unread = label === "inbox" || !SYSTEM.has(label) ? (byLabel.get(label)?.unread ?? 0) : 0;
+		const count = label === "drafts" ? draftList.drafts.length : unread;
 		return (
 			<SidebarMenuItem key={label}>
 				<SidebarMenuButton
@@ -142,7 +146,7 @@ export function Sidebar(props: {
 					</RowIcon>
 					<span>{name}</span>
 				</SidebarMenuButton>
-				{unread > 0 ? <SidebarMenuBadge>{unread}</SidebarMenuBadge> : null}
+				{count > 0 ? <SidebarMenuBadge>{count}</SidebarMenuBadge> : null}
 			</SidebarMenuItem>
 		);
 	};

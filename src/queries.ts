@@ -12,6 +12,9 @@ export const meQuery = queryOptions({ queryKey: ["me"], queryFn: api.me });
 /** Recipient suggestions. Up to a thousand, so it's kept for a while rather than refetched on every mail event. */
 export const contactsQuery = queryOptions({ queryKey: ["contacts"], queryFn: api.contacts, staleTime: 5 * 60_000, select: (r) => r.contacts });
 
+/** Account-private drafts. Focus/reconnect refresh immediately; polling brings other devices' edits into view. */
+export const draftsQuery = queryOptions({ queryKey: ["drafts"], queryFn: api.drafts, staleTime: 5000, refetchInterval: 10_000 });
+
 /** A label's threads, or search results when the view is "search", a page at a time. Refetching refetches every page loaded. */
 export const listQuery = (scope: string[], view: string, q: string) =>
 	infiniteQueryOptions({

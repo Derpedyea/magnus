@@ -4,6 +4,7 @@ import { links } from "./links";
 import { email, queue } from "./mail/inbound";
 import { migrate } from "./migrate";
 import { mtaStsPolicy, POLICY_PATH } from "./mta-sts";
+import { cleanDraftFiles } from "./drafts";
 
 export { Mailbox } from "./mailbox/mailbox";
 export { Vault } from "./vault";
@@ -26,5 +27,14 @@ export default {
 	async queue(batch, env) {
 		await migrate(env.DIRECTORY);
 		await queue(batch, env);
+	},
+	async scheduled(_event, env) {
+		await migrate(env.DIRECTORY);
+		try {
+			await cleanDraftFiles(env, Date.now());
+		} catch (error) {
+			console.error(JSON.stringify({ msg: "draft cleanup failed", error: String(error) }));
+			throw error;
+		}
 	},
 } satisfies ExportedHandler<Env>;
