@@ -15,6 +15,8 @@ export async function setupFixture({ root = process.cwd(), port = 0 } = {}) {
 		foreignMx: false,
 		ignoreCatchAll: false,
 		failPath: null,
+		dnsRecords: [],
+		routes: [],
 	};
 	const calls = [];
 	// Cloudflare's button may rename the Worker. Follow Vite's generated deploy path instead of its default name.
@@ -45,8 +47,8 @@ export async function setupFixture({ root = process.cwd(), port = 0 } = {}) {
 			assetConfig: { not_found_handling: "single-page-application" },
 		},
 		outboundService: async (request) => {
-			const { pathname } = new URL(request.url);
-			const path = pathname.replace("/client/v4", "");
+			const url = new URL(request.url);
+			const path = url.pathname.replace("/client/v4", "");
 			calls.push({ method: request.method, path });
 			const ok = (result) => Response.json({ success: true, errors: [], result });
 			const failure = (status, message) => Response.json({ success: false, errors: [{ code: 9999, message }], result: null }, { status });
@@ -57,7 +59,28 @@ export async function setupFixture({ root = process.cwd(), port = 0 } = {}) {
 			if (path.startsWith("/accounts/account/workers/scripts/magnus-fixture/versions/")) return ok({});
 			if (path === "/zones") return ok([{ id: "zone", name: "setup.example" }]);
 			if (path === "/zones/zone") return ok({ id: "zone", name: "setup.example", account: { id: "account" } });
-			if (path === "/zones/zone/dns_records") return ok(state.foreignMx ? [{ id: "foreign", content: "mx.google.com" }] : []);
+			// DNS and routes survive runtime restarts with the provider state, and retries read their writes.
+			if (path === "/zones/zone/dns_records") {
+				if (request.method === "POST") {
+					const record = { ...await request.json(), id: `dns-${state.dnsRecords.length + 1}` };
+					state.dnsRecords.push(record);
+					return ok(record);
+				}
+				const foreign = { id: "foreign", type: "MX", name: "setup.example", content: "mx.google.com", proxied: false };
+				const records = [...state.dnsRecords, ...(state.foreignMx ? [foreign] : [])];
+				return ok(records.filter((record) =>
+					(!url.searchParams.has("type") || record.type === url.searchParams.get("type")) &&
+					(!url.searchParams.has("name") || record.name === url.searchParams.get("name")),
+				));
+			}
+			if (path === "/zones/zone/workers/routes") {
+				if (request.method === "POST") {
+					const route = { ...await request.json(), id: `route-${state.routes.length + 1}` };
+					state.routes.push(route);
+					return ok(route);
+				}
+				return ok(state.routes);
+			}
 			if (path === "/zones/zone/dns_records/foreign" && request.method === "DELETE") {
 				state.foreignMx = false;
 				return ok({});

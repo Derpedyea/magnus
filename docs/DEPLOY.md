@@ -56,7 +56,7 @@ page leads to `/setup`:
 
 Then you're in. Everything else happens under **Admin** in the sidebar.
 
-Setup stays open until Cloudflare confirms all four steps. If you refresh, lose the connection, or close the
+Setup stays open until Cloudflare confirms every activation step. If you refresh, lose the connection, or close the
 page partway through, open the Worker again and paste your token to resume the same account and domain.
 It won't create a second account or repeat a pending DNS setup.
 

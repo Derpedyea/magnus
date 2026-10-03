@@ -18,7 +18,7 @@ async function client(fixture) {
 	};
 }
 
-test("fresh install: ownership, atomic account, pending DNS, lost response, resume and finish", async (t) => {
+test("fresh install: ownership, atomic account, pending DNS, lost response, resume, MTA-STS and finish", async (t) => {
 	const fixture = await setupFixture();
 	t.after(() => fixture.close());
 	const request = await client(fixture);
@@ -50,6 +50,17 @@ test("fresh install: ownership, atomic account, pending DNS, lost response, resu
 	assert.equal(directory.mailboxes.length, 1);
 	assert.equal(directory.addresses.length, 1);
 	fixture.state.dnsReady = true;
+	// All mail steps are ready, but the new encryption step must also be confirmed before setup closes.
+	assert.equal((await resumed("/setup/finish", { token: account.token })).status, 409);
+	const policy = await resumed("/admin/domains/setup.example/steps/mta-sts", { moveMail: false });
+	assert.equal(policy.status, 200, await policy.clone().text());
+	assert.equal((await policy.json()).state, "done");
+	await fixture.restart();
+	const repeated = await resumed("/admin/domains/setup.example/steps/mta-sts", { moveMail: false });
+	assert.equal(repeated.status, 200, await repeated.clone().text());
+	assert.equal((await repeated.json()).state, "done");
+	assert.equal(fixture.state.dnsRecords.length, 2);
+	assert.equal(fixture.state.routes.length, 1);
 	assert.equal((await resumed("/setup/finish", { token: account.token })).status, 204);
 	assert.equal((await resumed("/setup/finish", { token: account.token })).status, 204);
 	assert.equal((await (await resumed("/config")).json()).setupRequired, false);
