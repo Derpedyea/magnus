@@ -145,15 +145,50 @@ function parseDate(value: string | undefined): number | null {
 	return Number.isNaN(t) ? null : t;
 }
 
+/** Who stamps the verdicts we trust: Email Routing's MX. */
+const AUTHSERV_ID = "mx.cloudflare.net";
+
 /**
- * Email Routing already rejects mail that fails the sender's DMARC policy and mail from
- * RBL-listed IPs. We record the verdicts it stamped on the message for display and triage.
+ * The SPF, DKIM, and DMARC verdicts Email Routing stamped on the message, for display and triage. (It already rejects
+ * mail that fails a DMARC reject policy, and mail from RBL-listed IPs.) Only its own header counts. It prepends its
+ * trace headers, ending with X-CF-SpamH-Score, so anything below that came from the sender and can claim anything,
+ * and it doesn't always stamp one (workerd#6740).
  */
 function parseAuthResults(email: Email): AuthResults | null {
-	const header = email.headers.find((h) => h.key === "authentication-results" || h.key === "arc-authentication-results");
+	const end = email.headers.findIndex((h) => h.key === "x-cf-spamh-score");
+	const header = email.headers
+		.slice(0, Math.max(end, 0))
+		.find((h) => h.key === "authentication-results" && h.value.split(";")[0]?.trim().toLowerCase() === AUTHSERV_ID);
 	if (!header) return null;
-	const verdict = (mech: string) => header.value.match(new RegExp(`\\b${mech}=([a-z]+)`, "i"))?.[1]?.toLowerCase() ?? null;
-	return { spf: verdict("spf"), dkim: verdict("dkim"), dmarc: verdict("dmarc") };
+	const results = resultsOf(header.value);
+	const dkim = results.filter((r) => r.method === "dkim");
+	return {
+		// The envelope sender's. A result for the HELO name says nothing about who sent it.
+		spf: results.find((r) => r.method === "spf" && r.props.has("smtp.mailfrom"))?.result ?? null,
+		// Mail can carry several signatures; one that verifies is what counts.
+		dkim: dkim.find((r) => r.result === "pass")?.result ?? dkim[0]?.result ?? null,
+		dmarc: results.find((r) => r.method === "dmarc")?.result ?? null,
+	};
+}
+
+/** RFC 8601: after the authserv-id, `method=result` then `ptype.property=value` pairs per `;`, with (comments) anywhere. */
+function resultsOf(value: string): { method: string; result: string; props: Map<string, string> }[] {
+	let text = value;
+	// Innermost first, so nested comments go too.
+	while (/\([^()]*\)/.test(text)) text = text.replaceAll(/\([^()]*\)/g, " ");
+	return text
+		.split(";")
+		.slice(1)
+		.flatMap((part) => {
+			const [head, ...rest] = part.trim().split(/\s+/);
+			const verdict = head?.match(/^([a-z0-9-]+)=([a-z]+)$/i);
+			if (!verdict?.[1] || !verdict[2]) return [];
+			const props = new Map(rest.flatMap((p) => {
+				const at = p.indexOf("=");
+				return at > 0 ? [[p.slice(0, at).toLowerCase(), p.slice(at + 1)] as const] : [];
+			}));
+			return [{ method: verdict[1].toLowerCase(), result: verdict[2].toLowerCase(), props }];
+		});
 }
 
 /** Minimal first-pass triage. Swap in Workers AI or a rules engine here. */

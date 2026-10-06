@@ -12,6 +12,7 @@ const boundary = `b-${crypto.randomUUID()}`;
 const raw = [
 	`Received: from mail.example.org (127.0.0.1) by mx.cloudflare.net; ${new Date().toUTCString()}`,
 	"Authentication-Results: mx.cloudflare.net; spf=pass smtp.mailfrom=example.org; dkim=pass header.d=example.org; dmarc=pass header.from=example.org",
+	"X-CF-SpamH-Score: 1",
 	`From: "A Friend" <${from}>`,
 	`To: ${to}`,
 	`Subject: ${subject}`,

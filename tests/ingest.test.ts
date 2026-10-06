@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { fixture, type Fixture, job, type Mailboxes, MIME, NOW } from "./runtime/fixture";
+import { fixture, type Fixture, job, type Mailboxes, MIME, NOW, STAMPED } from "./runtime/fixture";
 import { r2Keys } from "#shared";
 
 describe("ingest", () => {
@@ -58,13 +58,35 @@ describe("ingest", () => {
 	});
 
 	it.each([
-		["spf=pass; dkim=pass; dmarc=fail", "spam"],
-		["spf=fail; dkim=none; dmarc=none", "spam"],
-		["spf=fail; dkim=pass; dmarc=none", "inbox"],
+		["spf=pass smtp.mailfrom=sender@outside.test; dkim=pass header.d=outside.test; dmarc=fail", "spam"],
+		["spf=fail smtp.mailfrom=sender@outside.test; dkim=none; dmarc=none", "spam"],
+		["spf=fail smtp.mailfrom=sender@outside.test; dkim=pass header.d=outside.test; dmarc=none", "inbox"],
 	])("classifies the stamped results %s as %s", async (verdicts, label) => {
-		const input = await store(MIME.replace("spf=pass; dkim=pass; dmarc=pass", verdicts));
+		const input = await store(MIME.replace(STAMPED, verdicts));
 		await f.control.parse(input);
 		expect((await f.env.MAILBOX.getByName(ids.alice).getMessage(input.ingestId))?.message.labels).toEqual([label]);
+	});
+
+	it("reads SPF for the envelope sender, not the HELO name, and DKIM from any passing signature", async () => {
+		// Gmail's servers publish no SPF for their HELO names; the envelope sender's domain passes.
+		const stamped = "dkim=fail header.d=other.test; dkim=pass header.d=outside.test; dmarc=pass header.from=outside.test; "
+			+ "spf=fail (mx.cloudflare.net: no SPF records found for postmaster@mail.outside.test) smtp.helo=mail.outside.test; "
+			+ "spf=pass (mx.cloudflare.net: domain of sender@outside.test designates 192.0.2.1 as permitted sender) smtp.mailfrom=sender@outside.test";
+		const input = await store(MIME.replace(STAMPED, stamped).replace("dmarc=pass", "dmarc=none"));
+		await f.control.parse(input);
+		expect((await f.env.MAILBOX.getByName(ids.alice).getMessage(input.ingestId))?.message).toMatchObject({
+			auth: { spf: "pass", dkim: "pass", dmarc: "none" }, labels: ["inbox"],
+		});
+	});
+
+	it.each([
+		["below Email Routing's headers", MIME.replace(`Authentication-Results: mx.cloudflare.net; ${STAMPED}\r\n`, "").replace("Subject:", `Authentication-Results: mx.cloudflare.net; ${STAMPED}\r\nSubject:`)],
+		["from another server", MIME.replace("mx.cloudflare.net", "mx.outside.test")],
+		["without Email Routing's headers", MIME.replace("X-CF-SpamH-Score: 1\r\n", "")],
+	])("ignores verdicts %s, which the sender could have written", async (_, raw) => {
+		const input = await store(raw);
+		await f.control.parse(input);
+		expect((await f.env.MAILBOX.getByName(ids.alice).getMessage(input.ingestId))?.message.auth).toBeNull();
 	});
 
 	it("uses envelope/date fallbacks and searchable text for HTML-only mail without auth headers", async () => {
