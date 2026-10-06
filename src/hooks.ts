@@ -1,9 +1,9 @@
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { LIVE_RECHECK, type Me, parseScope } from "#shared";
 import type { Identity } from "./api";
-import { meQuery } from "./queries";
+import { countsQuery, meQuery } from "./queries";
 
 /** The signed-in user, plus what the UI derives from their mailboxes. The root route loads it, so it never suspends. */
 export function useAccount() {
@@ -35,6 +35,22 @@ const mail = getRouteApi("/_app/_mail");
 /** The addresses in view, from `?in=a@x.com,b@y.com`. Empty = all of them, across every mailbox. */
 export function useScope(): string[] {
 	return parseScope(mail.useSearch({ select: (s) => s.in }));
+}
+
+const TITLE = document.title;
+
+/**
+ * "(3) Magnus Mail" while the inbox in view has unread mail, so a background tab or window shows it. The same count
+ * as the Inbox badge, from the same query, so it follows the addresses in view and live updates.
+ */
+export function useUnreadTitle(scope: string[]) {
+	const unread = useQuery({ ...countsQuery(scope), select: (c) => c.labels.find((l) => l.label === "inbox")?.unread ?? 0 }).data ?? 0;
+	useEffect(() => {
+		document.title = unread > 0 ? `(${unread}) ${TITLE}` : TITLE;
+		return () => {
+			document.title = TITLE;
+		};
+	}, [unread]);
 }
 
 /** Subscribes to each mailbox's Durable Object and refetches mail whenever any of them changes. */

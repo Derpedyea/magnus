@@ -12,7 +12,7 @@ import { compose, openDraft, withSignature } from "./compose";
 import { AccountMenu } from "./components/AccountMenu";
 import { Centered } from "./components/Centered";
 import { Sidebar } from "./components/Sidebar";
-import { useAccount, useLive, useScope } from "./hooks";
+import { useAccount, useLive, useScope, useUnreadTitle } from "./hooks";
 
 const Devtools = import.meta.env.DEV ? lazy(() => import("./devtools")) : () => null;
 
@@ -31,6 +31,7 @@ export function App() {
 	const threadOpen = useParams({ strict: false, select: (p) => p.threadId !== undefined });
 	const live = useLive(mailboxes.map((m) => m.id));
 	const status = live ? "Live updates connected" : "Reconnecting…";
+	useUnreadTitle(scope);
 	// Fetched now, so it opens at once.
 	useEffect(() => void loadComposer(), []);
 
