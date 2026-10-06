@@ -2,7 +2,14 @@ import { type EmailSendingEvent, type InboundJob, r2Keys, ulid } from "#shared";
 import { addressParser } from "postal-mime";
 import { resolveRecipient } from "../directory";
 import { handleDeliveryEvent } from "./events";
-import { ingest } from "./ingest";
+import { ingest, recordFailed } from "./ingest";
+
+/**
+ * Tries at parsing inbound mail, about three hours with the backoff below, before it's listed under Failed instead.
+ * The queue allows 10 more (wrangler.jsonc), so listing it is retried too.
+ */
+const INGEST_ATTEMPTS = 10;
+const MAX_ERROR_LENGTH = 1000;
 
 /**
  * Runs inside the SMTP session. Keep it short and durable: decide accept/reject,
@@ -56,15 +63,30 @@ export async function queue(batch: MessageBatch, env: Env): Promise<void> {
 	await Promise.all(
 		batch.messages.map(async (msg) => {
 			try {
-				if (isInboundJob(msg.body)) await ingest(env, msg.body);
+				if (isInboundJob(msg.body)) await inbound(env, msg.body, msg.attempts);
 				else if (isSendingEvent(msg.body)) await handleDeliveryEvent(env, msg.body);
 				else console.error(JSON.stringify({ msg: "unknown queue message", queue: batch.queue }));
 				msg.ack();
 			} catch (err) {
-				// After the last retry the message is dropped, but the raw copy stays in R2: re-send its job to replay it.
+				// Mail is only dropped after its last retry if listing it under Failed kept failing too. The raw copy stays in
+				// R2: re-send its job to replay it.
 				console.error(JSON.stringify({ msg: "queue message failed", queue: batch.queue, attempts: msg.attempts, body: msg.body, error: String(err) }));
 				msg.retry({ delaySeconds: Math.min(30 * 2 ** (msg.attempts - 1), 3600) });
 			}
 		}),
 	);
+}
+
+/** Parses a job into its mailbox. After the last try it lists the mail under Failed instead of dropping it. */
+async function inbound(env: Env, job: InboundJob, attempts: number): Promise<void> {
+	// Past the last try, so an earlier one ended without reporting: the Worker crashed or ran out of time, or listing the
+	// mail failed. Parsing again could end the same way.
+	if (attempts > INGEST_ATTEMPTS) return recordFailed(env, job, null);
+	try {
+		await ingest(env, job);
+	} catch (err) {
+		if (attempts < INGEST_ATTEMPTS) throw err;
+		// Bounded: it's stored and shown in the list.
+		await recordFailed(env, job, String(err).slice(0, MAX_ERROR_LENGTH));
+	}
 }

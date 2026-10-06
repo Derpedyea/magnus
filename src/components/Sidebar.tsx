@@ -20,7 +20,7 @@ import {
 	useSidebar,
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { formatScope, type Me, parseScope } from "#shared";
+import { type Counts, formatScope, type Me, parseScope } from "#shared";
 import { useScope } from "../hooks";
 import { countsQuery } from "../queries";
 import { SYSTEM, SYSTEM_VIEWS } from "../views";
@@ -47,9 +47,10 @@ export function Sidebar(props: {
 	const view = useParams({ strict: false, select: (p) => p.view });
 	const counts = useQuery(countsQuery(scope));
 	const draftList = useDraftList(scope);
-	const byLabel = new Map(counts.data?.labels.map((c) => [c.label, c]));
 	const unreadByAddress = new Map(counts.data?.addresses.map((a) => [a.address, a.unread]));
 	const userLabels = counts.data?.labels.filter((c) => !SYSTEM.has(c.label)).map((c) => c.label) ?? [];
+	// Failed is an alert: it shows while it holds mail, or while it's open so it doesn't vanish once emptied.
+	const systemViews = SYSTEM_VIEWS.filter((v) => !v.alert || view === v.label || rowCount(v.label, counts.data) > 0);
 
 	/** null = all addresses. `combine` adds or removes one address instead of switching to it. */
 	const pick = (address: string | null, combine: boolean) => {
@@ -119,8 +120,8 @@ export function Sidebar(props: {
 		);
 	};
 
-	const viewRow = (label: string, name: string, Icon: LucideIcon) => {
-		const unread = label === "inbox" || !SYSTEM.has(label) ? (byLabel.get(label)?.unread ?? 0) : 0;
+	const viewRow = (label: string, name: string, Icon: LucideIcon, alert = false) => {
+		const unread = rowCount(label, counts.data);
 		const count = label === "drafts" ? draftList.drafts.length : unread;
 		return (
 			<SidebarMenuItem key={label}>
@@ -131,7 +132,7 @@ export function Sidebar(props: {
 					render={<Link to="/$view" params={{ view: label }} activeOptions={{ includeSearch: false }} />}
 				>
 					<RowIcon unread={unread}>
-						<Icon />
+						<Icon className={alert ? "text-destructive" : undefined} />
 					</RowIcon>
 					<span>{name}</span>
 				</SidebarMenuButton>
@@ -200,7 +201,7 @@ export function Sidebar(props: {
 						</>
 					) : null}
 					<SidebarGroup>
-						<SidebarMenu>{SYSTEM_VIEWS.map((v) => viewRow(v.label, v.name, v.icon))}</SidebarMenu>
+						<SidebarMenu>{systemViews.map((v) => viewRow(v.label, v.name, v.icon, v.alert))}</SidebarMenu>
 					</SidebarGroup>
 					{userLabels.length > 0 ? (
 						<SidebarGroup>
@@ -237,6 +238,13 @@ export function Sidebar(props: {
 			</SidebarFooter>
 		</SidebarRoot>
 	);
+}
+
+/** What a view's row counts, and dots in the rail: unread threads in the inbox and labels, and everything in Failed. */
+function rowCount(label: string, counts: Counts | undefined): number {
+	if (label === "failed") return counts?.failed ?? 0;
+	if (label !== "inbox" && SYSTEM.has(label)) return 0;
+	return counts?.labels.find((c) => c.label === label)?.unread ?? 0;
 }
 
 /** A row's icon. Collapsed, the unread count is hidden, so a dot on the icon stands in for it. */

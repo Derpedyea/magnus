@@ -155,5 +155,6 @@ npx wrangler r2 bucket lifecycle add magnus-mail reap-uploads uploads/ --expire-
 An hourly Worker cron cleans up unreferenced draft files after 24 hours. Saved drafts and queued sends retain
 their files; failed cleanup is retried on the next run. The cron is configured in `wrangler.jsonc`.
 
-A message that still fails to parse after its retries is logged as `queue message failed`, with its raw copy's
-R2 key. Send its job to the inbound queue again to replay it.
+A message that still fails to parse after its retries shows up under **Failed** in its mailbox, where you can
+retry it, download the original, or delete it. Only if listing it there keeps failing too is it dropped, logged as
+`queue message failed` with its raw copy's R2 key. Send that job to the inbound queue again to replay it.

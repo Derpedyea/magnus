@@ -100,6 +100,10 @@ export const api = {
 	cancel: (mailboxId: string, messageId: string) => parseResponse(mailbox.outbox[":messageId"].cancel.$post({ param: { mailboxId, messageId } })),
 	/** Sends a failed or bounced message again, to whoever it didn't reach. */
 	retry: (mailboxId: string, messageId: string) => parseResponse(mailbox.messages[":messageId"].retry.$post({ param: { mailboxId, messageId } })),
+	/** Incoming mail that couldn't be read, newest first. */
+	failed: (scope: string[]) => parseResponse(client.failed.$get({ query: { in: formatScope(scope) } })),
+	retryFailed: (mailboxId: string, failedId: string) => parseResponse(mailbox.failed[":failedId"].retry.$post({ param: { mailboxId, failedId } })),
+	deleteFailed: (mailboxId: string, failedId: string) => parseResponse(mailbox.failed[":failedId"].$delete({ param: { mailboxId, failedId } })),
 };
 
 /** First run: prove ownership with a Cloudflare token, then become the first admin (and get signed in). */
@@ -134,6 +138,8 @@ export const adminApi = {
 };
 
 export const messageUrl = (mb: string, messageId: string) => `/api/mailboxes/${mb}/messages/${messageId}`;
+/** Failed mail's original, as an .eml download. */
+export const failedRawUrl = (mb: string, failedId: string) => `/api/mailboxes/${mb}/failed/${failedId}/raw`;
 
 /** "Jane <jane@x.com>, bob@y.com" → Address[], one per line works too (quoted names containing commas aren't supported). */
 export function parseAddressList(input: string): Address[] {

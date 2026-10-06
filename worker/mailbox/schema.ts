@@ -176,4 +176,26 @@ export const MIGRATIONS: string[] = [
 	-- a cleanup job until no other mailbox/queued delivery needs the shared original.
 	CREATE TABLE deleted_messages (id TEXT PRIMARY KEY, raw_key TEXT, received_at INTEGER NOT NULL);
 	`,
+	`
+	-- Inbound mail the queue gave up parsing (worker/mail/inbound.ts), listed under Failed. id is the ingest id, which
+	-- becomes the message's id when a retry delivers it, and ingest() removes the row then. Deleting one moves it to
+	-- deleted_messages, which cleans up its original.
+	CREATE TABLE failed (
+		id TEXT PRIMARY KEY,
+		raw_key TEXT NOT NULL,
+		envelope_from TEXT NOT NULL,
+		envelope_to TEXT NOT NULL,
+		-- envelope_to normalized without its +tag, as message_addresses has it, for the address filter.
+		address TEXT NOT NULL,
+		subaddress TEXT,
+		raw_size INTEGER NOT NULL,
+		received_at INTEGER NOT NULL,
+		-- The last error, if the attempt that gave up had one to report.
+		error TEXT,
+		failed_at INTEGER NOT NULL,
+		-- When someone last retried it. A later failed_at means that retry failed too; one older than the queue keeps a job
+		-- means it was dropped.
+		retried_at INTEGER
+	);
+	`,
 ];

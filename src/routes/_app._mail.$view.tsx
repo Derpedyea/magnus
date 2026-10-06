@@ -4,15 +4,20 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "../api";
 import { ThreadList } from "../components/ThreadList";
-import { listQuery } from "../queries";
+import { failedQuery, listQuery } from "../queries";
 import { DraftList } from "../components/DraftList";
+import { FailedList } from "../components/FailedList";
 import { Centered } from "../components/Centered";
 
 /** A label (/inbox, /receipts, …) or /search?q=…: the thread list, with the open thread beside it. */
 export const Route = createFileRoute("/_app/_mail/$view")({
 	validateSearch: (search: Record<string, unknown>): { q?: string } => ({ q: typeof search.q === "string" ? search.q : undefined }),
 	loaderDeps: ({ search }) => ({ scope: parseScope(search.in), q: search.q ?? "" }),
-	loader: ({ context, params, deps }) => params.view === "drafts" ? undefined : context.queryClient.ensureInfiniteQueryData(listQuery(deps.scope, params.view, deps.q)),
+	loader: ({ context, params, deps }) => {
+		if (params.view === "drafts") return;
+		if (params.view === "failed") return context.queryClient.ensureQueryData(failedQuery(deps.scope));
+		return context.queryClient.ensureInfiniteQueryData(listQuery(deps.scope, params.view, deps.q));
+	},
 	component: MailView,
 	pendingComponent: () => (
 		<div className="w-full p-4 text-muted-foreground lg:w-96 lg:shrink-0 lg:border-r">
@@ -32,6 +37,7 @@ function MailView() {
 	const { view } = Route.useParams();
 	const { scope } = Route.useLoaderDeps();
 	if (view === "drafts") return <><DraftList scope={scope} /><main className="hidden min-w-0 flex-1 md:block"><Centered>Select a draft to continue</Centered></main></>;
+	if (view === "failed") return <><FailedList scope={scope} /><main className="hidden min-w-0 flex-1 md:block"><Centered><p className="max-w-80 text-center text-balance">Magnus couldn’t read this mail, so it’s kept as it arrived. Retry it, or download the original to open elsewhere.</p></Centered></main></>;
 	return (
 		<>
 			<ThreadList threadOpen={threadOpen} />

@@ -1,4 +1,4 @@
-import { ClockIcon, FilePenIcon, InboxIcon, MailsIcon, OctagonAlertIcon, SendIcon, StarIcon, Trash2Icon } from "lucide-react";
+import { ClockIcon, FilePenIcon, InboxIcon, MailsIcon, MailWarningIcon, OctagonAlertIcon, SendIcon, StarIcon, Trash2Icon } from "lucide-react";
 
 /** The views every mailbox has, in sidebar order. Any other view is a label. */
 export const SYSTEM_VIEWS = [
@@ -10,6 +10,8 @@ export const SYSTEM_VIEWS = [
 	{ label: "all", name: "All mail", icon: MailsIcon },
 	{ label: "spam", name: "Spam", icon: OctagonAlertIcon },
 	{ label: "trash", name: "Trash", icon: Trash2Icon },
+	// An alert: listed only while it holds mail (Sidebar).
+	{ label: "failed", name: "Failed", icon: MailWarningIcon, alert: true },
 ];
 export const SYSTEM = new Set(SYSTEM_VIEWS.map((v) => v.label));
 

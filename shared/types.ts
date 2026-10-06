@@ -116,6 +116,28 @@ export interface MailboxThread extends ThreadSummary {
 	mailboxId: string;
 }
 
+/**
+ * Inbound mail the queue gave up parsing (Failed). Its original stays in R2, so it can be retried, downloaded, or
+ * deleted. `id` is its ingest id, which becomes the message's id if a retry delivers it.
+ */
+export interface FailedMail {
+	id: string;
+	/** Envelope MAIL FROM: the message couldn't be read, so its headers weren't either. */
+	from: string;
+	/** Envelope RCPT TO as received, including any +tag. */
+	to: string;
+	size: number;
+	receivedAt: number;
+	/** The last error, if the attempt that gave up had one to report. */
+	error: string | null;
+	/** Retried since it last failed, so the queue has it again. */
+	retrying: boolean;
+}
+
+export interface MailboxFailedMail extends FailedMail {
+	mailboxId: string;
+}
+
 export interface MessageDetail {
 	id: string;
 	threadId: string;
@@ -164,6 +186,8 @@ export interface LabelCount {
 export interface Counts {
 	/** Per label, within the requested addresses. */
 	labels: LabelCount[];
+	/** Messages under Failed, within the requested addresses. */
+	failed: number;
 	/** Unread inbox threads per address, regardless of the requested addresses (drives the address switcher). */
 	addresses: { address: string; unread: number }[];
 }
@@ -281,4 +305,5 @@ export const LIVE_RECHECK = "recheck";
 /** Pushed to connected web clients over the mailbox WebSocket. */
 export type LiveEvent =
 	| { type: "threads.changed"; threadIds: string[] }
-	| { type: "delivery.changed"; messageId: string; status: DeliveryStatus };
+	| { type: "delivery.changed"; messageId: string; status: DeliveryStatus }
+	| { type: "failed.changed" };

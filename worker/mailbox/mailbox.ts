@@ -10,6 +10,8 @@ import {
 	type DeliveryEventInput,
 	type DeliveryStatus,
 	ensureAngleBrackets,
+	type FailedMail,
+	type InboundJob,
 	type IngestInput,
 	isValidAddress,
 	type ListPage,
@@ -47,8 +49,13 @@ const TRASH_RETRY_MS = 60_000;
 const DELETABLE_TRASH = `SELECT r2_key FROM trash t WHERE NOT EXISTS (SELECT 1 FROM attachments a WHERE a.r2_key = t.r2_key)`;
 const OUTBOX_BATCH = 10;
 const MAX_PARTICIPANTS = 12;
-/** Longer than the inbound queue keeps retrying a message (wrangler.jsonc: 10 retries, at most an hour apart). */
+/**
+ * Longer than the inbound queue keeps a message: 10 tries to parse it, then up to 10 more to list it under Failed, at
+ * most an hour apart (worker/mail/inbound.ts, wrangler.jsonc).
+ */
 const INGEST_WINDOW_MS = 24 * 3600 * 1000;
+/** Failed mail listed at once. counts() has the total. */
+const FAILED_LIMIT = 200;
 /** Message ids per holding() call when a deleted mailbox asks the others what they still hold. */
 const HOLDING_BATCH = 10_000;
 /** A socket is authorized once, when it opens. After this long it has to reconnect, which checks the sign-in again. */
@@ -111,6 +118,19 @@ interface MessageRow extends Row {
 
 interface ContactRow extends Row, Contact {}
 
+interface FailedRow extends Row {
+	id: string;
+	raw_key: string;
+	envelope_from: string;
+	envelope_to: string;
+	subaddress: string | null;
+	raw_size: number;
+	received_at: number;
+	error: string | null;
+	failed_at: number;
+	retried_at: number | null;
+}
+
 interface RetryRow extends Row {
 	thread_id: string;
 	from_json: string;
@@ -166,6 +186,8 @@ const IN_ADDRESSES = (param: string) =>
 	`(${param} IS NULL OR EXISTS (SELECT 1 FROM message_addresses a
 		WHERE a.message_id = m.id AND a.address IN (SELECT value FROM json_each(${param}))))`;
 const addressParam = (filter: AddressFilter) => (filter.addresses ? JSON.stringify(filter.addresses) : null);
+/** IN_ADDRESSES for the failed table, whose rows carry the one address they were delivered to. */
+const FAILED_IN_ADDRESSES = (param: string) => `(${param} IS NULL OR address IN (SELECT value FROM json_each(${param})))`;
 
 /** Predicate on deliveries alias `d`: the recipient's server refused the message, so a retry sends to them. */
 const REFUSED = `d.status IN (${[...RETRYABLE].map((s) => `'${s}'`).join(", ")})`;
@@ -267,7 +289,8 @@ export class Mailbox extends DurableObject<Env> {
 		const rows = this.sql
 			.exec<{ id: string; raw_key: string; received_at: number }>(
 				`SELECT id, raw_key, received_at FROM messages WHERE raw_key IS NOT NULL
-				 UNION SELECT id, raw_key, received_at FROM deleted_messages WHERE raw_key IS NOT NULL`,
+				 UNION SELECT id, raw_key, received_at FROM deleted_messages WHERE raw_key IS NOT NULL
+				 UNION SELECT id, raw_key, received_at FROM failed`,
 			)
 			.toArray();
 		const { results } = await this.env.DIRECTORY.prepare(`SELECT id FROM mailboxes`).all<{ id: string }>();
@@ -293,10 +316,17 @@ export class Mailbox extends DurableObject<Env> {
 		for (let i = 0; i < orphans.length; i += 1000) await this.env.MAIL.delete(orphans.slice(i, i + 1000));
 	}
 
-	/** Which of these messages this mailbox has, for a mailbox being deleted to check before it removes their originals. */
+	/**
+	 * Which of these messages this mailbox has, under Failed too, for a mailbox deleting them to check before it removes
+	 * their originals.
+	 */
 	async holding(messageIds: string[]): Promise<string[]> {
 		return this.sql
-			.exec<{ id: string }>(`SELECT id FROM messages WHERE id IN (SELECT value FROM json_each(?1))`, JSON.stringify(messageIds))
+			.exec<{ id: string }>(
+				`SELECT id FROM messages WHERE id IN (SELECT value FROM json_each(?1))
+				 UNION SELECT id FROM failed WHERE id IN (SELECT value FROM json_each(?1))`,
+				JSON.stringify(messageIds),
+			)
 			.toArray()
 			.map((r) => r.id);
 	}
@@ -319,7 +349,10 @@ export class Mailbox extends DurableObject<Env> {
 			return { deleted: true };
 		}
 		const existing = this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM messages WHERE id = ?1`, input.id).toArray()[0];
-		if (existing) return { threadId: existing.thread_id, duplicate: true };
+		if (existing) {
+			this.clearFailed(input.id);
+			return { threadId: existing.thread_id, duplicate: true };
+		}
 
 		// Same message delivered twice to this mailbox (e.g. sent to two of our addresses,
 		// or our own outbound copy coming back): keep one copy, merge labels.
@@ -333,6 +366,7 @@ export class Mailbox extends DurableObject<Env> {
 			if (twin) {
 				this.addLabels([twin.id], input.labels);
 				this.addAddress(twin.id, stripSubaddress(input.envelopeTo).base);
+				this.clearFailed(input.id);
 				this.broadcast({ type: "threads.changed", threadIds: [twin.thread_id] });
 				return { threadId: twin.thread_id, duplicate: true };
 			}
@@ -379,6 +413,8 @@ export class Mailbox extends DurableObject<Env> {
 			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc], input.text);
 			this.touchThread(threadId, input.date, snippet, [input.from, ...input.to, ...input.cc]);
 			if (!input.labels.includes("spam")) this.recordContacts([input.from], false, input.date);
+			// Delivered by a retry.
+			this.sql.exec(`DELETE FROM failed WHERE id = ?1`, input.id);
 			return threadId;
 		});
 
@@ -696,7 +732,124 @@ export class Mailbox extends DurableObject<Env> {
 				 WHERE m.is_read = 0 GROUP BY a.address`,
 			)
 			.toArray();
-		return { labels, addresses };
+		const failed = this.sql.exec<{ n: number }>(`SELECT count(*) AS n FROM failed WHERE ${FAILED_IN_ADDRESSES("?1")}`, addressParam(query)).one().n;
+		return { labels, addresses, failed };
+	}
+
+	// ─── Failed ─────────────────────────────────────────────────────────────
+
+	/**
+	 * Lists inbound mail the queue gave up on under Failed, or updates the error of mail already there. Mail this mailbox
+	 * has, or has deleted, stays out: an attempt that got it here can still fail on something after. A try with no error
+	 * to report (inbound.ts) keeps the last one.
+	 */
+	async recordFailed(job: InboundJob, error: string | null): Promise<void> {
+		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) return;
+		const known = this.sql.exec(`SELECT 1 FROM messages WHERE id = ?1 UNION ALL SELECT 1 FROM deleted_messages WHERE id = ?1`, job.ingestId);
+		if (known.toArray().length > 0) return;
+		this.sql.exec(
+			`INSERT INTO failed (id, raw_key, envelope_from, envelope_to, address, subaddress, raw_size, received_at, error, failed_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+			 ON CONFLICT (id) DO UPDATE SET error = coalesce(excluded.error, failed.error), failed_at = excluded.failed_at`,
+			job.ingestId,
+			job.rawKey,
+			job.envelopeFrom,
+			job.envelopeTo,
+			stripSubaddress(job.envelopeTo).base,
+			job.subaddress,
+			job.rawSize,
+			job.receivedAt,
+			error,
+			Date.now(),
+		);
+		this.broadcast({ type: "failed.changed" });
+	}
+
+	/** Newest first. */
+	async listFailed(query: AddressFilter): Promise<FailedMail[]> {
+		return this.sql
+			.exec<FailedRow>(
+				`SELECT * FROM failed WHERE ${FAILED_IN_ADDRESSES("?1")} ORDER BY received_at DESC, id DESC LIMIT ?2`,
+				addressParam(query),
+				FAILED_LIMIT,
+			)
+			.toArray()
+			.map((r) => ({
+				id: r.id,
+				from: r.envelope_from,
+				to: r.envelope_to,
+				size: r.raw_size,
+				receivedAt: r.received_at,
+				error: r.error,
+				// A retry can only follow the failure it retries, even within the same millisecond. One older than the queue keeps
+				// a job was dropped without being listed again, so it can be retried again.
+				retrying: r.retried_at !== null && r.retried_at >= r.failed_at && r.retried_at > Date.now() - INGEST_WINDOW_MS,
+			}));
+	}
+
+	/** Queues failed mail to be parsed again. It leaves Failed once ingest() delivers it, or comes back if it fails again. */
+	async retryFailed(id: string): Promise<boolean> {
+		const row = this.sql.exec<FailedRow>(`SELECT * FROM failed WHERE id = ?1`, id).toArray()[0];
+		if (!row) return false;
+		const job: InboundJob = {
+			v: 1,
+			ingestId: row.id,
+			rawKey: row.raw_key,
+			rawSize: row.raw_size,
+			mailboxId: this.mailboxId(),
+			envelopeFrom: row.envelope_from,
+			envelopeTo: row.envelope_to,
+			subaddress: row.subaddress,
+			receivedAt: row.received_at,
+		};
+		await this.env.INBOUND.send(job);
+		// Changes nothing if the retry delivered it, or someone deleted it, while it was being queued.
+		this.sql.exec(`UPDATE failed SET retried_at = ?2 WHERE id = ?1`, id, Date.now());
+		this.broadcast({ type: "failed.changed" });
+		return true;
+	}
+
+	/**
+	 * Deletes failed mail for good, as permanent deletion does: the tombstone keeps a retry still queued from delivering
+	 * it, and its original goes once no other mailbox holds it (deleteTrashedOriginals). Files an attempt extracted
+	 * before it failed go through trash; no row names them, so they're found by their prefix.
+	 */
+	async deleteFailed(id: string): Promise<boolean> {
+		if (this.sql.exec(`SELECT 1 FROM failed WHERE id = ?1`, id).toArray().length === 0) return false;
+		// Listed before anything changes, so a failed listing leaves the mail under Failed to delete again.
+		const extracted: string[] = [];
+		let cursor: string | undefined;
+		do {
+			const page = await this.env.MAIL.list({ prefix: r2Keys.message(this.mailboxId(), id), cursor });
+			extracted.push(...page.objects.map((o) => o.key));
+			cursor = page.truncated ? page.cursor : undefined;
+		} while (cursor);
+		// Armed before the commit, as deleteTrash() does, so a crash after it still has an alarm to finish the cleanup.
+		await this.ctx.storage.setAlarm(Date.now());
+		const deleted = this.ctx.storage.transactionSync(() => {
+			// Checked again: it can have been delivered or deleted while the files were listed.
+			const row = this.sql.exec<{ raw_key: string; received_at: number }>(`SELECT raw_key, received_at FROM failed WHERE id = ?1`, id).toArray()[0];
+			if (!row) return false;
+			this.sql.exec(`DELETE FROM failed WHERE id = ?1`, id);
+			this.sql.exec(`INSERT OR IGNORE INTO deleted_messages (id, raw_key, received_at) VALUES (?1, ?2, ?3)`, id, row.raw_key, row.received_at);
+			for (const key of extracted) this.queueTrash(key);
+			return true;
+		});
+		if (!deleted) return false;
+		await this.emptyTrash();
+		await this.scheduleOutbox();
+		this.broadcast({ type: "failed.changed" });
+		return true;
+	}
+
+	/** Where failed mail's original is, to download it. */
+	async failedRawKey(id: string): Promise<string | null> {
+		return this.sql.exec<{ raw_key: string }>(`SELECT raw_key FROM failed WHERE id = ?1`, id).toArray()[0]?.raw_key ?? null;
+	}
+
+	/** For ingest() paths that find the message already here. */
+	private clearFailed(id: string): void {
+		if (this.sql.exec(`DELETE FROM failed WHERE id = ?1`, id).rowsWritten > 0) this.broadcast({ type: "failed.changed" });
 	}
 
 	// ─── Mutations ──────────────────────────────────────────────────────────
