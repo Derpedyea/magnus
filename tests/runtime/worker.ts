@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { type InboundJob, type SendInput } from "#shared";
+import { type AddressFilter, type InboundJob, type SendInput } from "#shared";
 import { z } from "zod";
 import { app } from "../../worker/api";
 import { signInWithoutCode } from "../../worker/auth";
@@ -113,6 +113,9 @@ export class Mailbox extends ProductionMailbox {
 	constructor(ctx: DurableObjectState, env: Env) { super(ctx, controlled(env)); }
 
 	override enqueueSend(input: SendInput) { return atTestTime(() => super.enqueueSend(input)); }
+	override recordFailed(job: InboundJob, error: string | null) { return atTestTime(() => super.recordFailed(job, error)); }
+	override retryFailed(id: string) { return atTestTime(() => super.retryFailed(id)); }
+	override listFailed(query: AddressFilter) { return atTestTime(() => super.listFailed(query)); }
 
 	async drain() {
 		await this.ctx.storage.deleteAlarm();

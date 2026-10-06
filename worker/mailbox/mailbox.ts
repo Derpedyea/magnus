@@ -740,7 +740,8 @@ export class Mailbox extends DurableObject<Env> {
 
 	/**
 	 * Lists inbound mail the queue gave up on under Failed, or updates the error of mail already there. Mail this mailbox
-	 * has, or has deleted, stays out: an attempt that got it here can still fail on something after.
+	 * has, or has deleted, stays out: an attempt that got it here can still fail on something after. A try with no error
+	 * to report (inbound.ts) keeps the last one.
 	 */
 	async recordFailed(job: InboundJob, error: string | null): Promise<void> {
 		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) return;
@@ -749,7 +750,7 @@ export class Mailbox extends DurableObject<Env> {
 		this.sql.exec(
 			`INSERT INTO failed (id, raw_key, envelope_from, envelope_to, address, subaddress, raw_size, received_at, error, failed_at)
 			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-			 ON CONFLICT (id) DO UPDATE SET error = excluded.error, failed_at = excluded.failed_at`,
+			 ON CONFLICT (id) DO UPDATE SET error = coalesce(excluded.error, failed.error), failed_at = excluded.failed_at`,
 			job.ingestId,
 			job.rawKey,
 			job.envelopeFrom,
@@ -780,8 +781,9 @@ export class Mailbox extends DurableObject<Env> {
 				size: r.raw_size,
 				receivedAt: r.received_at,
 				error: r.error,
-				// A retry can only follow the failure it retries, even within the same millisecond.
-				retrying: r.retried_at !== null && r.retried_at >= r.failed_at,
+				// A retry can only follow the failure it retries, even within the same millisecond. One older than the queue keeps
+				// a job was dropped without being listed again, so it can be retried again.
+				retrying: r.retried_at !== null && r.retried_at >= r.failed_at && r.retried_at > Date.now() - INGEST_WINDOW_MS,
 			}));
 	}
 

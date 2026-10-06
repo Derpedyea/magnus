@@ -193,7 +193,8 @@ export const MIGRATIONS: string[] = [
 		-- The last error, if the attempt that gave up had one to report.
 		error TEXT,
 		failed_at INTEGER NOT NULL,
-		-- When someone last retried it. A later failed_at means that retry failed too.
+		-- When someone last retried it. A later failed_at means that retry failed too; one older than the queue keeps a job
+		-- means it was dropped.
 		retried_at INTEGER
 	);
 	`,

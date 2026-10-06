@@ -66,6 +66,7 @@ describe("Failed", () => {
 		expect((await f.control.state()).jobs).toEqual([input]);
 		expect(await alice().listFailed({})).toMatchObject([{ retrying: true }]);
 
+		await f.control.setNow(NOW + HOUR);
 		await giveUp(input);
 		expect(await alice().listFailed({})).toMatchObject([{ retrying: false }]);
 
@@ -74,6 +75,22 @@ describe("Failed", () => {
 		expect(await alice().listFailed({})).toEqual([]);
 		expect((await alice().counts({})).failed).toBe(0);
 		expect(await inbox()).toMatchObject([{ subject: "Receipt" }]);
+	});
+
+	it("keeps the last error when a later try has none to report", async () => {
+		const input = await store();
+		await giveUp(input);
+		await alice().recordFailed(input, null);
+		expect(await alice().listFailed({})).toMatchObject([{ error: "Error: Injected get failure" }]);
+	});
+
+	it("can be retried again once a retry the queue dropped is past its window", async () => {
+		const input = await store();
+		await giveUp(input);
+		expect((await request(`/mailboxes/${ids.alice}/failed/${input.ingestId}/retry`, "POST")).status).toBe(204);
+		expect(await alice().listFailed({})).toMatchObject([{ retrying: true }]);
+		await f.control.setNow(NOW + 25 * HOUR);
+		expect(await alice().listFailed({})).toMatchObject([{ retrying: false }]);
 	});
 
 	it("serves the original, then deletes it for good once no mailbox holds it", async () => {
