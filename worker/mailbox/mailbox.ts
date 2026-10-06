@@ -824,6 +824,8 @@ export class Mailbox extends DurableObject<Env> {
 			extracted.push(...page.objects.map((o) => o.key));
 			cursor = page.truncated ? page.cursor : undefined;
 		} while (cursor);
+		// Armed before the commit, as deleteTrash() does, so a crash after it still has an alarm to finish the cleanup.
+		await this.ctx.storage.setAlarm(Date.now());
 		const deleted = this.ctx.storage.transactionSync(() => {
 			// Checked again: it can have been delivered or deleted while the files were listed.
 			const row = this.sql.exec<{ raw_key: string; received_at: number }>(`SELECT raw_key, received_at FROM failed WHERE id = ?1`, id).toArray()[0];

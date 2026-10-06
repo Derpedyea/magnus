@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { fixture, type Fixture, job, type Mailboxes, MIME, NOW } from "./runtime/fixture";
 import { type InboundJob, r2Keys } from "#shared";
 
@@ -119,6 +119,23 @@ describe("Failed", () => {
 		expect(await f.env.MAIL.head(r2Keys.html(ids.alice, input.ingestId))).not.toBeNull();
 		expect((await request(`/mailboxes/${ids.alice}/failed/${input.ingestId}`, "DELETE")).status).toBe(204);
 		expect((await f.env.MAIL.list({ prefix: r2Keys.message(ids.alice, input.ingestId) })).objects).toEqual([]);
+	});
+
+	it("finishes deleting after a crash mid-delete", async () => {
+		const input = await store();
+		await f.control.failNext("put", r2Keys.attachment(ids.alice, input.ingestId, `${input.ingestId}-2`));
+		await f.control.consume([input], 10);
+		await f.control.stallDeletes(r2Keys.message(ids.alice, input.ingestId));
+		// Never settles: the Worker is restarted under it.
+		void alice().deleteFailed(input.ingestId).catch(() => null);
+		const storage = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		await vi.waitFor(async () => expect(await storage.exec("SELECT * FROM trash")).not.toEqual([]));
+		await f.restart();
+		expect(await alice().alarmAt()).not.toBeNull();
+		await f.control.setNow(NOW + 25 * HOUR);
+		await alice().drain();
+		expect((await f.env.MAIL.list({ prefix: r2Keys.message(ids.alice, input.ingestId) })).objects).toEqual([]);
+		expect(await f.env.MAIL.head(input.rawKey)).toBeNull();
 	});
 
 	it("keeps a shared original another mailbox deletes while it's under Failed here", async () => {

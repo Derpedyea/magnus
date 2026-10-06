@@ -20,6 +20,8 @@ let jobs: InboundJob[] = [];
 let sends: EmailMessageBuilder[] = [];
 let sendErrors: string[] = [];
 let failures: Failure[] = [];
+// R2 deletes under these prefixes never finish, so a test can restart the Worker mid-delete as a crash would.
+let stalls: string[] = [];
 let hook: Hook | null = null;
 
 // Future alarms cannot fire on wall time; only drain() runs them. Restore the clock on every exit.
@@ -72,6 +74,7 @@ function controlled(env: Env): Env {
 			};
 			if (property === "delete") return async (keys: string | string[]) => {
 				fail("delete", keys);
+				if (stalls.some((prefix) => [keys].flat().some((key) => key.startsWith(prefix)))) return new Promise<void>(() => {});
 				return target.delete(keys);
 			};
 			const value: unknown = Reflect.get(target, property, target);
@@ -136,6 +139,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	setNow(value: number) { now = value; }
 	setSendErrors(codes: string[]) { sendErrors = codes; }
 	failNext(operation: Operation, prefix = "", count = 1) { failures.push({ operation, prefix, remaining: count }); }
+	stallDeletes(prefix: string) { stalls.push(prefix); }
 	afterIO(action: Hook) { hook = action; }
 	state() {
 		return { jobs, sends: sends.map((message) => ({
@@ -146,7 +150,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 			})),
 		})) };
 	}
-	reset() { now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; hook = null; }
+	reset() { now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; }
 
 	async consume(bodies: unknown[], attempts = 1) {
 		const acks: string[] = [];
