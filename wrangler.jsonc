@@ -46,6 +46,9 @@
 		]
 	},
 	// Unrestricted: who may send as which address is decided against the D1 directory.
-	"send_email": [{ "name": "EMAIL" }]
+	"send_email": [{ "name": "EMAIL" }],
+	// Checks mail from senders a mailbox doesn't know yet (worker/mail/checks.ts): Clef on Workers AI, then GPT-6 Luna
+	// through OpenRouter, with its key stored on the `default` AI Gateway. Remote even in local dev, so that bills too.
+	"ai": { "binding": "AI", "remote": true }
 	// Nothing to configure. Optional secrets (Google sign-in, local dev) are listed in worker/optional.ts.
 }

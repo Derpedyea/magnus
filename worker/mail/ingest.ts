@@ -4,6 +4,7 @@ import {
 	type InboundJob,
 	type IngestInput,
 	isValidAddress,
+	type MailCheck,
 	labelFromTag,
 	normalizeAddress,
 	parseMessageIds,
@@ -16,9 +17,20 @@ import {
 import PostalMime, { type Address as ParsedAddress, type Email } from "postal-mime";
 import { isOwnAddress, mailboxExists } from "../directory";
 import { notifyNewMail } from "../push";
+import { checkMail, type MailFacts, type Models } from "./checks";
 
-/** Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. */
-export async function ingest(env: Env, job: InboundJob): Promise<void> {
+/**
+ * Tries at checking mail from an unknown sender, about a minute and a half with the queue's backoff, before it's
+ * delivered unchecked instead: to Spam, saying so. Mail isn't held for an outage, and isn't let through unseen.
+ */
+const CHECK_ATTEMPTS = 3;
+const MAX_CHECK_ERROR = 300;
+
+/**
+ * Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. `attempts` is the
+ * queue's count for this job, so the last check attempt knows to give up.
+ */
+export async function ingest(env: Env, job: InboundJob, models: Models = env.AI, attempts = 1): Promise<void> {
 	// The mailbox can be gone since this was queued: its person removed, or a failed add undone after its address took
 	// mail. Delivering would bring it back, mail and all, with nobody to open it. (It can also go while this runs: see
 	// the end.)
@@ -32,6 +44,24 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 
 	const email = await PostalMime.parse(await raw.arrayBuffer(), { attachmentEncoding: "arraybuffer" });
 	const messageId = job.ingestId;
+	const mailbox = env.MAILBOX.getByName(job.mailboxId);
+
+	const from = firstAddress(email.from) ?? { address: job.envelopeFrom };
+	const results = stampedResults(email);
+	const sender = await checkSender(env, from.address, results);
+	const text = email.text ?? (email.html ? htmlToText(email.html) : null);
+	const facts: MailFacts = {
+		to: job.envelopeTo,
+		from,
+		verifiedSender: sender.verified !== null,
+		replyTo: flatten(email.replyTo),
+		subject: email.subject ?? "(no subject)",
+		text,
+		html: email.html ?? null,
+		attachments: email.attachments.map((a) => ({ filename: a.filename ?? "", contentType: a.mimeType })),
+	};
+	const messageIdHeader = email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null;
+	const check = (await mailbox.needsCheck(sender, messageIdHeader)) ? await checkOrGiveUp(models, facts, attempts, job) : null;
 
 	let htmlKey: string | null = null;
 	if (email.html) {
@@ -59,34 +89,31 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 		});
 	}
 
-	const from = firstAddress(email.from) ?? { address: job.envelopeFrom };
-	const results = stampedResults(email);
-	const auth = results && authResults(results);
-
 	const input: IngestInput = {
 		id: messageId,
 		rawKey: job.rawKey,
 		envelopeFrom: job.envelopeFrom,
 		envelopeTo: job.envelopeTo,
 		receivedAt: job.receivedAt,
-		messageIdHeader: email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null,
+		messageIdHeader,
 		inReplyTo: parseMessageIds(email.inReplyTo),
 		references: parseMessageIds(email.references),
 		from,
 		to: flatten(email.to),
 		cc: flatten(email.cc),
-		replyTo: flatten(email.replyTo),
-		subject: email.subject ?? "(no subject)",
+		replyTo: facts.replyTo,
+		subject: facts.subject,
 		date: parseDate(email.date) ?? job.receivedAt,
-		text: email.text ?? (email.html ? htmlToText(email.html) : null),
+		text,
 		htmlKey,
 		attachments,
-		auth,
-		sender: await checkSender(env, from.address, results),
+		auth: results && authResults(results),
+		sender,
+		check,
 		labels: job.subaddress ? [labelFromTag(job.subaddress)] : [],
 	};
 
-	const delivered = await env.MAILBOX.getByName(job.mailboxId)
+	const delivered = await mailbox
 		.ingest(input)
 		.then(
 			(result) => ({ result }),
@@ -102,6 +129,17 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 		await notifyNewMail(env, job.mailboxId, delivered.result.threadId, input).catch((error: unknown) =>
 			console.error(JSON.stringify({ msg: "push failed", ingestId: job.ingestId, mailboxId: job.mailboxId, error: String(error) })),
 		);
+	}
+}
+
+/** Throws for the queue to retry, until the last try, which delivers the mail as unchecked instead. */
+async function checkOrGiveUp(models: Models, facts: MailFacts, attempts: number, job: InboundJob): Promise<MailCheck> {
+	try {
+		return await checkMail(models, facts);
+	} catch (error) {
+		if (attempts < CHECK_ATTEMPTS) throw error;
+		console.error(JSON.stringify({ msg: "mail unchecked", ingestId: job.ingestId, mailboxId: job.mailboxId, error: String(error) }));
+		return { kind: "unchecked", error: String(error).slice(0, MAX_CHECK_ERROR) };
 	}
 }
 

@@ -429,19 +429,12 @@ function SpamReason(props: { mailboxId: string; message: MessageDetail }) {
 		mutationFn: () => api.judge(props.mailboxId, props.message.id, "trusted"),
 		onSuccess: () => qc.invalidateQueries({ queryKey: ["mail"] }),
 	});
-	const { from, verdict } = props.message;
-	const forged = verdict?.kind === "spoofed";
-	const reason =
-		verdict?.kind === "marked"
-			? `Earlier mail from ${from.address} was marked as spam.`
-			: forged
-				? `It failed ${from.address.split("@").at(-1)}'s sender checks, so it may not be from them.`
-				: "It was marked as spam.";
+	const { danger, reason } = spamReason(props.message);
 	return (
-		<div className={cn("mb-3 flex items-start gap-2 rounded-lg px-3 py-2", forged ? "bg-destructive/10" : "bg-muted")}>
-			<OctagonAlertIcon className={cn("mt-0.5 size-4 shrink-0", forged ? "text-destructive" : "text-muted-foreground")} />
+		<div className={cn("mb-3 flex items-start gap-2 rounded-lg px-3 py-2", danger ? "bg-destructive/10" : "bg-muted")}>
+			<OctagonAlertIcon className={cn("mt-0.5 size-4 shrink-0", danger ? "text-destructive" : "text-muted-foreground")} />
 			<div className="min-w-0 flex-1">
-				<p className={cn("font-medium", forged && "text-destructive")}>Why it's in Spam</p>
+				<p className={cn("font-medium", danger && "text-destructive")}>Why it's in Spam</p>
 				<p className="text-xs break-words text-muted-foreground">{notSpam.error ? errorMessage(notSpam.error) : reason}</p>
 			</div>
 			<Button variant="outline" size="xs" disabled={notSpam.isPending || notSpam.isSuccess} onClick={() => notSpam.mutate()}>
@@ -450,6 +443,24 @@ function SpamReason(props: { mailboxId: string; message: MessageDetail }) {
 			</Button>
 		</div>
 	);
+}
+
+/** Mail that may be out to get you reads as a warning. */
+function spamReason({ from, verdict }: MessageDetail): { danger: boolean; reason: string } {
+	switch (verdict?.kind) {
+		case "marked":
+			return { danger: false, reason: `Earlier mail from ${from.address} was marked as spam.` };
+		case "spoofed":
+			return { danger: true, reason: `It failed ${from.address.split("@").at(-1)}'s sender checks, so it may not be from them.` };
+		case "unchecked":
+			return { danger: false, reason: "It couldn't be checked, so it waits here instead of your inbox." };
+		case "checked":
+			if (verdict.category === "phishing") return { danger: true, reason: "It looks like phishing: it may be after your password, money, or data." };
+			if (verdict.category === "spam") return { danger: false, reason: "It looks like mail you didn't ask for: cold outreach, marketing, or a scam." };
+			return { danger: false, reason: "It was marked as spam." };
+		default:
+			return { danger: false, reason: "It was marked as spam." };
+	}
 }
 
 const RECIPIENTS = new Intl.ListFormat(undefined, { type: "conjunction" });

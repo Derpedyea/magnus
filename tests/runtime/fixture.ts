@@ -78,7 +78,7 @@ export function inbound(mailboxId: string, id = "inbound-1"): IngestInput {
 		id, rawKey: r2Keys.raw(id, NOW), envelopeFrom: "sender@outside.test", envelopeTo: "alice@example.com", receivedAt: NOW,
 		messageIdHeader: `<${id}@outside.test>`, inReplyTo: [], references: [], from: { address: "sender@outside.test" }, to: [{ address: "alice@example.com" }],
 		cc: [], replyTo: [], subject: "Secret letter", date: NOW, text: "Secret content", htmlKey: r2Keys.html(mailboxId, id), attachments: [], auth: null,
-		sender: { verified: null, internal: false, spoofed: false }, labels: [],
+		sender: { verified: null, internal: false, spoofed: false }, check: null, labels: [],
 	};
 }
 
