@@ -134,7 +134,7 @@ locally, so suggestions need no round trip.
 ### R2 layout (`shared/keys.ts`)
 
 ```
-raw/2026/09/26/<ingestId>.eml          raw inbound, shared across fan-out, kept while a mailbox has it (source of truth)
+raw/2026/09/26/<ingestId>.eml          raw inbound, shared across fan-out, kept while a mailbox has it or lists it under Failed (source of truth)
 m/<mailboxId>/<messageId>/body.html     HTML body (served through the sanitizer)
 m/<mailboxId>/<messageId>/att/<attId>   attachments (inbound, and outbound once the outbox picks them up)
 m/<mailboxId>/draft-files/<userId>/<uuid> account-owned draft sources; conflict copies can share one source
@@ -172,9 +172,14 @@ whole mailbox is the one exception. Code that writes or drops `m/` objects keeps
    of our addresses, or our own outbound copy coming back, is stored once with merged labels. It then threads
    the message (§5.5), indexes it for search, and broadcasts `threads.changed` over WebSocket.
 
-Failures retry with exponential backoff (max 10). A message that still fails is logged with its job, raw key
-included, and dropped from the queue; the raw message is safe in R2 and replays by re-sending the job. (There's
-no dead-letter queue: the Deploy button can't be relied on to create one.)
+Failures retry with exponential backoff, 10 tries over about three hours. A message that still fails goes to its
+mailbox's **Failed** box (a `failed` table in the Mailbox DO), which shows in the sidebar only while it holds mail.
+From there a member can retry it (the job goes back in the queue, and `ingest()` removes it from Failed once it's
+delivered), download the original, or delete it for good (a `deleted_messages` tombstone, like permanent deletion).
+A try past the 10th lists it without parsing again: the earlier ones ended without reporting, so the Worker likely
+crashed or ran out of time. The queue allows 10 more retries so that listing it is retried too, and only if all of
+them fail is the job dropped, logged with its raw key. (There's no dead-letter queue: the Deploy button can't be
+relied on to create one, and nobody would see it.)
 
 ### 4.2 Outbound
 
@@ -407,7 +412,7 @@ as a plain list.
 
 | Failure | Outcome |
 | --- | --- |
-| Parser crash or DO unavailable during ingest | Queue retry with backoff, then logged; raw message kept in R2 and replayable |
+| Parser crash or DO unavailable during ingest | Queue retry with backoff, then listed under Failed to retry, download, or delete; raw message kept in R2 |
 | Duplicate delivery (queue at-least-once, same mail to two aliases) | Idempotent on `ingestId` + `Message-ID` |
 | R2 or Queue failure inside `email()` | Handler throws instead of accepting; see §7 on whether the sender sees a retryable 4xx |
 | Transient Email Sending error | DO alarm retries with backoff |

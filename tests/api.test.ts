@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { fixture, type Fixture, inbound, type Mailboxes } from "./runtime/fixture";
+import { fixture, type Fixture, inbound, job, type Mailboxes } from "./runtime/fixture";
 import { z } from "zod";
 import { r2Keys, type IngestInput } from "#shared";
 
@@ -22,6 +22,9 @@ describe("API permissions", () => {
 			id: "file", filename: "receipt.pdf", contentType: "application/pdf", size: 4, contentId: null, inline: false,
 			r2Key: key, link: { token: "private-file", shared: true },
 		}] }));
+		const failed = job(ids.bob, "failed-1");
+		await f.env.MAIL.put(failed.rawKey, "From: sender@outside.test\r\n\r\nSecret content");
+		await f.env.MAILBOX.getByName(ids.bob).recordFailed(failed, "Unreadable");
 	});
 
 	async function ingest(mailboxId: string, input: IngestInput) {
@@ -37,7 +40,7 @@ describe("API permissions", () => {
 	}
 	const compose = (from = "alice@example.com") => ({ from, to: [{ address: "friend@outside.test" }], subject: "Hi", text: "Hi" });
 
-	it.each(["/me", "/threads", "/counts", "/contacts", "/mailboxes/guessed/threads/guessed"])("requires a session for %s", async (path) => {
+	it.each(["/me", "/threads", "/counts", "/contacts", "/failed", "/mailboxes/guessed/threads/guessed"])("requires a session for %s", async (path) => {
 		expect((await request(path, "GET", undefined, "")).status).toBe(401);
 	});
 
@@ -53,10 +56,13 @@ describe("API permissions", () => {
 		["POST", "/send", compose()],
 		["POST", "/outbox/guessed/cancel", undefined],
 		["POST", "/messages/guessed/retry", undefined],
+		["POST", "/failed/failed-1/retry", undefined],
+		["DELETE", "/failed/failed-1", undefined],
+		["GET", "/failed/failed-1/raw", undefined],
 		["GET", "/live", undefined],
 	])("hides another user's mailbox on %s %s", async (method, path, body) => {
 		const target = `/mailboxes/${ids.bob}${path.replace("THREAD", threadId)}`;
-		if (method === "GET" && path.startsWith("/messages/")) {
+		if (method === "GET" && (path.startsWith("/messages/") || path.startsWith("/failed/"))) {
 			const allowed = await request(target, "GET", undefined, await f.login("bob"));
 			expect(allowed.status).toBe(200);
 			await allowed.text();

@@ -53,14 +53,15 @@ describe("mergePage", () => {
 });
 
 describe("mergeCounts", () => {
-	it("sums labels and addresses shared across mailboxes", () => {
+	it("sums labels, addresses, and failed mail across mailboxes", () => {
 		const merged = mergeCounts([
-			{ labels: [{ label: "inbox", threads: 3, unread: 2 }], addresses: [{ address: "family@example.com", unread: 1 }] },
-			{ labels: [{ label: "inbox", threads: 1, unread: 1 }], addresses: [{ address: "family@example.com", unread: 1 }] },
+			{ labels: [{ label: "inbox", threads: 3, unread: 2 }], addresses: [{ address: "family@example.com", unread: 1 }], failed: 1 },
+			{ labels: [{ label: "inbox", threads: 1, unread: 1 }], addresses: [{ address: "family@example.com", unread: 1 }], failed: 2 },
 		]);
 		expect(merged).toEqual({
 			labels: [{ label: "inbox", threads: 4, unread: 3 }],
 			addresses: [{ address: "family@example.com", unread: 2 }],
+			failed: 3,
 		});
 	});
 });

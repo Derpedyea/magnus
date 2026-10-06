@@ -24,6 +24,9 @@ export const listQuery = (scope: string[], view: string, q: string) =>
 		getNextPageParam: (page) => page.next,
 	});
 
+/** Incoming mail that couldn't be read. Under ["mail"], so it refreshes when one lands or a retry delivers it. */
+export const failedQuery = (scope: string[]) => queryOptions({ queryKey: ["mail", "failed", scope], queryFn: () => api.failed(scope), select: (r) => r.failed });
+
 export const countsQuery = (scope: string[]) => queryOptions({ queryKey: ["mail", "counts", scope], queryFn: () => api.counts(scope) });
 
 export const threadQuery = (mailboxId: string, threadId: string) =>

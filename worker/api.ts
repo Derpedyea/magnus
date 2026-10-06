@@ -139,6 +139,15 @@ const views = new Hono<AppEnv>()
 		return c.json(mergeCounts(parts));
 	})
 
+	/** Inbound mail the queue gave up parsing, newest first, from every mailbox the request can match. */
+	.get("/failed", zValidator("query", ScopeQuery), async (c) => {
+		const queries = (await planRequest(c, c.req.valid("query").in)).filter(canMatch);
+		const lists = await Promise.all(
+			queries.map(async (q) => (await c.env.MAILBOX.getByName(q.mailboxId).listFailed({ addresses: q.addresses })).map((m) => ({ ...m, mailboxId: q.mailboxId }))),
+		);
+		return c.json({ failed: lists.flat().sort((a, b) => b.receivedAt - a.receivedAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)) });
+	})
+
 	/** Everyone the user's mailboxes have written to or heard from, best first, for the composer to suggest. */
 	.get("/contacts", async (c) => {
 		const queries = await planRequest(c);
@@ -228,16 +237,25 @@ const mb = new Hono<AppEnv>()
 	.get("/messages/:messageId/raw", async (c) => {
 		const messageId = c.req.param("messageId");
 		const blobs = await c.var.mailbox.getMessageBlobs(messageId);
-		if (!blobs?.rawKey) return c.json({ error: "Not found" }, 404);
-		const obj = await c.env.MAIL.get(blobs.rawKey);
-		if (!obj) return c.json({ error: "Not found" }, 404);
-		return new Response(obj.body, {
-			headers: {
-				"Content-Type": "message/rfc822",
-				"Content-Disposition": `attachment; filename="${messageId}.eml"`,
-				"X-Content-Type-Options": "nosniff",
-			},
-		});
+		const obj = blobs?.rawKey ? await c.env.MAIL.get(blobs.rawKey) : null;
+		return obj ? original(obj, messageId) : c.json({ error: "Not found" }, 404);
+	})
+
+	/** Queues failed mail to be parsed again. It leaves Failed once it's delivered. */
+	.post("/failed/:failedId/retry", async (c) => {
+		return (await c.var.mailbox.retryFailed(c.req.param("failedId"))) ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
+	})
+
+	.delete("/failed/:failedId", async (c) => {
+		return (await c.var.mailbox.deleteFailed(c.req.param("failedId"))) ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
+	})
+
+	/** The original of failed mail, to open somewhere else. */
+	.get("/failed/:failedId/raw", async (c) => {
+		const failedId = c.req.param("failedId");
+		const key = await c.var.mailbox.failedRawKey(failedId);
+		const obj = key ? await c.env.MAIL.get(key) : null;
+		return obj ? original(obj, failedId) : c.json({ error: "Not found" }, 404);
 	})
 
 	/** Composer attachment upload: raw body, filename in X-Filename (URI-encoded). Whatever doesn't fit in the message goes as a link. */
@@ -446,3 +464,14 @@ export type AppType = typeof routes;
 app.all("*", (c) => c.json({ error: "Not found" }, 404));
 
 const QueuedSchema = z.object({ id: z.string(), threadId: z.string(), sendAt: z.number() });
+
+/** A raw message as an .eml download. */
+function original(obj: R2ObjectBody, id: string): Response {
+	return new Response(obj.body, {
+		headers: {
+			"Content-Type": "message/rfc822",
+			"Content-Disposition": `attachment; filename="${id}.eml"`,
+			"X-Content-Type-Options": "nosniff",
+		},
+	});
+}

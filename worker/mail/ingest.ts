@@ -19,7 +19,7 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 	if (!(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
 	const raw = await env.MAIL.get(job.rawKey);
 	if (!raw) {
-		// Nothing to retry against. Logged for the DLQ/ops trail.
+		// Nothing to retry against, or to list under Failed.
 		console.error(JSON.stringify({ msg: "raw message missing", rawKey: job.rawKey, mailboxId: job.mailboxId }));
 		return;
 	}
@@ -90,6 +90,17 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 	if (!(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
 	if ("error" in delivered) throw delivered.error;
 	console.log(JSON.stringify({ msg: "ingested", ingestId: job.ingestId, mailboxId: job.mailboxId, ...delivered.result }));
+}
+
+/**
+ * Lists mail the queue gave up on under its mailbox's Failed, where someone can retry, download, or delete it. Like
+ * ingest(), it clears a mailbox deleted before or while this runs instead.
+ */
+export async function recordFailed(env: Env, job: InboundJob, error: string | null): Promise<void> {
+	if (!(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
+	await env.MAILBOX.getByName(job.mailboxId).recordFailed(job, error);
+	if (!(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
+	console.error(JSON.stringify({ msg: "mail failed", ingestId: job.ingestId, mailboxId: job.mailboxId, rawKey: job.rawKey, error }));
 }
 
 /**

@@ -70,7 +70,7 @@ describe("email() and inbound queue", () => {
 		expect(await f.env.MAILBOX.getByName(ids.alice).holding([jobs[0]!.ingestId])).toEqual([jobs[0]!.ingestId]);
 		expect(await f.env.MAIL.head(jobs[0]!.rawKey)).not.toBeNull();
 		await f.control.failNext("get", jobs[1]!.rawKey);
-		expect(await f.control.consume([jobs[1]], 10)).toEqual({ acks: [], retries: [{ id: "0", delaySeconds: 3600 }] });
+		expect(await f.control.consume([jobs[1]], 9)).toEqual({ acks: [], retries: [{ id: "0", delaySeconds: 3600 }] });
 		expect(await f.control.consume([jobs[1]])).toEqual({ acks: ["0"], retries: [] });
 	});
 });

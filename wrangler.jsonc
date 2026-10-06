@@ -38,7 +38,9 @@
 	"queues": {
 		"producers": [{ "binding": "INBOUND", "queue": "magnus-inbound" }],
 		"consumers": [
-			{ "queue": "magnus-inbound", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 10 },
+			// The Worker gives up parsing after 10 tries and lists the mail under Failed; the 10 retries after that are for
+			// listing it.
+			{ "queue": "magnus-inbound", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 20 },
 			// Fed by an Email Sending event subscription per domain, which setup creates.
 			{ "queue": "magnus-email-events", "max_batch_size": 50, "max_batch_timeout": 5, "max_retries": 5 }
 		]

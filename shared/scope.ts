@@ -49,7 +49,9 @@ export function parseCursor(value: string | undefined): ListCursor | undefined {
 export function mergeCounts(parts: Counts[]): Counts {
 	const labels = new Map<string, { label: string; threads: number; unread: number }>();
 	const addresses = new Map<string, { address: string; unread: number }>();
+	let failed = 0;
 	for (const part of parts) {
+		failed += part.failed;
 		for (const l of part.labels) {
 			const acc = labels.get(l.label) ?? { label: l.label, threads: 0, unread: 0 };
 			labels.set(l.label, { ...acc, threads: acc.threads + l.threads, unread: acc.unread + l.unread });
@@ -59,5 +61,5 @@ export function mergeCounts(parts: Counts[]): Counts {
 			addresses.set(a.address, { ...acc, unread: acc.unread + a.unread });
 		}
 	}
-	return { labels: [...labels.values()], addresses: [...addresses.values()] };
+	return { labels: [...labels.values()], addresses: [...addresses.values()], failed };
 }

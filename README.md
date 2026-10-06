@@ -46,7 +46,8 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
 - **Hostile HTML stays contained**: streaming sanitizer, strict CSP, sandboxed iframe, and remote images
   blocked until you ask.
 - **Sign in with an emailed code**, or Google if you add it. There's no sign-up; only people you add can get in.
-- **Raw messages are kept in R2**, so a parsing bug can be fixed by replaying the queue. Permanent deletion removes
+- **Raw messages are kept in R2**, so a parsing bug can be fixed by replaying the queue. Mail that still can't be read
+  after its retries goes to **Failed**, to retry or download, rather than being dropped. Permanent deletion removes
   unshared originals after the inbound retry window, and a replay cannot restore deleted mail.
 
 ## Deploy
