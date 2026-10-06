@@ -24,7 +24,7 @@ import {
 	withForward,
 } from "#shared";
 import { noteBody } from "#shared/markdown";
-import { ComposeSchema, MarkReadSchema, MAX_ATTACHMENTS, ModifyThreadsSchema, ShareLinkSchema, SignatureSchema } from "#shared/schemas";
+import { ComposeSchema, JudgeSchema, MarkReadSchema, MAX_ATTACHMENTS, ModifyThreadsSchema, ShareLinkSchema, SignatureSchema } from "#shared/schemas";
 import { isAPIError } from "better-auth/api";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
@@ -198,6 +198,12 @@ const mb = new Hono<AppEnv>()
 		await c.var.mailbox.modifyThreads(c.req.valid("json"));
 		return c.body(null, 204);
 	})
+
+	.post("/messages/:messageId/judge", zValidator("json", JudgeSchema), async (c) =>
+		(await c.var.mailbox.judgeMessage({ messageId: c.req.param("messageId"), ...c.req.valid("json") }))
+			? c.body(null, 204)
+			: c.json({ error: "Not found" }, 404),
+	)
 
 	.post("/threads/read", zValidator("json", MarkReadSchema), async (c) => {
 		await c.var.mailbox.markRead(c.req.valid("json"));

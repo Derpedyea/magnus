@@ -85,6 +85,9 @@ export const api = {
 	emptyTrash: (scope: string[]) => parseResponse(client.trash.$delete({ query: { in: formatScope(scope) } })),
 	modify: (mailboxId: string, threadIds: string[], add: string[], remove: string[]) =>
 		parseResponse(mailbox.threads.modify.$post({ param: { mailboxId }, json: { threadIds, add, remove } })),
+	/** Not spam (trusted) or Spam for one message and its sender, not the whole thread. */
+	judge: (mailboxId: string, messageId: string, verdict: "trusted" | "spam") =>
+		parseResponse(mailbox.messages[":messageId"].judge.$post({ param: { mailboxId, messageId }, json: { verdict } })),
 	markRead: (mailboxId: string, threadIds: string[], read: boolean) =>
 		parseResponse(mailbox.threads.read.$post({ param: { mailboxId }, json: { threadIds, read } })),
 	upload: (mailboxId: string, file: File) =>

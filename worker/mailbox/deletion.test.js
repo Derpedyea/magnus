@@ -84,7 +84,7 @@ function message(id, options = {}) {
         messageIdHeader: `<${id}@example.org>`, inReplyTo: [], references: [],
         from: { address: "sender@example.org" }, to: [{ address: "me@example.com" }],
         cc: [], replyTo: [], subject: "Order receipt", date: NOW - DAY, text: `Body ${id}`,
-        htmlKey: `m/mb/${id}/body.html`, attachments: [], auth: null, labels: ["trash"],
+        htmlKey: `m/mb/${id}/body.html`, attachments: [], auth: null, sender: { verified: null, internal: false, spoofed: false }, labels: ["trash"],
         ...options,
     };
 }

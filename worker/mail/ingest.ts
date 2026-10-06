@@ -3,13 +3,18 @@ import {
 	type AuthResults,
 	type InboundJob,
 	type IngestInput,
+	isValidAddress,
 	labelFromTag,
+	normalizeAddress,
 	parseMessageIds,
 	r2Keys,
+	type SenderCheck,
 	type StoredAttachment,
+	splitAddress,
+	stripSubaddress,
 } from "#shared";
 import PostalMime, { type Address as ParsedAddress, type Email } from "postal-mime";
-import { mailboxExists } from "../directory";
+import { isOwnAddress, mailboxExists } from "../directory";
 
 /** Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. */
 export async function ingest(env: Env, job: InboundJob): Promise<void> {
@@ -53,9 +58,9 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 		});
 	}
 
-	const auth = parseAuthResults(email);
-	const labels = [classify(auth) ?? "inbox"];
-	if (job.subaddress) labels.push(labelFromTag(job.subaddress));
+	const from = firstAddress(email.from) ?? { address: job.envelopeFrom };
+	const results = stampedResults(email);
+	const auth = results && authResults(results);
 
 	const input: IngestInput = {
 		id: messageId,
@@ -66,7 +71,7 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 		messageIdHeader: email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null,
 		inReplyTo: parseMessageIds(email.inReplyTo),
 		references: parseMessageIds(email.references),
-		from: firstAddress(email.from) ?? { address: job.envelopeFrom },
+		from,
 		to: flatten(email.to),
 		cc: flatten(email.cc),
 		replyTo: flatten(email.replyTo),
@@ -76,7 +81,8 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 		htmlKey,
 		attachments,
 		auth,
-		labels,
+		sender: await checkSender(env, from.address, results),
+		labels: job.subaddress ? [labelFromTag(job.subaddress)] : [],
 	};
 
 	const delivered = await env.MAILBOX.getByName(job.mailboxId)
@@ -148,19 +154,24 @@ function parseDate(value: string | undefined): number | null {
 /** Who stamps the verdicts we trust: Email Routing's MX. */
 const AUTHSERV_ID = "mx.cloudflare.net";
 
+type AuthResult = { method: string; result: string; props: Map<string, string> };
+
 /**
- * The SPF, DKIM, and DMARC verdicts Email Routing stamped on the message, for display and triage. (It already rejects
- * mail that fails a DMARC reject policy, and mail from RBL-listed IPs.) Only its own header counts. It prepends its
- * trace headers, ending with X-CF-SpamH-Score, so anything below that came from the sender and can claim anything,
- * and it doesn't always stamp one (workerd#6740).
+ * The SPF, DKIM, and DMARC verdicts Email Routing stamped on the message. (It already rejects mail that fails a DMARC
+ * reject policy, and mail from RBL-listed IPs.) Only its own header counts. It prepends its trace headers, ending with
+ * X-CF-SpamH-Score, so anything below that came from the sender and can claim anything, and it doesn't always stamp
+ * one (workerd#6740).
  */
-function parseAuthResults(email: Email): AuthResults | null {
+function stampedResults(email: Email): AuthResult[] | null {
 	const end = email.headers.findIndex((h) => h.key === "x-cf-spamh-score");
 	const header = email.headers
 		.slice(0, Math.max(end, 0))
 		.find((h) => h.key === "authentication-results" && h.value.split(";")[0]?.trim().toLowerCase() === AUTHSERV_ID);
-	if (!header) return null;
-	const results = resultsOf(header.value);
+	return header ? resultsOf(header.value) : null;
+}
+
+/** For display. */
+function authResults(results: AuthResult[]): AuthResults {
 	const dkim = results.filter((r) => r.method === "dkim");
 	return {
 		// The envelope sender's. A result for the HELO name says nothing about who sent it.
@@ -169,6 +180,33 @@ function parseAuthResults(email: Email): AuthResults | null {
 		dkim: dkim.find((r) => r.result === "pass")?.result ?? dkim[0]?.result ?? null,
 		dmarc: results.find((r) => r.method === "dmarc")?.result ?? null,
 	};
+}
+
+/**
+ * Who the mail is verifiably from, for Mailbox.ingest() to trust or distrust. The From address counts as verified
+ * when DMARC passed for its domain, or, for domains without a DMARC policy, when a DKIM signature or the envelope
+ * sender's SPF passed for that domain or a parent of it (only its owner controls those; a child can belong to anyone
+ * on a shared domain).
+ */
+async function checkSender(env: Env, address: string, results: AuthResult[] | null): Promise<SenderCheck> {
+	const passed = (method: string) => results?.filter((r) => r.method === method && r.result === "pass") ?? [];
+	const failed = (method: string) => results?.some((r) => r.method === method && r.result === "fail") ?? false;
+	const spf = results?.find((r) => r.method === "spf" && r.props.has("smtp.mailfrom"));
+	const spoofed = failed("dmarc") || (spf?.result === "fail" && passed("dkim").length === 0);
+	const from = normalizeAddress(address);
+	if (!isValidAddress(from)) return { verified: null, internal: false, spoofed };
+	const domain = splitAddress(from).domain;
+	const vouches = (d: string | undefined) => {
+		const name = d?.toLowerCase().replace(/^.*@/, "");
+		return name !== undefined && (domain === name || domain.endsWith(`.${name}`));
+	};
+	const verified =
+		!spoofed &&
+		(passed("dmarc").some((r) => r.props.get("header.from")?.toLowerCase() === domain) ||
+			passed("dkim").some((r) => vouches(r.props.get("header.d"))) ||
+			(spf?.result === "pass" && vouches(spf.props.get("smtp.mailfrom"))));
+	if (!verified) return { verified: null, internal: false, spoofed };
+	return { verified: from, internal: await isOwnAddress(env.DIRECTORY, stripSubaddress(from).base), spoofed };
 }
 
 /** RFC 8601: after the authserv-id, `method=result` then `ptype.property=value` pairs per `;`, with (comments) anywhere. */
@@ -189,14 +227,6 @@ function resultsOf(value: string): { method: string; result: string; props: Map<
 			}));
 			return [{ method: verdict[1].toLowerCase(), result: verdict[2].toLowerCase(), props }];
 		});
-}
-
-/** Minimal first-pass triage. Swap in Workers AI or a rules engine here. */
-function classify(auth: AuthResults | null): "spam" | null {
-	if (!auth) return null;
-	if (auth.dmarc === "fail") return "spam";
-	if (auth.spf === "fail" && auth.dkim !== "pass") return "spam";
-	return null;
 }
 
 /** me+Receipts@… → label "receipts". */

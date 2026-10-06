@@ -79,6 +79,30 @@ export interface AuthResults {
 	dmarc: string | null;
 }
 
+/**
+ * What the queue learned about inbound mail's sender, for Mailbox.ingest() to decide where it goes. Only a verified
+ * sender can be trusted or marked: anyone can write any From address.
+ */
+export interface SenderCheck {
+	/** The From address, normalized, when its domain's authentication vouches for it. */
+	verified: string | null;
+	/** Verified, and one of this install's own addresses. */
+	internal: boolean;
+	/** Failed its domain's authentication, so the From address is likely forged. */
+	spoofed: boolean;
+}
+
+/** Why inbound mail went where it did, kept with it. Mail in Spam shows it. */
+export type Verdict =
+	/** From someone this mailbox writes to, a colleague here, or someone it took out of Spam. */
+	| { kind: "trusted" }
+	/** From someone whose mail this mailbox marked as spam. */
+	| { kind: "marked" }
+	/** Failed its sender's authentication. */
+	| { kind: "spoofed" }
+	/** Nothing to go on. */
+	| { kind: "unknown" };
+
 export interface AttachmentMeta {
 	id: string;
 	filename: string;
@@ -161,6 +185,8 @@ export interface MessageDetail {
 		undelivered: string[];
 	} | null;
 	auth: AuthResults | null;
+	/** Why inbound mail went where it did. Null for sent mail, and mail from before verdicts were kept. */
+	verdict: Verdict | null;
 }
 
 /** A message as its thread shows it. */
@@ -228,6 +254,8 @@ export interface IngestInput {
 	htmlKey: string | null;
 	attachments: StoredAttachment[];
 	auth: AuthResults | null;
+	sender: SenderCheck;
+	/** Labels besides where its verdict puts it: its +tag's. */
 	labels: string[];
 }
 
