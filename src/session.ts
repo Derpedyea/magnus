@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "@/components/ui/toast-manager";
 import { closeDraft } from "./compose";
+import { clearNotifications } from "./push";
 import { configQuery } from "./queries";
 
 let session = 0;
@@ -16,9 +17,9 @@ export function onSessionEnd(stop: () => void) {
 export const currentSession = () => session;
 
 /**
- * Forgets everything the signed-in account left in this tab: its cached mail, the open draft, and sends still
- * waiting to go (their Undo reopens the draft). The next sign-in happens without a page load, so whoever it is
- * would otherwise see it.
+ * Forgets everything the signed-in account left in this tab: its cached mail, the open draft, sends still waiting to
+ * go (their Undo reopens the draft), and its notifications. The next sign-in happens without a page load, so whoever
+ * it is would otherwise see it.
  */
 export function endSession(qc: QueryClient) {
 	session++;
@@ -29,4 +30,6 @@ export function endSession(qc: QueryClient) {
 	qc.getMutationCache().clear();
 	closeDraft();
 	toast.close();
+	// Its notifications stop with the session (worker/push-api.ts); these are the ones already on screen.
+	void clearNotifications();
 }

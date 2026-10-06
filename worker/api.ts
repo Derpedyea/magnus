@@ -30,7 +30,7 @@ import { type Context, Hono } from "hono";
 import { z } from "zod";
 import { DraftSchema } from "#shared/drafts";
 import { admin } from "./admin";
-import { auth, currentUser, googleEnabled } from "./auth";
+import { auth, currentUser, endReplacedSession, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
 import { getSendIdentities, getUserMailboxes, isMailboxMember, resolveRecipient, setSignature } from "./directory";
 import { fileHeaders, renderEmailHtml, serveFile } from "./html";
@@ -38,6 +38,7 @@ import type { Mailbox } from "./mailbox/mailbox";
 import { getInstall } from "./settings";
 import { setup } from "./setup";
 import { draftRoutes } from "./draft-api";
+import { pushRoutes } from "./push-api";
 import { claimDraft, finishDraftSend, readDraft } from "./drafts";
 
 type MailboxStub = DurableObjectStub<Mailbox>;
@@ -63,6 +64,7 @@ app.onError((err, c) => {
 app.on(["GET", "POST"], "/auth/*", async (c) => {
 	const res = await (await auth(c.req.raw)).handler(c.req.raw);
 	if (!res.headers.getSetCookie().some((cookie) => cookie.includes("session_token"))) return res;
+	await endReplacedSession(c.req.raw, res);
 	// Signing in or out empties this site's browser cache: nothing kept for one account, including anything cached
 	// before mail was sent `no-store`, is served to the next.
 	const cleared = new Response(res.body, res);
@@ -462,6 +464,7 @@ const routes = app
 
 	.route("/", views)
 	.route("/drafts", draftRoutes)
+	.route("/push", pushRoutes)
 	.route("/mailboxes/:mailboxId", mb);
 
 /** Every route the app calls, for its typed client (src/api.ts). */

@@ -41,6 +41,9 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
 - **At home on a phone.** Install it to the home screen, or as a desktop app, for its own icon and window. The
   list and a thread take turns filling the screen, Compose floats over the list and opens full screen with Send
   above the keyboard, and newsletters laid out for a desktop shrink to fit.
+- **Notifications for new mail** on each device you turn them on for, in Settings › Notifications: the sender,
+  subject, and first line, encrypted so the push service can't read them. On iPhone and iPad, add Magnus to the Home
+  Screen first.
 - **Live updates** over hibernatable WebSockets, so idle tabs cost nothing.
 - **Trash you can empty.** Permanently delete trashed messages in a conversation or empty Trash for the addresses
   in view, with confirmation. Files still used by other mail stay; failed storage cleanup retries automatically.
@@ -129,7 +132,7 @@ Nothing is really sent locally. Outbound mail, sign-in codes included, is writte
 Drafts autosave to your account and are available from Drafts on any signed-in device. Close keeps a draft;
 the trash button discards it. Conflicting edits from two devices can be kept as a separate copy.
 
-Next up: push notifications, forwarding, and importing mail from other providers. The full list is in
+Next up: forwarding and importing mail from other providers. The full list is in
 [the roadmap](docs/ARCHITECTURE.md#8-roadmap).
 
 ## License

@@ -17,7 +17,7 @@
     "preview": "vite preview",
     "deploy": "pnpm run build && wrangler deploy",
     "postinstall": "tsc -p tsconfig.worker.json --noCheck",
-    "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.app.json && tsc -p tsconfig.test.json",
+    "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.app.json && tsc -p tsconfig.test.json && tsc -p tsconfig.sw.json",
     "test": "vitest run",
     "test:setup": "node --test scripts/setup.test.mjs",
     "cf-typegen": "wrangler types --strict-vars=false",

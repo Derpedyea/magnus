@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { fromBase64Url } from "./base64url";
 import { MAX_SIGNATURE } from "./directory";
 
 /** Email Service: to + cc + bcc combined. */
@@ -75,4 +76,33 @@ export const JudgeSchema = z.object({ verdict: z.enum(["trusted", "spam"]) });
 export const MarkReadSchema = z.object({
 	threadIds: z.array(z.string()).min(1).max(500),
 	read: z.boolean(),
+});
+
+/** `bytes` long once decoded, as a browser writes a subscription's keys. */
+const base64url = (bytes: number, check: (decoded: Uint8Array) => boolean = () => true) =>
+	z
+		.string()
+		.regex(/^[A-Za-z0-9_-]+={0,2}$/)
+		.refine((text) => {
+			let decoded: Uint8Array;
+			try {
+				decoded = fromBase64Url(text);
+			} catch {
+				// Not base64 at all, which makes it invalid rather than an error.
+				return false;
+			}
+			return decoded.length === bytes && check(decoded);
+		}, `Expected ${bytes} bytes`);
+
+/**
+ * A browser's push subscription (PushSubscription.toJSON()). The Worker posts to the endpoint, so it has to be an
+ * https URL of bounded length.
+ */
+export const PushSubscriptionSchema = z.object({
+	endpoint: z.url({ protocol: /^https$/ }).max(2048),
+	keys: z.object({
+		/** An uncompressed P-256 point. */
+		p256dh: base64url(65, (point) => point[0] === 4),
+		auth: base64url(16),
+	}),
 });

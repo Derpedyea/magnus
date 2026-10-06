@@ -5,6 +5,7 @@ import { email, queue } from "./mail/inbound";
 import { migrate } from "./migrate";
 import { mtaStsPolicy, POLICY_PATH } from "./mta-sts";
 import { cleanDraftFiles } from "./drafts";
+import { forgetExpiredDevices } from "./push";
 
 export { Mailbox } from "./mailbox/mailbox";
 export { Vault } from "./vault";
@@ -30,11 +31,11 @@ export default {
 	},
 	async scheduled(_event, env) {
 		await migrate(env.DIRECTORY);
-		try {
-			await cleanDraftFiles(env, Date.now());
-		} catch (error) {
-			console.error(JSON.stringify({ msg: "draft cleanup failed", error: String(error) }));
-			throw error;
-		}
+		const now = Date.now();
+		// Independent, so one failing doesn't hold the other up. Both run again next hour.
+		const [drafts, devices] = await Promise.allSettled([cleanDraftFiles(env, now), forgetExpiredDevices(env.DIRECTORY, now)]);
+		if (drafts.status === "rejected") console.error(JSON.stringify({ msg: "draft cleanup failed", error: String(drafts.reason) }));
+		if (devices.status === "rejected") console.error(JSON.stringify({ msg: "push cleanup failed", error: String(devices.reason) }));
+		if (drafts.status === "rejected" || devices.status === "rejected") throw new Error("Hourly cleanup failed");
 	},
 } satisfies ExportedHandler<Env>;

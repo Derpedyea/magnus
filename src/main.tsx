@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { Toaster } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError } from "./api";
+import { notificationTarget } from "./push";
 import { routeTree } from "./routeTree.gen";
 import "./index.css";
 import "./theme";
@@ -42,6 +43,14 @@ const router = createRouter({
 		return query ? `?${query}` : "";
 	},
 });
+
+// A clicked notification (public/sw.js) opens its thread in this tab, without the reload that would lose a draft.
+if ("serviceWorker" in navigator) {
+	navigator.serviceWorker.addEventListener("message", (event) => {
+		const href = notificationTarget(event.data);
+		if (href) void router.navigate({ href });
+	});
+}
 
 declare module "@tanstack/react-router" {
 	interface Register {

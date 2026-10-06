@@ -15,6 +15,7 @@ import {
 } from "#shared";
 import PostalMime, { type Address as ParsedAddress, type Email } from "postal-mime";
 import { isOwnAddress, mailboxExists } from "../directory";
+import { notifyNewMail } from "../push";
 
 /** Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. */
 export async function ingest(env: Env, job: InboundJob): Promise<void> {
@@ -96,6 +97,12 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 	if (!(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
 	if ("error" in delivered) throw delivered.error;
 	console.log(JSON.stringify({ msg: "ingested", ingestId: job.ingestId, mailboxId: job.mailboxId, ...delivered.result }));
+	if ("threadId" in delivered.result && delivered.result.inbox) {
+		// The mail is in, so a failure is logged rather than retried: a retry would find it delivered and notify nobody.
+		await notifyNewMail(env, job.mailboxId, delivered.result.threadId, input).catch((error: unknown) =>
+			console.error(JSON.stringify({ msg: "push failed", ingestId: job.ingestId, mailboxId: job.mailboxId, error: String(error) })),
+		);
+	}
 }
 
 /**
