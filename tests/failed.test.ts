@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fixture, type Fixture, job, type Mailboxes, MIME, NOW } from "./runtime/fixture";
-import type { InboundJob } from "#shared";
+import { type InboundJob, r2Keys } from "#shared";
 
 const HOUR = 3600 * 1000;
 
@@ -93,6 +93,15 @@ describe("Failed", () => {
 		await f.control.setNow(NOW + 25 * HOUR);
 		await alice().drain();
 		expect(await f.env.MAIL.head(input.rawKey)).toBeNull();
+	});
+
+	it("deletes the files an attempt extracted before it failed", async () => {
+		const input = await store();
+		await f.control.failNext("put", r2Keys.attachment(ids.alice, input.ingestId, `${input.ingestId}-2`));
+		expect(await f.control.consume([input], 10)).toEqual({ acks: ["0"], retries: [] });
+		expect(await f.env.MAIL.head(r2Keys.html(ids.alice, input.ingestId))).not.toBeNull();
+		expect((await request(`/mailboxes/${ids.alice}/failed/${input.ingestId}`, "DELETE")).status).toBe(204);
+		expect((await f.env.MAIL.list({ prefix: r2Keys.message(ids.alice, input.ingestId) })).objects).toEqual([]);
 	});
 
 	it("keeps a shared original another mailbox deletes while it's under Failed here", async () => {

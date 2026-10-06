@@ -21,6 +21,10 @@ export const r2Keys = {
 	mailbox(mailboxId: string): string {
 		return `m/${mailboxId}/`;
 	},
+	/** Everything kept for one message: its body and attachments. */
+	message(mailboxId: string, messageId: string): string {
+		return `m/${mailboxId}/${messageId}/`;
+	},
 	html(mailboxId: string, messageId: string): string {
 		return `m/${mailboxId}/${messageId}/body.html`;
 	},

@@ -809,17 +809,30 @@ export class Mailbox extends DurableObject<Env> {
 
 	/**
 	 * Deletes failed mail for good, as permanent deletion does: the tombstone keeps a retry still queued from delivering
-	 * it, and its original goes once no other mailbox holds it (deleteTrashedOriginals).
+	 * it, and its original goes once no other mailbox holds it (deleteTrashedOriginals). Files an attempt extracted
+	 * before it failed go through trash; no row names them, so they're found by their prefix.
 	 */
 	async deleteFailed(id: string): Promise<boolean> {
+		if (this.sql.exec(`SELECT 1 FROM failed WHERE id = ?1`, id).toArray().length === 0) return false;
+		// Listed before anything changes, so a failed listing leaves the mail under Failed to delete again.
+		const extracted: string[] = [];
+		let cursor: string | undefined;
+		do {
+			const page = await this.env.MAIL.list({ prefix: r2Keys.message(this.mailboxId(), id), cursor });
+			extracted.push(...page.objects.map((o) => o.key));
+			cursor = page.truncated ? page.cursor : undefined;
+		} while (cursor);
 		const deleted = this.ctx.storage.transactionSync(() => {
+			// Checked again: it can have been delivered or deleted while the files were listed.
 			const row = this.sql.exec<{ raw_key: string; received_at: number }>(`SELECT raw_key, received_at FROM failed WHERE id = ?1`, id).toArray()[0];
 			if (!row) return false;
 			this.sql.exec(`DELETE FROM failed WHERE id = ?1`, id);
 			this.sql.exec(`INSERT OR IGNORE INTO deleted_messages (id, raw_key, received_at) VALUES (?1, ?2, ?3)`, id, row.raw_key, row.received_at);
+			for (const key of extracted) this.queueTrash(key);
 			return true;
 		});
 		if (!deleted) return false;
+		await this.emptyTrash();
 		await this.scheduleOutbox();
 		this.broadcast({ type: "failed.changed" });
 		return true;
