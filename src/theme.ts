@@ -59,7 +59,25 @@ function apply() {
 		getComputedStyle(root).getPropertyValue("color");
 		setTimeout(() => freeze.remove());
 	}
+	paintThemeColor();
 	appearance.setState(() => next);
+}
+
+const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+
+/**
+ * What browsers paint around the app (an installed app's title bar, Android's status bar) matches the page behind
+ * it. Read back as hex through a canvas, since some themes are written in oklch(), which not every browser takes here.
+ */
+function paintThemeColor() {
+	const ctx = Object.assign(document.createElement("canvas"), { width: 1, height: 1 }).getContext("2d", { willReadFrequently: true });
+	if (!ctx || !themeColor) return;
+	ctx.fillStyle = getComputedStyle(document.body).backgroundColor;
+	ctx.fillRect(0, 0, 1, 1);
+	const [r = 0, g = 0, b = 0, alpha = 0] = ctx.getImageData(0, 0, 1, 1).data;
+	// Transparent until the styles load: the dev server adds them from a script that can run after this one.
+	if (alpha < 255) return;
+	themeColor.content = `#${[r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export function setMode(mode: Mode) {
@@ -76,6 +94,7 @@ export function setTheme(theme: Theme) {
 
 // Corrects a theme that's no longer offered. Then follow the OS while on System, and other tabs when they pick.
 apply();
+window.addEventListener("load", paintThemeColor, { once: true });
 systemDark.addEventListener("change", apply);
 window.addEventListener("storage", (e) => {
 	if (e.key === KEYS.mode || e.key === KEYS.light || e.key === KEYS.dark) apply();

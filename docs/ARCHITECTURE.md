@@ -314,7 +314,7 @@ work. Code: `shared/links.ts`, `worker/links.ts`.
 - Requests whose `Origin` is another site (form posts, WebSocket upgrades) are refused, so another page
   can't ride the session cookie. Better Auth checks its own endpoints.
 - Why not Cloudflare Access: it signs you in on its own domain before the app loads, which fights the
-  planned installable app (login redirects inside a home-screen app, manifest and service-worker fetches
+  installable app (login redirects inside a home-screen app, manifest and service-worker fetches
   without the cookie) and leaves no room for in-app sign-in such as passkeys.
 - Local dev: `DEV_USER_EMAIL` in `.dev.vars` signs that person in for real (a server-made one-time code), and
   only on localhost.
@@ -490,8 +490,9 @@ The web app is the only client, so it has to be good on phones and good enough t
 
 **Next: daily-driver essentials**
 
-1. **Mobile layout + installable app (PWA)**: single-column list → thread → compose on small screens, and a
-   manifest + service worker so it installs to the home screen on iOS and Android.
+1. **Mobile layout + installable app (PWA)**: implemented. The list and a thread take turns on small screens, and
+   a manifest installs it to the home screen on iOS and Android, or as a desktop app. There's no offline mode:
+   signed-in responses are `no-store`, so nothing of an account outlives its sign-out.
 2. **Push notifications** (Web Push, VAPID): the Mailbox DO already knows the moment mail lands. iOS only
    delivers web push to home-screen apps, which item 1 covers.
 3. **Drafts**: implemented with private, account-scoped D1 storage, version checks, and a device-local recovery

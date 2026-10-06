@@ -5,6 +5,10 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<meta name="referrer" content="no-referrer" />
 		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+		<!-- Installs to the home screen or dock. src/theme.ts keeps theme-color on the active theme's background. -->
+		<link rel="manifest" href="/manifest.webmanifest" />
+		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+		<meta name="theme-color" content="#ffffff" />
 		<title>Magnus Mail</title>
 		<script>
 			// The theme picked on this device (src/theme.ts), applied before first paint so it never flashes the default.
