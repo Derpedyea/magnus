@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { blockPattern, formatAddress, localRecipients, stripSubaddress } from "./address";
+import { blockPattern, formatAddress, labelFromTag, localRecipients, stripSubaddress } from "./address";
 
 describe("stripSubaddress", () => {
 	it("splits +tags", () => {
@@ -7,6 +7,15 @@ describe("stripSubaddress", () => {
 	});
 	it("passes plain addresses through", () => {
 		expect(stripSubaddress("me@example.com")).toEqual({ base: "me@example.com", tag: null });
+	});
+});
+
+describe("labelFromTag", () => {
+	it("keeps long tags at 64 characters, as before", () => {
+		expect(labelFromTag("a".repeat(70))).toBe("a".repeat(64));
+	});
+	it("gives tags named after a view a label of their own", () => {
+		expect(["Spam", "screener", "drafts", "receipts"].map(labelFromTag)).toEqual(["spam-tag", "screener-tag", "drafts-tag", "receipts"]);
 	});
 });
 

@@ -53,7 +53,7 @@ export function labelFromTag(tag: string): string {
 	const label = tag
 		.toLowerCase()
 		.replaceAll(/[^a-z0-9._-]/g, "-")
-		.slice(0, 60);
+		.slice(0, 64);
 	// A tag can't file mail under a view of its own: me+spam@ isn't Spam, and me+screener@ isn't held.
 	return RESERVED_LABELS.has(label) ? `${label}-tag` : label;
 }
