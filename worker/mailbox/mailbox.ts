@@ -459,7 +459,7 @@ export class Mailbox extends DurableObject<Env> {
 	/** Defaults for a mailbox that hasn't changed them. */
 	private mailSettings(): MailSettings {
 		const stored = this.sql.exec<{ value: string }>(`SELECT value FROM _meta WHERE key = 'settings'`).toArray()[0];
-		return { screener: false, ...(stored ? JSON.parse(stored.value) : {}) };
+		return { screener: false, outreachToSpam: true, ...(stored ? JSON.parse(stored.value) : {}) };
 	}
 
 	/** Whether the queue should have Workers AI check mail from this sender before delivering it (worker/mail/checks.ts). */
@@ -1878,6 +1878,7 @@ function placeFor(verdict: Verdict, settings: MailSettings): string {
 			return settings.screener ? "screener" : "spam";
 		case "checked":
 			if (verdict.category === "spam" || verdict.category === "phishing") return "spam";
+			if (verdict.category === "outreach") return settings.outreachToSpam ? "spam" : firstTime;
 			return verdict.category === "transactional" ? "inbox" : firstTime;
 		case "unknown":
 			return firstTime;

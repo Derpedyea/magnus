@@ -18,8 +18,13 @@ export const QUICK_MODEL = "@cf/cloudflare/clef";
  */
 export const DEEP_MODEL = "openai/gpt-6-luna";
 const GATEWAY = "default";
-/** Clef's probability of spam or phishing at or above which it's spam without asking Luna. */
+/**
+ * Clef's probability that mail is unsolicited (outreach, spam, or phishing) at or above which its category stands
+ * without asking Luna. Where outreach goes is the mailbox's call (MailSettings), so it counts as unsolicited here.
+ */
 const SURE_SPAM = 0.9;
+/** Outreach can be let through, so calling it that takes Clef being this sure of it, not just that it's unsolicited. */
+const SURE_OUTREACH = 0.8;
 /** …and below which it isn't. */
 const SURE_CLEAN = 0.2;
 /** Bounds what a message costs to check: about a thousand tokens of body, and little of anything else. */
@@ -35,7 +40,8 @@ const CATEGORIES: Record<MailCategory, string> = {
 	personal: "Written by a person to the recipient: a conversation, question, reply, or request they'd expect.",
 	transactional: "From a service the recipient uses, about their account or activity: receipts, sign-in codes, password resets, shipping, bills, alerts.",
 	newsletter: "Bulk mail the recipient likely signed up for: newsletters, digests, product updates, promotions from a company they use.",
-	spam: "Unsolicited bulk or cold mail: marketing they didn't ask for, cold sales or SEO outreach, scams.",
+	outreach: "A stranger writing to them one-to-one, unasked, to sell, recruit, pitch a partnership or services, or get a meeting.",
+	spam: "Unsolicited bulk mail: marketing they didn't ask for, scams.",
 	phishing: "Tries to steal credentials, money, or data, or spread malware: impersonates a brand, bank, colleague, or service.",
 };
 
@@ -96,8 +102,10 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 	);
 	if (!quickReply.success) throw new CheckError(`${QUICK_MODEL} answered off-schema`);
 	const quick = quickReply.data.answers.category.probabilities;
-	const spam = quick.spam + quick.phishing;
-	if (spam >= SURE_SPAM || spam < SURE_CLEAN) return { kind: "checked", category: likeliest(quick), spam, model: QUICK_MODEL };
+	const spam = quick.outreach + quick.spam + quick.phishing;
+	const top = likeliest(quick);
+	const sure = spam < SURE_CLEAN || (spam >= SURE_SPAM && (top !== "outreach" || quick.outreach >= SURE_OUTREACH));
+	if (sure) return { kind: "checked", category: top, spam, model: QUICK_MODEL };
 
 	const response = await models.gateway(GATEWAY).run(
 		{

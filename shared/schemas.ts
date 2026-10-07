@@ -75,7 +75,7 @@ export const SignatureSchema = z.object({
 export const JudgeSchema = z.object({ verdict: z.enum(["trusted", "spam"]) });
 
 /** A change to some of a mailbox's MailSettings; what it leaves out stays as it is. */
-export const MailSettingsSchema = z.object({ screener: z.boolean() }).partial() satisfies z.ZodType<Partial<MailSettings>>;
+export const MailSettingsSchema = z.object({ screener: z.boolean(), outreachToSpam: z.boolean() }).partial() satisfies z.ZodType<Partial<MailSettings>>;
 
 export const MarkReadSchema = z.object({
 	threadIds: z.array(z.string()).min(1).max(500),

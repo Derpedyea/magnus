@@ -101,17 +101,19 @@ export interface SenderCheck {
 export interface MailSettings {
 	/** First-time senders' mail waits in the Screener until someone lets them in. */
 	screener: boolean;
+	/** Cold outreach (MailCategory `outreach`) goes to Spam. Off, it's treated like other mail from someone new. */
+	outreachToSpam: boolean;
 }
 
 /** What the checks sort mail from senders a mailbox doesn't know into (worker/mail/checks.ts). */
-export const MAIL_CATEGORIES = ["personal", "transactional", "newsletter", "spam", "phishing"] as const;
+export const MAIL_CATEGORIES = ["personal", "transactional", "newsletter", "outreach", "spam", "phishing"] as const;
 export type MailCategory = (typeof MAIL_CATEGORIES)[number];
 
 /** Workers AI's call on mail from a sender a mailbox doesn't know. */
 export type MailCheck =
 	/**
-	 * `spam` is the quick model's probability that it's spam or phishing; `model` is whichever model's category
-	 * stood: the quick one when it was sure, else the deep one.
+	 * `spam` is the quick model's probability that it's unsolicited (outreach, spam, or phishing); `model` is whichever
+	 * model's category stood: the quick one when it was sure, else the deep one.
 	 */
 	| { kind: "checked"; category: MailCategory; spam: number; model: string }
 	/** The models couldn't be reached or answered nonsense, every try. */
