@@ -23,10 +23,13 @@ const GATEWAY = "default";
  * without asking Luna. Where outreach goes is the mailbox's call (MailSettings), so it counts as unsolicited here.
  */
 const SURE_SPAM = 0.9;
-/** Outreach can be let through, so calling it that takes Clef being this sure of it, not just that it's unsolicited. */
-const SURE_OUTREACH = 0.8;
 /** …and below which it isn't. */
 const SURE_CLEAN = 0.2;
+/**
+ * How sure Clef must also be whether unsolicited mail is outreach, or spam and phishing, to decide alone: a mailbox can
+ * let outreach through, so that split decides where it goes.
+ */
+const SURE_OUTREACH = 0.8;
 /** Bounds what a message costs to check: about a thousand tokens of body, and little of anything else. */
 const MAX_BODY = 4000;
 /** A plain-text body searched for links, at most. */
@@ -104,7 +107,9 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 	const quick = quickReply.data.answers.category.probabilities;
 	const spam = quick.outreach + quick.spam + quick.phishing;
 	const top = likeliest(quick);
-	const sure = spam < SURE_CLEAN || (spam >= SURE_SPAM && (top !== "outreach" || quick.outreach >= SURE_OUTREACH));
+	// Sure it's unsolicited, Clef must also be sure whether it's outreach or not: a mailbox can let outreach through.
+	const settled = Math.max(quick.outreach, quick.spam + quick.phishing) >= SURE_OUTREACH;
+	const sure = spam < SURE_CLEAN || (spam >= SURE_SPAM && settled);
 	if (sure) return { kind: "checked", category: top, spam, model: QUICK_MODEL };
 
 	const response = await models.gateway(GATEWAY).run(
