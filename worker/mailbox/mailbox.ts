@@ -438,6 +438,8 @@ export class Mailbox extends DurableObject<Env> {
 
 	/** Whether the queue should have Workers AI check mail from this sender before delivering it (worker/mail/checks.ts). */
 	async needsCheck(sender: SenderCheck, messageIdHeader: string | null, ingestId: string): Promise<boolean> {
+		// Being deleted: its mail goes nowhere, so it isn't shown to the models either.
+		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) return false;
 		// Already delivered or deleted (the queue redelivered it), or a second copy of a message, which keeps where the
 		// first went (ingest()): no need to check it again.
 		const known = this.sql.exec(

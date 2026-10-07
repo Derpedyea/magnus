@@ -17,7 +17,7 @@ import {
 import PostalMime, { type Address as ParsedAddress, type Email } from "postal-mime";
 import { isOwnAddress, mailboxExists } from "../directory";
 import { notifyNewMail } from "../push";
-import { checkMail, type MailFacts, type Models } from "./checks";
+import { checkMail, type MailFacts, type Models, readHtml, readText } from "./checks";
 
 /**
  * Tries at checking mail from an unknown sender, about a minute and a half apart in all, before it's delivered unchecked
@@ -25,8 +25,6 @@ import { checkMail, type MailFacts, type Models } from "./checks";
  */
 const CHECK_ATTEMPTS = 3;
 const MAX_CHECK_ERROR = 300;
-/** HTML read for the checks, at most: what the models see is cut far shorter, so the rest would only cost CPU. */
-const MAX_SCANNED = 200_000;
 
 /** Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. */
 export async function ingest(env: Env, job: InboundJob, models: Models = env.AI): Promise<void> {
@@ -49,7 +47,6 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 	const results = stampedResults(email);
 	const sender = await checkSender(env, from.address, results);
 	const text = email.text ?? (email.html ? htmlToText(email.html) : null);
-	const html = email.html?.slice(0, MAX_SCANNED) ?? null;
 	const facts: MailFacts = {
 		to: job.envelopeTo,
 		from,
@@ -58,12 +55,14 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		subject: email.subject ?? "(no subject)",
 		// What the recipient sees: the app shows the HTML part when there is one, and the sender can make a plain-text
 		// part say anything else.
-		text: html ? await visibleText(html) : text,
-		html,
+		page: email.html ? await readHtml(email.html) : readText(text ?? ""),
 		attachments: email.attachments.map((a) => ({ filename: a.filename ?? "", contentType: a.mimeType })),
 	};
 	const messageIdHeader = email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null;
-	const check = (await mailbox.needsCheck(sender, messageIdHeader, messageId)) ? await checkOrGiveUp(env, models, facts, job) : null;
+	const needed = await mailbox.needsCheck(sender, messageIdHeader, messageId);
+	// Mail of a mailbox deleted since the first check mustn't reach the models.
+	if (needed && !(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
+	const check = needed ? await checkOrGiveUp(env, models, facts, job) : null;
 	// Back in the queue with the failure counted (checkOrGiveUp()): this copy of the job is done.
 	if (check === "requeued") return;
 
@@ -284,24 +283,6 @@ function resultsOf(value: string): { method: string; result: string; props: Map<
 			}));
 			return [{ method: verdict[1].toLowerCase(), result: verdict[2].toLowerCase(), props }];
 		});
-}
-
-/**
- * An HTML body's text as the app shows it, for the checks: elements hidden by their own style or `hidden` attribute are
- * dropped, so hidden padding can't push what the recipient sees past what the models read. (Hiding by a stylesheet
- * class isn't caught.)
- */
-async function visibleText(html: string): Promise<string> {
-	const hidden = /display\s*:\s*none|visibility\s*:\s*hidden|(?:font-size|opacity|max-height|max-width)\s*:\s*0(?![.\d])/i;
-	const shown = await new HTMLRewriter()
-		.on("*", {
-			element(el) {
-				if (el.hasAttribute("hidden") || hidden.test(el.getAttribute("style") ?? "")) el.remove();
-			},
-		})
-		.transform(new Response(html))
-		.text();
-	return htmlToText(shown);
 }
 
 /** me+Receipts@… → label "receipts". */

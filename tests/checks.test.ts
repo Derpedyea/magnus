@@ -102,6 +102,38 @@ describe("checks by Workers AI", () => {
 		expect(quick.state.body).not.toContain("Nothing to see");
 	});
 
+	it.each([
+		["a CSS comment", '<div style="/* display:none */">Wire the payment today.</div>'],
+		["a custom property", '<div style="--note: display:none">Wire the payment today.</div>'],
+		["over 200,000 characters of markup before it", `<!-- ${"x".repeat(250_000)} --><p>Wire the payment today.</p>`],
+		["an unclosed hidden element in an earlier cell", '<table><tr><td><span style="display:none">gone</td><td>Wire the payment today.</td></tr></table>'],
+		["a hidden image before it", '<img style="display:none" src="cid:x"><p>Wire the payment today.</p>'],
+	])("reads visible text despite %s", async (_, html) => {
+		await f.control.setModels({ quick: 0.5 });
+		await deliver(VERIFIED, "Lunch?", { html });
+		const [quick] = (await calls()).map((c) => JSON.parse(c.inputs));
+		expect(quick.state.body).toContain("Wire the payment today.");
+		expect(quick.state.body).not.toContain("gone");
+	});
+
+	it("records where links really go, and not links the recipient can't see", async () => {
+		await f.control.setModels({ quick: 0.5 });
+		const hiddenLinks = Array.from({ length: 50 }, (_, i) => `<a href="https://pad${i}.example/">.</a>`).join("");
+		await deliver(VERIFIED, "See below", { html: `<div style="display:none">${hiddenLinks}</div>`
+			+ '<a href="https://trusted.example@phish.example/login">Review</a><a href="https://&#112;hish2.example/x">e</a>'
+			+ '<a href="https&colon;//phish3.example/">c</a><a hidden href="https://hidden.example/">h</a><a href="#top">top</a>' });
+		const [quick] = (await calls()).map((c) => JSON.parse(c.inputs));
+		expect(quick.state.linkDomains).toEqual(["phish.example", "phish2.example", "phish3.example"]);
+	});
+
+	it("doesn't show a deleted mailbox's mail to the models", async () => {
+		const input = await store();
+		// Deleted after the first check, while the message is read.
+		await f.control.afterIO({ operation: "get", prefix: input.rawKey, mailboxId: ids.alice });
+		await f.control.parse(input);
+		expect(await calls()).toEqual([]);
+	});
+
 	it("finds protocol-relative links and bare IP hosts", async () => {
 		await f.control.setModels({ quick: 0.5 });
 		await deliver(VERIFIED, "See below", { html: '<a href="//phish.example/login">Review document</a> <a href="http://203.0.113.9/x">here</a> // not a link' });

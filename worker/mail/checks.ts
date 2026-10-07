@@ -23,10 +23,10 @@ const SURE_SPAM = 0.9;
 const SURE_CLEAN = 0.2;
 /** Bounds what a message costs to check: about a thousand tokens of body, and little of anything else. */
 const MAX_BODY = 4000;
-/** Text searched for links, at most. */
+/** A plain-text body searched for links, at most. */
 const MAX_LINK_SCAN = 200_000;
 const MAX_FIELD = 200;
-const MAX_LINKS = 20;
+const MAX_LINKS = 40;
 const MAX_FILES = 10;
 const MAX_REPLY_TO = 5;
 
@@ -58,9 +58,14 @@ export interface MailFacts {
 	verifiedSender: boolean;
 	replyTo: Address[];
 	subject: string;
-	text: string | null;
-	html: string | null;
+	/** What the recipient sees, and the hosts its links go to (readHtml(), readText()). */
+	page: Page;
 	attachments: { filename: string; contentType: string }[];
+}
+
+export interface Page {
+	text: string;
+	links: string[];
 }
 
 const QuickReply = z.object({
@@ -119,16 +124,114 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 	return { kind: "checked", category: DeepVerdict.parse(JSON.parse(text)).category, spam, model: DEEP_MODEL };
 }
 
-/** Where links go, the first MAX_LINKS hosts, found without collecting every link a huge message has. */
-function linkDomains(text: string): string[] {
-	const found = new Set<string>();
-	// Absolute links, and protocol-relative ones (href="//host/…"), which browsers open too; to a name or a bare IPv4.
-	for (const m of text.matchAll(/(?:https?:)?\/\/(\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})/gi)) {
-		const host = m[1]?.toLowerCase().slice(0, MAX_FIELD);
-		if (host) found.add(host);
-		if (found.size >= MAX_LINKS) break;
+/** Elements whose content a browser doesn't show as text. */
+const UNSHOWN = new Set(["head", "title", "style", "script", "noscript", "template"]);
+
+/**
+ * What the app shows of an HTML body: its text, and the hosts its links go to. A parser reads the whole document the way
+ * the iframe renders it, so padding before the visible part can't push it out of what the models read; only what's
+ * collected is bounded. Content hidden by an element's own style or `hidden` attribute doesn't count, nor do links in
+ * it. (Hiding through a stylesheet class isn't caught: only a browser could tell.)
+ */
+export async function readHtml(html: string): Promise<Page> {
+	// Depth inside elements whose content isn't shown. onEndTag fires on implicit closes too, so an unclosed hidden
+	// element ends where the browser ends it.
+	let hidden = 0;
+	let text = "";
+	const links = new Set<string>();
+	await new HTMLRewriter()
+		.on("*", {
+			element(el) {
+				const style = el.getAttribute("style");
+				const shown = !(UNSHOWN.has(el.tagName) || hiddenByStyle(style) || (el.hasAttribute("hidden") && !shownByStyle(style)));
+				if (hidden === 0 && shown) {
+					// Elements break words, as blocks and <br> do on screen.
+					if (text.length < MAX_BODY * 2) text += " ";
+					const href = el.tagName === "a" || el.tagName === "area" ? el.getAttribute("href") : null;
+					const host = href === null ? null : linkHost(decodeEntities(href));
+					if (host && links.size < MAX_LINKS) links.add(host);
+				}
+				if (shown) return;
+				try {
+					el.onEndTag(() => {
+						hidden--;
+					});
+					hidden++;
+				} catch {
+					// A void element (an <img>, say) has no end tag, and no content to hide.
+				}
+			},
+		})
+		.onDocument({
+			text(chunk) {
+				if (hidden === 0 && text.length < MAX_BODY * 2) text += chunk.text;
+			},
+		})
+		.transform(new Response(html))
+		.arrayBuffer();
+	return { text: decodeEntities(text).replaceAll(/\s+/g, " ").trim(), links: [...links] };
+}
+
+/** A plain-text body, and the hosts of the links in it. */
+export function readText(text: string): Page {
+	const links = new Set<string>();
+	for (const m of text.slice(0, MAX_LINK_SCAN).matchAll(/https?:\/\/[^\s<>"']+/gi)) {
+		const host = linkHost(m[0]);
+		if (host) links.add(host);
+		if (links.size >= MAX_LINKS) break;
 	}
-	return [...found];
+	return { text, links: [...links] };
+}
+
+/** Where a browser takes a link: http(s) only, with userinfo (`trusted.example@phish.example`) and IDNs resolved. */
+function linkHost(href: string): string | null {
+	const base = "https://relative.invalid/";
+	try {
+		const url = new URL(href.trim(), base);
+		if ((url.protocol !== "https:" && url.protocol !== "http:") || url.hostname === "relative.invalid") return null;
+		return url.hostname.slice(0, MAX_FIELD);
+	} catch {
+		return null;
+	}
+}
+
+/** Declarations as a browser reads them: comments dropped, custom properties (`--x: …`) aren't styles. */
+function declarations(style: string | null): Map<string, string> {
+	const out = new Map<string, string>();
+	for (const decl of (style ?? "").replaceAll(/\/\*[\s\S]*?(?:\*\/|$)/g, "").split(";")) {
+		const at = decl.indexOf(":");
+		const name = decl.slice(0, at).trim().toLowerCase();
+		if (at < 0 || name.startsWith("--")) continue;
+		out.set(name, decl.slice(at + 1).replace(/!\s*important\s*$/i, "").trim().toLowerCase());
+	}
+	return out;
+}
+
+/** Only what certainly hides content: an over-eager guess would hide what the recipient sees from the models. */
+function hiddenByStyle(style: string | null): boolean {
+	const d = declarations(style);
+	const zero = (v: string | undefined) => v !== undefined && /^0*(?:\.0*)?(?:[a-z%]+)?$/.test(v);
+	return d.get("display") === "none" || d.get("visibility") === "hidden" || d.get("visibility") === "collapse" || zero(d.get("opacity")) || zero(d.get("font-size"));
+}
+
+/** An inline `display` other than none overrides the `hidden` attribute. */
+function shownByStyle(style: string | null): boolean {
+	const display = declarations(style).get("display");
+	return display !== undefined && display !== "none";
+}
+
+const NAMED: Record<string, string> = {
+	amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", colon: ":", sol: "/", period: ".", commat: "@",
+	quest: "?", num: "#", percnt: "%", equals: "=", lowbar: "_", hyphen: "-", dash: "-", plus: "+",
+};
+
+/** Character references as a browser decodes them in text and attributes: numeric ones, and the named ones links use. */
+function decodeEntities(text: string): string {
+	return text.replaceAll(/&(?:#(\d+)|#x([\da-f]+)|([a-z]+));?/gi, (whole, dec: string | undefined, hex: string | undefined, name: string | undefined) => {
+		const code = dec ? Number(dec) : hex ? Number.parseInt(hex, 16) : null;
+		if (code !== null) return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+		return (name && NAMED[name.toLowerCase()]) ?? whole;
+	});
 }
 
 function likeliest(probabilities: Record<MailCategory, number>): MailCategory {
@@ -139,7 +242,7 @@ function likeliest(probabilities: Record<MailCategory, number>): MailCategory {
 function describe(facts: MailFacts) {
 	const cut = (text: string, max = MAX_FIELD) => (text.length > max ? `${text.slice(0, max)}…` : text);
 	const address = (a: Address) => ({ address: cut(a.address), ...(a.name ? { name: cut(a.name) } : {}) });
-	const body = facts.text ?? "";
+	const body = facts.page.text;
 	return {
 		to: cut(facts.to),
 		from: address(facts.from),
@@ -147,7 +250,7 @@ function describe(facts: MailFacts) {
 		replyTo: facts.replyTo.slice(0, MAX_REPLY_TO).map(address),
 		subject: cut(facts.subject),
 		// Where links go, since phishing hides them behind text.
-		linkDomains: linkDomains(`${facts.html ?? ""} ${body}`.slice(0, MAX_LINK_SCAN)),
+		linkDomains: facts.page.links,
 		attachments: facts.attachments.slice(0, MAX_FILES).map((a) => ({ filename: cut(a.filename), contentType: cut(a.contentType) })),
 		body: cut(body, MAX_BODY),
 	};
