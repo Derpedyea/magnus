@@ -363,9 +363,11 @@ export class Mailbox extends DurableObject<Env> {
 			return { threadId: existing.thread_id, duplicate: true, inbox: false };
 		}
 
-		const verdict = this.judge(input.sender, input.check);
-		const place = placeFor(verdict, this.mailSettings());
+		const judged = this.judge(input.sender, input.check);
+		const place = placeFor(judged, this.mailSettings());
 		const labels = [place, ...input.labels];
+		// Its banner names the setting only when the setting is why it's in Spam, not after someone moves it there.
+		const verdict = judged.kind === "checked" && judged.category === "outreach" && place === "spam" ? { ...judged, bySetting: true as const } : judged;
 
 		// Same message delivered twice to this mailbox (e.g. sent to two of our addresses,
 		// or our own outbound copy coming back): keep one copy, merge labels.

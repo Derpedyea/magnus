@@ -115,7 +115,14 @@ export type MailCheck =
 	 * `spam` is the quick model's probability that it's unsolicited (outreach, spam, or phishing); `model` is whichever
 	 * model's category stood: the quick one when it was sure, else the deep one.
 	 */
-	| { kind: "checked"; category: MailCategory; spam: number; model: string }
+	| {
+			kind: "checked";
+			category: MailCategory;
+			spam: number;
+			model: string;
+			/** Cold outreach that went to Spam because of the mailbox's setting (MailSettings.outreachToSpam). Set by the mailbox. */
+			bySetting?: true;
+	  }
 	/** The models couldn't be reached or answered nonsense, every try. */
 	| { kind: "unchecked"; error: string };
 

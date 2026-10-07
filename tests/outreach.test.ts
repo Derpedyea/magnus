@@ -37,6 +37,16 @@ describe("cold outreach", () => {
 		expect((await deliver())?.labels).toEqual(["screener"]);
 	});
 
+	it("says the setting sent it to Spam only when it did, not when someone moved it there", async () => {
+		expect((await deliver())?.verdict).toMatchObject({ category: "outreach", bySetting: true });
+		await box().updateSettings({ outreachToSpam: false });
+		const arrived = await deliver();
+		await box().modifyThreads({ threadIds: [arrived?.threadId ?? ""], add: ["spam"] });
+		const moved = (await box().getMessage(arrived?.id ?? ""))?.message;
+		expect(moved?.labels).toEqual(["spam"]);
+		expect(moved?.verdict).not.toHaveProperty("bySetting");
+	});
+
 	it("asks Luna when Clef is sure mail is unsolicited but not that it's only outreach", async () => {
 		await box().updateSettings({ outreachToSpam: false });
 		await f.control.setModels({ quick: { personal: 0.05, transactional: 0, newsletter: 0, outreach: 0.5, spam: 0, phishing: 0.45 }, deep: "phishing" });

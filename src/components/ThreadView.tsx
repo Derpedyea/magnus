@@ -522,7 +522,7 @@ function spamReason({ from, verdict }: MessageDetail): { danger: boolean; reason
 			return { danger: false, reason: "It couldn't be checked, so it waits here instead of your inbox." };
 		case "checked":
 			if (verdict.category === "phishing") return { danger: true, reason: "It looks like phishing: it may be after your password, money, or data." };
-			if (verdict.category === "outreach") return { danger: false, reason: "It looks like cold outreach: a stranger pitching, recruiting, or asking for a meeting.", settings: true };
+			if (verdict.category === "outreach" && verdict.bySetting) return { danger: false, reason: "It looks like cold outreach: a stranger pitching, recruiting, or asking for a meeting.", settings: true };
 			if (verdict.category === "spam") return { danger: false, reason: "It looks like marketing you didn't ask for, or a scam." };
 			return { danger: false, reason: "It was marked as spam." };
 		default:
