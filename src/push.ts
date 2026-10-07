@@ -36,11 +36,11 @@ export async function enablePush(permission: Promise<NotificationPermission>, pu
 	await api.enablePush({ endpoint: subscription.endpoint, keys: { p256dh: key(subscription, "p256dh"), auth: key(subscription, "auth") } });
 }
 
-/**
- * Stops this session's notifications here. The browser keeps its subscription for turning them on again, but nothing
- * sends to it, and whoever signs in here next starts with notifications off.
- */
-export const disablePush = () => api.disablePush();
+/** Stops this session's notifications here: the server forgets this browser, then the browser drops its subscription. */
+export async function disablePush(): Promise<void> {
+	await api.disablePush();
+	await unsubscribe();
+}
 
 function key(subscription: PushSubscription, name: PushEncryptionKeyName): string {
 	const value = subscription.getKey(name);
@@ -48,11 +48,33 @@ function key(subscription: PushSubscription, name: PushEncryptionKeyName): strin
 	return toBase64Url(new Uint8Array(value));
 }
 
-/** Closes notifications already showing, so an account's mail doesn't stay on screen once it signs out. */
-export async function clearNotifications(): Promise<void> {
+/**
+ * For a session that ended here: drops the browser's subscription and closes notifications already showing. The
+ * server forgot the browser with the session, but a push the push service already holds (for up to a day, while the
+ * device is offline) would still arrive, and show the account's mail to whoever signs in next. Tried 3 times.
+ */
+export async function forgetDevice(): Promise<void> {
 	if (!("serviceWorker" in navigator)) return;
 	const registration = await navigator.serviceWorker.getRegistration();
-	for (const notification of (await registration?.getNotifications()) ?? []) notification.close();
+	if (!registration) return;
+	try {
+		for (let attempt = 1; ; attempt++) {
+			try {
+				return await unsubscribe();
+			} catch (error) {
+				if (attempt === 3) throw error;
+				await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+			}
+		}
+	} finally {
+		for (const notification of await registration.getNotifications()) notification.close();
+	}
+}
+
+/** Ends this browser's subscription, so the browser drops any push still on its way to it. */
+async function unsubscribe(): Promise<void> {
+	const subscription = await (await navigator.serviceWorker.getRegistration())?.pushManager.getSubscription();
+	if (subscription && !(await subscription.unsubscribe())) throw new Error("The browser kept its push subscription");
 }
 
 /** The page a clicked notification asks this tab to open (public/sw.js), if the message is one. */

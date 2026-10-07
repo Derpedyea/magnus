@@ -182,9 +182,11 @@ export async function currentSessionId(request: Request): Promise<string | null>
  * Deleted directly, since Better Auth's sign-out logs a failed delete and carries on; a failure here fails the sign-in.
  */
 export async function endReplacedSession(request: Request, response: Response): Promise<void> {
+	// Impersonating someone swaps the admin's cookie too, but Better Auth keeps their session to return to.
+	if (new URL(request.url).pathname.endsWith("/admin/impersonate-user")) return;
 	const sent = sessionToken(request.headers.get("Cookie"));
-	// Signing out sets it empty.
-	const set = response.headers.getSetCookie().map(sessionToken).find((token) => token !== null);
+	// The last one counts, as in a browser: some endpoints clear the cookie before setting it. Signing out leaves it empty.
+	const set = response.headers.getSetCookie().map(sessionToken).findLast((token) => token !== null);
 	if (!sent || !set || sent === set) return;
 	const previous = await (await auth(request)).api.getSession({ headers: request.headers, query: { disableCookieCache: true } });
 	if (previous) await env.DIRECTORY.prepare(`DELETE FROM auth_sessions WHERE id = ?1`).bind(previous.session.id).run();

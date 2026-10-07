@@ -168,8 +168,10 @@ export async function encryptPayload(
 	const shared = new Uint8Array(await crypto.subtle.deriveBits(agreement, sender.privateKey, 256));
 
 	const ikm = await hkdf(fromBase64Url(device.auth), shared, concat(encode("WebPush: info\0"), receiverKey, senderKey), 32);
-	const cek = await hkdf(salt, ikm, encode("Content-Encoding: aes128gcm\0"), 16);
-	const nonce = await hkdf(salt, ikm, encode("Content-Encoding: nonce\0"), 12);
+	const [cek, nonce] = await Promise.all([
+		hkdf(salt, ikm, encode("Content-Encoding: aes128gcm\0"), 16),
+		hkdf(salt, ikm, encode("Content-Encoding: nonce\0"), 12),
+	]);
 	const key = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
 	// The only record, so it ends with the last-record delimiter and needs no padding.
 	const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, concat(plaintext, new Uint8Array([2]))));

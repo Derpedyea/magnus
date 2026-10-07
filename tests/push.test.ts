@@ -111,6 +111,21 @@ describe("push notifications", () => {
 		expect(await deliver(ids.alice, "after-switch")).toEqual([]);
 	});
 
+	it("keeps an admin's session, and their browser, while they impersonate someone, so they can stop", async () => {
+		const a = await browser("a");
+		const admin = await f.login("admin");
+		await push(admin, "PUT", a.subscription);
+		const post = (path: string, cookie: string) => f.worker.fetch(`https://magnus.test/api/auth${path}`, {
+			method: "POST", headers: { Cookie: cookie, Origin: "https://magnus.test", "Content-Type": "application/json" }, body: JSON.stringify({ userId: "alice" }),
+		});
+		const started = await post("/admin/impersonate-user", admin);
+		expect(started.status).toBe(200);
+		expect(await rows()).toHaveLength(1);
+		const impersonating = started.headers.getSetCookie().map((cookie) => cookie.split(";")[0] ?? "").filter((cookie) => !cookie.endsWith("=")).join("; ");
+		expect((await post("/admin/stop-impersonating", impersonating)).status).toBe(200);
+		expect(await rows()).toHaveLength(1);
+	});
+
 	it("forgets browsers whose session expired unused", async () => {
 		const [a, b] = [await browser("a"), await browser("b")];
 		await push(await f.login("alice"), "PUT", a.subscription);

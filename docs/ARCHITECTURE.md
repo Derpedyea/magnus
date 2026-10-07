@@ -291,9 +291,11 @@ Web Push with VAPID, on WebCrypto alone. Code: `worker/push.ts`, `worker/push-ap
    browser, so it has one subscription, and `ON DELETE CASCADE` ends it with the session: signing out, suspension, or
    removal. The insert lands only while the session is live and isn't an admin impersonating someone, checked in the
    same write, since the session cookie stays cached for minutes after revocation. Signing in over someone's session
-   ends it (`endReplacedSession()`), so a shared browser stops showing their mail; whoever signs in there starts with
-   notifications off, and turning them on takes the browser's subscription over. The hourly cron forgets
-   subscriptions whose session expired unused, which Better Auth never deletes.
+   ends it (`endReplacedSession()`), so a shared browser stops showing their mail. Impersonation is the exception:
+   Better Auth keeps the admin's session to return to. When a session ends in the app, or notifications are turned
+   off, the browser also drops its subscription (`src/push.ts`), since a push service holds pushes for a device that's
+   offline and one could otherwise reach whoever signs in next. The hourly cron forgets subscriptions whose session
+   expired unused, which Better Auth never deletes.
 3. **Notify:** once `ingest()` stores new mail labeled `inbox`, the queue consumer pushes to every member of the
    mailbox with a live session: the sender, subject, and snippet, encrypted to the browser (RFC 8291) so the push
    service can't read it, at `Urgency: high` so a dozing phone gets it at once. The tag is the ingest id, so mail fanned out to two of your mailboxes shows once. Spam,

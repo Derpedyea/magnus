@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "@/components/ui/toast-manager";
 import { closeDraft } from "./compose";
-import { clearNotifications } from "./push";
+import { forgetDevice } from "./push";
 import { configQuery } from "./queries";
 
 let session = 0;
@@ -30,6 +30,6 @@ export function endSession(qc: QueryClient) {
 	qc.getMutationCache().clear();
 	closeDraft();
 	toast.close();
-	// Its notifications stop with the session (worker/push-api.ts); these are the ones already on screen.
-	void clearNotifications();
+	// The server stopped this session's notifications with it (worker/push-api.ts); this stops any already on their way.
+	forgetDevice().catch((error: unknown) => console.error("Couldn't drop this browser's push subscription", error));
 }
