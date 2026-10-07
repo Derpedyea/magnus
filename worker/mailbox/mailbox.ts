@@ -934,7 +934,8 @@ export class Mailbox extends DurableObject<Env> {
 		this.sql.exec(
 			`INSERT INTO failed (id, raw_key, envelope_from, envelope_to, address, subaddress, raw_size, received_at, error, failed_at, imported)
 			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-			 ON CONFLICT (id) DO UPDATE SET error = coalesce(excluded.error, failed.error), failed_at = excluded.failed_at`,
+			 ON CONFLICT (id) DO UPDATE SET error = coalesce(excluded.error, failed.error), failed_at = excluded.failed_at,
+				imported = excluded.imported`,
 			job.ingestId,
 			job.rawKey,
 			job.envelopeFrom,

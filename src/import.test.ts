@@ -43,7 +43,21 @@ describe("planImport", () => {
 	});
 
 	it("refuses an export whose folders and labels it can't read, rather than dropping them", async () => {
-		await expect(planImport(picked([["mail_x/labels.json", "[]"], ["mail_x/a.eml", "x"]]))).rejects.toThrow("Couldn't read mail_x/labels.json");
+		await expect(planImport(picked([["mail_x/labels.json", "[]"], ["mail_x/a.eml", "x"], ["mail_x/a.metadata.json", metadata("a", 1, ["0"])]])))
+			.rejects.toThrow("Couldn't read mail_x/labels.json");
+	});
+
+	it("leaves a labels.json alone in a folder Proton didn't export", async () => {
+		const plan = await planImport(picked([["Saved/labels.json", "[]"], ["Saved/a.eml", "From: a@b.test\r\n\r\nA"]]));
+		expect(plan).toMatchObject({ proton: false, items: [{ path: "Saved/a.eml" }] });
+	});
+
+	it("reads only the version of Proton's details it knows", async () => {
+		const later = (json: string) => json.replace('"Version":1', '"Version":2');
+		const plan = await planImport(picked([["mail_y/a.eml", "x"], ["mail_y/a.metadata.json", later(metadata("a", 1, ["0"]))]]));
+		expect(plan.unreadable).toEqual(["mail_y/a.eml"]);
+		await expect(planImport(picked([["mail_y/labels.json", later(LABELS)], ["mail_y/a.eml", "x"], ["mail_y/a.metadata.json", metadata("a", 1, ["0"])]])))
+			.rejects.toThrow("Couldn't read mail_y/labels.json");
 	});
 });
 

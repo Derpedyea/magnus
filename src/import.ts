@@ -41,9 +41,11 @@ const READERS = 16;
  */
 export async function planImport(files: PickedFile[]): Promise<ImportPlan> {
 	const byPath = new Map(files.map((f) => [f.path, f.file]));
+	// A labels.json is Proton's only beside its messages' details: any other folder can hold one of its own.
+	const exports = new Set(files.filter((f) => f.path.endsWith(METADATA)).map((f) => folderOf(f.path)));
 	const labelFiles = await Promise.all(
 		files
-			.filter((f) => f.file.name === "labels.json")
+			.filter((f) => f.file.name === "labels.json" && exports.has(folderOf(f.path)))
 			.map(async (f) => {
 				const parsed = ProtonLabelsSchema.safeParse(await readJson(f.file));
 				// Without it, the person's own folders and labels would be dropped from everything in the export.

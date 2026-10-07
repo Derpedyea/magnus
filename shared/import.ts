@@ -80,7 +80,9 @@ const SENT = 2;
 /** labels.json types: 1 label, 2 contact group, 3 folder. */
 const CONTACT_GROUP = 2;
 
+// Version 1 only: a later one could mean something else by the same fields, and misfile mail rather than fail.
 export const ProtonMetadataSchema = z.object({
+	Version: z.literal(1),
 	Payload: z.object({
 		ID: z.string(),
 		LabelIDs: z.array(z.string()),
@@ -93,6 +95,7 @@ export const ProtonMetadataSchema = z.object({
 });
 
 export const ProtonLabelsSchema = z.object({
+	Version: z.literal(1),
 	Payload: z.array(
 		z.object({
 			ID: z.string(),

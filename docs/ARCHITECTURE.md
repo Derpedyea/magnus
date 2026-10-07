@@ -323,7 +323,8 @@ Code: `shared/import.ts`, `src/import.ts`, `worker/mail/import.ts`.
 1. **The browser reads the folder** and pairs each message with Proton's details: Inbox, Sent, Trash, Spam, and
    Starred become those labels, the person's own folders and labels become labels (`Work/Clients` →
    `work-clients`), Archive and All mail need none, and Unread carries over. Drafts are left out, since drafts here
-   live in the directory (§3), and so is mail Proton couldn't export as a message. An `.eml` with no details is filed
+   live in the directory (§3), and so is mail Proton couldn't export as a message. Only version 1 of Proton's files
+   is read; a message whose details are another version is listed as unreadable rather than guessed at. An `.eml` with no details is filed
    as archived and read, or Sent when it's from one of the mailbox's addresses.
 2. **It sends each message on its own**, newest first and four at a time, to `POST /api/mailboxes/:id/import`, with
    where it goes in the query (one schema checks each label). Failures on the way are retried; being signed out or

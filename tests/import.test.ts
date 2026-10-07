@@ -197,6 +197,15 @@ describe("import", () => {
 		expect((await alice().getMessage(id))?.message).toMatchObject({ labels: ["work"], isRead: true });
 	});
 
+	it("retries failed mail with where its latest import put it", async () => {
+		const first = { ...job(ids.alice, "again-1"), imported: { labels: ["inbox"], read: false, sent: false } };
+		await alice().recordFailed(first, "Unreadable");
+		await alice().recordFailed({ ...first, imported: { labels: ["work"], read: true, sent: false } }, "Unreadable");
+		await f.control.reset();
+		await alice().retryFailed("again-1");
+		expect((await f.control.state()).jobs).toMatchObject([{ imported: { labels: ["work"], read: true } }]);
+	});
+
 	it("lists imported mail that names no address of ours, or none at all, under Failed", async () => {
 		const input = { ...job(ids.alice, "nowhere-1"), envelopeTo: "", imported: { labels: [], read: true, sent: false } };
 		await alice().recordFailed(input, "Unreadable");
