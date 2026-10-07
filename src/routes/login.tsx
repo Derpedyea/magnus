@@ -44,9 +44,9 @@ const CODE_ERRORS: Record<string, string> = {
 function useFinishSignIn(returnTo: string) {
 	const qc = useQueryClient();
 	const navigate = useNavigate();
-	// Back can bring you to this page still signed in, so the session it held ends first.
-	return () => {
-		endSession(qc);
+	// Back can bring you to this page still signed in, so the session it held ends first, its push subscription included.
+	return async () => {
+		await endSession(qc);
 		return navigate({ href: returnTo });
 	};
 }

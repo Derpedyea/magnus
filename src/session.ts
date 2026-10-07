@@ -19,9 +19,9 @@ export const currentSession = () => session;
 /**
  * Forgets everything the signed-in account left in this tab: its cached mail, the open draft, sends still waiting to
  * go (their Undo reopens the draft), and its notifications. The next sign-in happens without a page load, so whoever
- * it is would otherwise see it.
+ * it is would otherwise see it. Resolves once the browser has dropped its push subscription, or failed to.
  */
-export function endSession(qc: QueryClient) {
+export function endSession(qc: QueryClient): Promise<void> {
 	session++;
 	for (const stop of sessionEnd) stop();
 	// All but the install's config, which isn't the account's. Refetching it would hold up the way to the sign-in
@@ -31,5 +31,6 @@ export function endSession(qc: QueryClient) {
 	closeDraft();
 	toast.close();
 	// The server stopped this session's notifications with it (worker/push-api.ts); this stops any already on their way.
-	forgetDevice().catch((error: unknown) => console.error("Couldn't drop this browser's push subscription", error));
+	// Signing in waits for it, so the next account never shows up first.
+	return forgetDevice().catch((error: unknown) => console.error("Couldn't drop this browser's push subscription", error));
 }

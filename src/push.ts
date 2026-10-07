@@ -55,19 +55,32 @@ function key(subscription: PushSubscription, name: PushEncryptionKeyName): strin
 	return toBase64Url(new Uint8Array(value));
 }
 
+let forgetting: Promise<void> | null = null;
+
 /**
  * For a session that ended here: drops the browser's subscription and closes notifications already showing. The
  * server forgot the browser with the session, but a push the push service already holds (for up to a day, while the
- * device is offline) would still arrive, and show the account's mail to whoever signs in next. Tried 3 times.
+ * device is offline) would still arrive, and show the account's mail to whoever signs in next. Tried 3 times, one
+ * run at a time: a call while one runs gets that one.
  */
-export async function forgetDevice(): Promise<void> {
+export function forgetDevice(): Promise<void> {
+	forgetting ??= dropSubscription().finally(() => {
+		forgetting = null;
+	});
+	return forgetting;
+}
+
+async function dropSubscription(): Promise<void> {
 	if (!("serviceWorker" in navigator)) return;
 	const registration = await navigator.serviceWorker.getRegistration();
 	if (!registration) return;
+	// The one there now. A retry never asks again: someone signing in meanwhile may have made their own.
+	const subscription = await registration.pushManager.getSubscription();
 	try {
-		for (let attempt = 1; ; attempt++) {
+		for (let attempt = 1; subscription; attempt++) {
 			try {
-				return await unsubscribe();
+				if (await subscription.unsubscribe()) break;
+				throw new Error("The browser kept its push subscription");
 			} catch (error) {
 				if (attempt === 3) throw error;
 				await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
@@ -76,12 +89,6 @@ export async function forgetDevice(): Promise<void> {
 	} finally {
 		for (const notification of await registration.getNotifications()) notification.close();
 	}
-}
-
-/** Ends this browser's subscription, so the browser drops any push still on its way to it. */
-async function unsubscribe(): Promise<void> {
-	const subscription = await (await navigator.serviceWorker.getRegistration())?.pushManager.getSubscription();
-	if (subscription && !(await subscription.unsubscribe())) throw new Error("The browser kept its push subscription");
 }
 
 /** The page a clicked notification asks this tab to open (public/sw.js), if the message is one. */

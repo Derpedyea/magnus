@@ -16,7 +16,7 @@ export function useSignOut(redirect?: string) {
 		mutationFn: async () => { await drafts?.flushAll(); return authClient.signOut(); },
 		onError: (error) => toast.add({ title: `Couldn't sign out: ${errorMessage(error)}`, type: "error", timeout: 0 }),
 		onSuccess: () => {
-			endSession(qc);
+			void endSession(qc);
 			void navigate({ to: "/login", search: { redirect } });
 		},
 	});
