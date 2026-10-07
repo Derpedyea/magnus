@@ -53,6 +53,12 @@ export function useUnreadTitle(scope: string[]) {
 	}, [unread]);
 }
 
+/**
+ * How often changes refetch mail at most. One change refetches at once; a burst (an import announces every message it
+ * files) refetches once more when it's over, instead of once per message.
+ */
+const REFRESH_MS = 1000;
+
 /** Subscribes to each mailbox's Durable Object and refetches mail whenever any of them changes. */
 export function useLive(mailboxIds: string[]): boolean {
 	const qc = useQueryClient();
@@ -61,10 +67,11 @@ export function useLive(mailboxIds: string[]): boolean {
 
 	useEffect(() => {
 		if (!key) return;
+		const refresh = throttle(() => void qc.invalidateQueries({ queryKey: ["mail"] }), REFRESH_MS);
 		const stops = key.split(",").map((id) =>
 			subscribe(
 				id,
-				() => void qc.invalidateQueries({ queryKey: ["mail"] }),
+				refresh.call,
 				(up) =>
 					setOpen((prev) => {
 						const next = new Set(prev);
@@ -75,11 +82,32 @@ export function useLive(mailboxIds: string[]): boolean {
 			),
 		);
 		return () => {
+			refresh.cancel();
 			for (const stop of stops) stop();
 		};
 	}, [key, qc]);
 
 	return mailboxIds.length > 0 && mailboxIds.every((id) => open.has(id));
+}
+
+/** Runs `run` at once, then at most once per `ms`: calls in between become one more run when the time is up. */
+export function throttle(run: () => void, ms: number): { call: () => void; cancel: () => void } {
+	let last = -Infinity;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const fire = () => {
+		timer = undefined;
+		last = Date.now();
+		run();
+	};
+	return {
+		call: () => {
+			if (timer !== undefined) return;
+			const wait = last + ms - Date.now();
+			if (wait <= 0) fire();
+			else timer = setTimeout(fire, wait);
+		},
+		cancel: () => clearTimeout(timer),
+	};
 }
 
 /** One reconnecting WebSocket to a Mailbox DO. Returns a function that closes it for good. */

@@ -1,7 +1,7 @@
 import { noteBody } from "#shared/markdown";
 import { describe, expect, it } from "vitest";
 import type { Draft } from "./components/Composer";
-import { closeDraft, compose, openDraft, quote, withSignature } from "./compose";
+import { answerFrom, closeDraft, compose, openDraft, quote, withSignature } from "./compose";
 import { normalizeMarkdown as normalize } from "./markdown";
 
 describe("openDraft", () => {
@@ -51,5 +51,18 @@ describe("quote", () => {
 	it("quotes the message as it was received, not as markdown, through the editor too", () => {
 		const draft = quote({ date: 0, from: { address: "ann@example.com", name: "Ann_Lee" }, text: "Please *do not alter*\n- or this" });
 		expect(noteBody(normalize(draft)).text).toMatch(/Ann_Lee wrote:\n\n> Please \*do not alter\*\n> - or this$/);
+	});
+});
+
+describe("answerFrom", () => {
+	const ctx = {
+		mailboxId: "mbx", identities: [{ mailboxId: "mbx", address: "me@example.com", displayName: null, signature: null }],
+		delivered: [], outgoing: true, inView: () => true,
+	};
+	it("answers sent mail from the address it went out from", () => {
+		expect(answerFrom({ from: { address: "Me@Example.com" }, to: [{ address: "pal@outside.test" }], cc: [] }, ctx)).toBe("me@example.com");
+	});
+	it("answers sent mail imported from an old address from one this mailbox can send as", () => {
+		expect(answerFrom({ from: { address: "me@proton.test" }, to: [{ address: "pal@outside.test" }], cc: [] }, ctx)).toBe("me@example.com");
 	});
 });

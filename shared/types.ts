@@ -29,6 +29,18 @@ export interface InboundJob {
 	 * with this one higher, so failures elsewhere, which the queue's own attempt count includes, don't use up its tries.
 	 */
 	checkFailures?: number;
+	/**
+	 * Mail imported from another provider (worker/mail/import.ts), placed as it was there instead of by triage. Its
+	 * envelope fields come from its headers: envelopeTo is the address of ours it belongs to, when it names one.
+	 */
+	imported?: Imported;
+}
+
+export interface Imported {
+	labels: string[];
+	read: boolean;
+	/** Sent from the mailbox rather than received by it. */
+	sent: boolean;
 }
 
 // ─── Queue: magnus-email-events (Email Sending event subscription) ──────────
@@ -296,6 +308,8 @@ export interface IngestInput {
 	check: MailCheck | null;
 	/** Labels besides where its verdict puts it: its +tag's. */
 	labels: string[];
+	/** Read and sent as it was at the provider it came from. Its labels are already in `labels`. */
+	imported?: Omit<Imported, "labels">;
 }
 
 export interface SendAttachmentRef {

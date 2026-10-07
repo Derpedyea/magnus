@@ -109,6 +109,7 @@ const JobSchema = z.object({
 	v: z.literal(1), ingestId: z.string(), rawKey: z.string(), rawSize: z.number(), mailboxId: z.string(),
 	envelopeFrom: z.string(), envelopeTo: z.string(), subaddress: z.string().nullable(), receivedAt: z.number(),
 	checkFailures: z.number().optional(),
+	imported: z.object({ labels: z.array(z.string()), read: z.boolean(), sent: z.boolean() }).optional(),
 }) satisfies z.ZodType<InboundJob>;
 
 // Real storage throughout. Only the provider, queue handoff, and explicit failure/race points are controlled.

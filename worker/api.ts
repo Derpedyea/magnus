@@ -29,6 +29,7 @@ import { isAPIError } from "better-auth/api";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import { DraftSchema } from "#shared/drafts";
+import { ImportQuerySchema, MAX_IMPORT_BYTES } from "#shared/import";
 import { admin } from "./admin";
 import { auth, currentUser, endReplacedSession, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
@@ -40,6 +41,7 @@ import { setup } from "./setup";
 import { draftRoutes } from "./draft-api";
 import { pushRoutes } from "./push-api";
 import { claimDraft, finishDraftSend, readDraft } from "./drafts";
+import { importMessage } from "./mail/import";
 
 type MailboxStub = DurableObjectStub<Mailbox>;
 
@@ -268,6 +270,21 @@ const mb = new Hono<AppEnv>()
 		const key = await c.var.mailbox.failedRawKey(failedId);
 		const obj = key ? await c.env.MAIL.get(key) : null;
 		return obj ? original(obj, failedId) : c.json({ error: "Not found" }, 404);
+	})
+
+	/**
+	 * One message imported from another provider: the raw message as the body, where it was there in the query. It's
+	 * parsed from the inbound queue, so it shows up shortly after. The same file imported again is the same message.
+	 */
+	.post("/import", zValidator("query", ImportQuerySchema), async (c) => {
+		const length = Number(c.req.header("Content-Length") ?? 0);
+		if (!length) return c.json({ error: "Content-Length required" }, 411);
+		const tooBig = () => c.json({ error: `Messages over ${formatBytes(MAX_IMPORT_BYTES)} can't be imported` }, 413);
+		if (length > MAX_IMPORT_BYTES) return tooBig();
+		const raw = new Uint8Array(await c.req.arrayBuffer());
+		if (raw.byteLength > MAX_IMPORT_BYTES) return tooBig();
+		const result = await importMessage(c.env, c.var.mailboxId, raw, c.req.valid("query"));
+		return "refused" in result ? c.json({ error: result.refused }, 422) : c.json(result, 202);
 	})
 
 	/** Composer attachment upload: raw body, filename in X-Filename (URI-encoded). Whatever doesn't fit in the message goes as a link. */

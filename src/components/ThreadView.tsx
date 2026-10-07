@@ -24,8 +24,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast-manager";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api, errorMessage, formatList, type Identity, messageUrl } from "../api";
-import { openDraft, quote, withSignature } from "../compose";
+import { api, errorMessage, formatList, messageUrl } from "../api";
+import { type AnswerContext, answerFrom, openDraft, quote, withSignature } from "../compose";
 import { formatDate } from "../dates";
 import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
@@ -715,29 +715,6 @@ function DeliveryBadge({ message }: { message: MessageDetail }) {
 			<TooltipContent>{detail}</TooltipContent>
 		</Tooltip>
 	);
-}
-
-interface AnswerContext {
-	mailboxId: string;
-	identities: Identity[];
-	/** The thread's own addresses, which catch mail that reached us via Bcc or a list. */
-	delivered: string[];
-	outgoing: boolean;
-	inView: (address: string) => boolean;
-}
-
-/** Which of our addresses answers or forwards a message: the one being viewed when it reached several of ours. */
-function answerFrom(m: MessageDetail, ctx: AnswerContext): string {
-	if (ctx.outgoing) return m.from.address.toLowerCase();
-	const ours = new Set(ctx.identities.map((i) => i.address.toLowerCase()));
-	const recipients = [...m.to, ...m.cc].filter((a) => ours.has(a.address.toLowerCase()));
-	const from =
-		recipients.find((a) => ctx.inView(a.address))?.address ??
-		recipients[0]?.address ??
-		ctx.delivered.find((a) => ours.has(a)) ??
-		ctx.identities[0]?.address ??
-		"";
-	return from.toLowerCase();
 }
 
 const signatureOf = (from: string, ctx: AnswerContext) => ctx.identities.find((i) => i.address === from)?.signature ?? null;
