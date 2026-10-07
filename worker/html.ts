@@ -1,5 +1,8 @@
 import { preview, type StoredAttachment } from "#shared";
 
+/** Elements removed with their content before mail is shown (and so not read by the spam checks either). */
+export const REMOVED_ELEMENTS = ["script", "noscript", "iframe", "frame", "frameset", "object", "embed", "applet", "form", "base", "link"];
+
 /**
  * Serve an email's HTML body as its own document, loaded by the client in
  * <iframe sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox">.
@@ -14,7 +17,7 @@ export function renderEmailHtml(
 	let blockedRemote = 0;
 
 	const rewriter = new HTMLRewriter()
-		.on("script, noscript, iframe, frame, frameset, object, embed, applet, form, base, link, meta[http-equiv]", {
+		.on(`${REMOVED_ELEMENTS.join(", ")}, meta[http-equiv]`, {
 			element(el) {
 				el.remove();
 			},

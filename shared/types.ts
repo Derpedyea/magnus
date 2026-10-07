@@ -24,6 +24,11 @@ export interface InboundJob {
 	envelopeTo: string;
 	subaddress: string | null;
 	receivedAt: number;
+	/**
+	 * How many times checking it with Workers AI has failed (worker/mail/checks.ts). Each failure queues the job again
+	 * with this one higher, so failures elsewhere, which the queue's own attempt count includes, don't use up its tries.
+	 */
+	checkFailures?: number;
 }
 
 // ─── Queue: magnus-email-events (Email Sending event subscription) ──────────
@@ -92,6 +97,20 @@ export interface SenderCheck {
 	spoofed: boolean;
 }
 
+/** What the checks sort mail from senders a mailbox doesn't know into (worker/mail/checks.ts). */
+export const MAIL_CATEGORIES = ["personal", "transactional", "newsletter", "spam", "phishing"] as const;
+export type MailCategory = (typeof MAIL_CATEGORIES)[number];
+
+/** Workers AI's call on mail from a sender a mailbox doesn't know. */
+export type MailCheck =
+	/**
+	 * `spam` is the quick model's probability that it's spam or phishing; `model` is whichever model's category
+	 * stood: the quick one when it was sure, else the deep one.
+	 */
+	| { kind: "checked"; category: MailCategory; spam: number; model: string }
+	/** The models couldn't be reached or answered nonsense, every try. */
+	| { kind: "unchecked"; error: string };
+
 /** Why inbound mail went where it did, kept with it. Mail in Spam shows it. */
 export type Verdict =
 	/** From someone this mailbox writes to, a colleague here, or someone it took out of Spam. */
@@ -100,8 +119,9 @@ export type Verdict =
 	| { kind: "marked" }
 	/** Failed its sender's authentication. */
 	| { kind: "spoofed" }
-	/** Nothing to go on. */
-	| { kind: "unknown" };
+	/** Nothing to go on: a sender it didn't need to check when the queue asked. */
+	| { kind: "unknown" }
+	| MailCheck;
 
 export interface AttachmentMeta {
 	id: string;
@@ -255,6 +275,8 @@ export interface IngestInput {
 	attachments: StoredAttachment[];
 	auth: AuthResults | null;
 	sender: SenderCheck;
+	/** Set when the mailbox didn't know the sender (Mailbox.needsCheck()). */
+	check: MailCheck | null;
 	/** Labels besides where its verdict puts it: its +tag's. */
 	labels: string[];
 }

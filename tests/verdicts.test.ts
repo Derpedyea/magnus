@@ -1,10 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { QUICK_MODEL } from "../worker/mail/checks";
 import { fixture, type Fixture, job, type Mailboxes, sendInput } from "./runtime/fixture";
 
 /** Verdicts Email Routing would stamp on mail that verifiably comes from outside.test. */
 const VERIFIED = "dkim=pass header.d=outside.test; dmarc=pass header.from=outside.test; spf=pass smtp.mailfrom=bounce@outside.test";
 /** Passes for the sending service only: anyone can write any From address this way. */
 const FORGED = "dkim=pass header.d=bulk.test; dmarc=none; spf=pass smtp.mailfrom=bounce@bulk.test";
+/** A sender the mailbox doesn't know, as the stand-in models judge everyone by default. */
+const STRANGER = { kind: "checked", category: "personal", spam: 0, model: QUICK_MODEL };
 
 describe("spam verdicts", () => {
 	let f: Fixture;
@@ -42,12 +45,12 @@ describe("spam verdicts", () => {
 	it("trusts verified mail from people this mailbox writes to, and not a forged From address", async () => {
 		await writeTo("Friend@Outside.test");
 		expect(await deliver("Friend <friend@outside.test>", VERIFIED)).toMatchObject({ verdict: { kind: "trusted" }, labels: ["inbox"] });
-		expect(await deliver("Friend <friend@outside.test>", FORGED)).toMatchObject({ verdict: { kind: "unknown" }, labels: ["inbox"] });
+		expect(await deliver("Friend <friend@outside.test>", FORGED)).toMatchObject({ verdict: STRANGER, labels: ["inbox"] });
 	});
 
 	it("sends a sender's next mail to Spam once their mail is marked as spam, and back once it's taken out", async () => {
 		const first = await deliver("pitch@outside.test", VERIFIED);
-		expect(first.verdict).toEqual({ kind: "unknown" });
+		expect(first.verdict).toEqual(STRANGER);
 		await mark(first.threadId, ["spam"]);
 		const second = await deliver("pitch@outside.test", VERIFIED);
 		expect(second).toMatchObject({ verdict: { kind: "marked" }, labels: ["spam"] });
@@ -111,7 +114,7 @@ describe("spam verdicts", () => {
 
 	it("doesn't hold forged mail marked as spam against the address it claimed", async () => {
 		await mark((await deliver("friend@outside.test", FORGED)).threadId, ["spam"]);
-		expect(await deliver("friend@outside.test", VERIFIED)).toMatchObject({ verdict: { kind: "unknown" }, labels: ["inbox"] });
+		expect(await deliver("friend@outside.test", VERIFIED)).toMatchObject({ verdict: STRANGER, labels: ["inbox"] });
 	});
 
 	it.each([
@@ -123,13 +126,13 @@ describe("spam verdicts", () => {
 		["SPF for the HELO name only", "news@outside.test", "dmarc=none; spf=pass smtp.helo=outside.test", false],
 	])("verifies the From address by %s: %s", async (_, from, stamped, verified) => {
 		await writeTo(from);
-		expect((await deliver(from, stamped)).verdict).toEqual({ kind: verified ? "trusted" : "unknown" });
+		expect((await deliver(from, stamped)).verdict).toEqual(verified ? { kind: "trusted" } : STRANGER);
 	});
 
 	it("trusts verified mail from the install's own addresses", async () => {
 		const ours = "dkim=pass header.d=example.com; dmarc=pass header.from=example.com";
 		expect((await deliver("Bob <bob+notes@example.com>", ours)).verdict).toEqual({ kind: "trusted" });
-		expect((await deliver("Bob <bob@example.com>", FORGED)).verdict).toEqual({ kind: "unknown" });
+		expect((await deliver("Bob <bob@example.com>", FORGED)).verdict).toEqual(STRANGER);
 	});
 
 	it("puts mail that fails its sender's authentication in Spam, even from someone trusted", async () => {

@@ -16,6 +16,7 @@ import {
 	isValidAddress,
 	type ListPage,
 	LIVE_RECHECK,
+	type MailCheck,
 	type LiveEvent,
 	type LocalRecipient,
 	type MessageBlobs,
@@ -358,7 +359,7 @@ export class Mailbox extends DurableObject<Env> {
 			return { threadId: existing.thread_id, duplicate: true, inbox: false };
 		}
 
-		const verdict = this.judge(input.sender);
+		const verdict = this.judge(input.sender, input.check);
 		const place = placeFor(verdict);
 		const labels = [place, ...input.labels];
 
@@ -435,18 +436,35 @@ export class Mailbox extends DurableObject<Env> {
 		return { threadId, duplicate: false, inbox: place === "inbox" };
 	}
 
+	/** Whether the queue should have Workers AI check mail from this sender before delivering it (worker/mail/checks.ts). */
+	async needsCheck(sender: SenderCheck, messageIdHeader: string | null, ingestId: string): Promise<boolean> {
+		// Being deleted: its mail goes nowhere, so it isn't shown to the models either.
+		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) return false;
+		// Already delivered or deleted (the queue redelivered it), or a second copy of a message, which keeps where the
+		// first went (ingest()): no need to check it again.
+		const known = this.sql.exec(
+			`SELECT 1 FROM messages WHERE id = ?1 OR (?2 IS NOT NULL AND (message_id_header = ?2 OR provider_message_id = ?2))
+			 UNION ALL SELECT 1 FROM deleted_messages WHERE id = ?1 LIMIT 1`,
+			ingestId,
+			messageIdHeader,
+		);
+		if (known.toArray().length > 0) return false;
+		return this.judge(sender, null).kind === "unknown";
+	}
+
 	/**
 	 * Where inbound mail goes, from what the queue checked of its sender and what this mailbox has said about them. A
-	 * forged From address can't borrow anyone's standing: only a verified sender has one.
+	 * forged From address can't borrow anyone's standing: only a verified sender has one. The models' call only
+	 * counts for a sender the mailbox still doesn't know; one it came to know since needsCheck() goes by that instead.
 	 */
-	private judge(sender: SenderCheck): Verdict {
+	private judge(sender: SenderCheck, check: MailCheck | null): Verdict {
 		if (sender.spoofed) return { kind: "spoofed" };
 		const judged = sender.verified
 			? this.sql.exec<{ verdict: string }>(`SELECT verdict FROM senders WHERE address = ?1`, sender.verified).toArray()[0]
 			: undefined;
 		if (judged) return { kind: judged.verdict === "spam" ? "marked" : "trusted" };
 		if (sender.internal) return { kind: "trusted" };
-		return { kind: "unknown" };
+		return check ?? { kind: "unknown" };
 	}
 
 	/**
@@ -963,14 +981,26 @@ export class Mailbox extends DurableObject<Env> {
 		const add = input.add ?? [];
 		// Trash and spam imply leaving the inbox.
 		const remove = [...(input.remove ?? []), ...(add.some((l) => l === "trash" || l === "spam") ? ["inbox"] : [])];
-		this.ctx.storage.transactionSync(() => {
+		const corrected = this.ctx.storage.transactionSync(() => {
 			const ids = this.messageIdsForThreads(input.threadIds);
-			// Spam and Not spam teach it about the senders.
-			if (add.includes("spam")) this.judgeSenders(this.reported(ids), "spam");
-			else if (remove.includes("spam") && add.includes("inbox")) this.judgeSenders(this.labeled(ids, "spam"), "trusted");
+			// Spam and Not spam teach it about the senders, and say where it went wrong.
+			const spam = this.labeled(ids, "spam");
+			let wrong: string[] = [];
+			if (add.includes("spam")) {
+				this.judgeSenders(this.reported(ids), "spam");
+				const already = new Set(spam);
+				wrong = ids.filter((id) => !already.has(id));
+			} else if (remove.includes("spam") && add.includes("inbox")) {
+				this.judgeSenders(spam, "trusted");
+				wrong = spam;
+			}
+			const verdicts = this.verdictsOf(wrong);
 			this.removeLabels(ids, remove);
 			this.addLabels(ids, add);
+			return verdicts;
 		});
+		// What the filter decided for mail someone had to move, to tune it by. No content or addresses.
+		if (corrected.length > 0) console.log(JSON.stringify({ msg: "spam verdict corrected", to: add.includes("spam") ? "spam" : "inbox", verdicts: corrected }));
 		this.broadcast({ type: "threads.changed", threadIds: input.threadIds });
 	}
 
@@ -979,20 +1009,23 @@ export class Mailbox extends DurableObject<Env> {
 	 * its sender, whoever else is in the thread. False if there's no such inbound message.
 	 */
 	async judgeMessage(input: { messageId: string; verdict: "trusted" | "spam" }): Promise<boolean> {
-		const threadId = this.ctx.storage.transactionSync(() => {
+		const moved = this.ctx.storage.transactionSync(() => {
 			const row = this.sql
 				.exec<{ thread_id: string }>(`SELECT thread_id FROM messages WHERE id = ?1 AND direction = 'in'`, input.messageId)
 				.toArray()[0];
 			if (!row) return null;
 			const ids = [input.messageId];
+			const wasSpam = this.labeled(ids, "spam").length > 0;
+			const corrected = wasSpam === (input.verdict === "spam") ? [] : this.verdictsOf(ids);
 			this.judgeSenders(ids, input.verdict);
 			// Out of Spam is into the inbox, not left in Trash too, as Move to inbox does.
 			this.removeLabels(ids, input.verdict === "spam" ? ["inbox"] : ["spam", "trash"]);
 			this.addLabels(ids, [input.verdict === "spam" ? "spam" : "inbox"]);
-			return row.thread_id;
+			return { threadId: row.thread_id, corrected };
 		});
-		if (threadId === null) return false;
-		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
+		if (moved === null) return false;
+		if (moved.corrected.length > 0) console.log(JSON.stringify({ msg: "spam verdict corrected", to: input.verdict === "spam" ? "spam" : "inbox", verdicts: moved.corrected }));
+		this.broadcast({ type: "threads.changed", threadIds: [moved.threadId] });
 		return true;
 	}
 
@@ -1036,6 +1069,16 @@ export class Mailbox extends DurableObject<Env> {
 		const people = new Map<string, Set<string>>();
 		for (const r of rows) people.set(r.thread_id, (people.get(r.thread_id) ?? new Set()).add(r.sender ?? `unverified:${r.from_address}`));
 		return rows.filter((r) => r.sender !== null && ((people.get(r.thread_id)?.size ?? 0) <= 1 || !r.trusted)).map((r) => r.id);
+	}
+
+	private verdictsOf(messageIds: string[]): Verdict[] {
+		return this.sql
+			.exec<{ verdict_json: string }>(
+				`SELECT verdict_json FROM messages WHERE id IN (SELECT value FROM json_each(?1)) AND direction = 'in' AND verdict_json IS NOT NULL`,
+				JSON.stringify(messageIds),
+			)
+			.toArray()
+			.map((r) => JSON.parse(r.verdict_json));
 	}
 
 	private labeled(messageIds: string[], label: string): string[] {
@@ -1736,7 +1779,17 @@ function toMessageDetail(m: MessageRow, attachments: AttachmentRow[], undelivere
 	};
 }
 
-/** Where a verdict puts inbound mail. */
+/** Where a verdict puts inbound mail. Mail that couldn't be checked waits in Spam, saying so, rather than pass unseen. */
 function placeFor(verdict: Verdict): string {
-	return verdict.kind === "spoofed" || verdict.kind === "marked" ? "spam" : "inbox";
+	switch (verdict.kind) {
+		case "spoofed":
+		case "marked":
+		case "unchecked":
+			return "spam";
+		case "checked":
+			return verdict.category === "spam" || verdict.category === "phishing" ? "spam" : "inbox";
+		case "trusted":
+		case "unknown":
+			return "inbox";
+	}
 }

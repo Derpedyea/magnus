@@ -2,6 +2,7 @@ import { type EmailSendingEvent, type InboundJob, r2Keys, ulid } from "#shared";
 import { addressParser } from "postal-mime";
 import { resolveRecipient } from "../directory";
 import { handleDeliveryEvent } from "./events";
+import type { Models } from "./checks";
 import { ingest, recordFailed } from "./ingest";
 
 /**
@@ -59,11 +60,11 @@ const isSendingEvent = (body: unknown): body is EmailSendingEvent =>
 	typeof body === "object" && body !== null && "type" in body && typeof body.type === "string" && body.type.startsWith("cf.email.sending.");
 
 /** Parses queued inbound mail, and applies Email Sending delivery events. Messages are independent: each acks or retries alone. */
-export async function queue(batch: MessageBatch, env: Env): Promise<void> {
+export async function queue(batch: MessageBatch, env: Env, models: Models = env.AI): Promise<void> {
 	await Promise.all(
 		batch.messages.map(async (msg) => {
 			try {
-				if (isInboundJob(msg.body)) await inbound(env, msg.body, msg.attempts);
+				if (isInboundJob(msg.body)) await inbound(env, msg.body, msg.attempts, models);
 				else if (isSendingEvent(msg.body)) await handleDeliveryEvent(env, msg.body);
 				else console.error(JSON.stringify({ msg: "unknown queue message", queue: batch.queue }));
 				msg.ack();
@@ -78,12 +79,12 @@ export async function queue(batch: MessageBatch, env: Env): Promise<void> {
 }
 
 /** Parses a job into its mailbox. After the last try it lists the mail under Failed instead of dropping it. */
-async function inbound(env: Env, job: InboundJob, attempts: number): Promise<void> {
+async function inbound(env: Env, job: InboundJob, attempts: number, models: Models): Promise<void> {
 	// Past the last try, so an earlier one ended without reporting: the Worker crashed or ran out of time, or listing the
 	// mail failed. Parsing again could end the same way.
 	if (attempts > INGEST_ATTEMPTS) return recordFailed(env, job, null);
 	try {
-		await ingest(env, job);
+		await ingest(env, job, models);
 	} catch (err) {
 		if (attempts < INGEST_ATTEMPTS) throw err;
 		// Bounded: it's stored and shown in the list.

@@ -469,11 +469,44 @@ apart for one person's mailbox is who you know, and what you've said about who y
   them; in a conversation with several, someone already trusted isn't marked for what the others sent. The Not
   spam button answers for one message and its sender only (`judgeMessage()`). Writing to someone trusts them too,
   and everyone a mailbox had written to before this existed starts out trusted. The latest judgment stands.
+- **Checks** (`worker/mail/checks.ts`). Mail from a sender the mailbox doesn't know (`Mailbox.needsCheck()`) is
+  sorted into personal, transactional, newsletter, spam, or phishing. Cloudflare's Clef, a Workers AI decision
+  model that returns a probability per category, reads every such message (about 500 ms and a few hundred
+  tokens). Not Clef Flash: it scored a mailbox-quota phish at 0.23, and 0.18 with a line claiming the mail was
+  personal, where Clef gave both 0.78. When Clef's odds of spam or phishing land between 0.2 and 0.9, OpenAI's
+  GPT-6 Luna reads it too and its category stands. Luna goes through OpenRouter on the account's `default` AI
+  Gateway, which holds the OpenRouter key (BYOK, Provider Keys) and adds it to the request, so the Worker never
+  has it. The request asks only for providers that retain nothing (OpenRouter's `zdr`, which for Luna means Azure)
+  and don't train on it (`data_collection: deny`), and tells the gateway not to log it. Without the key, Luna's
+  mail ends up unchecked (below). The models read a bounded summary (sender, whether it's verified, subject, up
+  to 5 Reply-To addresses, 10 file names, each cut to 200 characters, link hosts, and the body as the recipient
+  sees it, cut to 4,000 characters), and their answers are validated. Mail from known senders never reaches them,
+  so a message written to sway a model can at most get a stranger's mail into the inbox. Nor does a deleted
+  mailbox's: the directory is asked again just before the call. A check that fails puts the job back in the queue with the failure
+  counted (`checkFailures`, 30 then 60 seconds later), so failures elsewhere don't use up its tries. After the
+  third, the mail is delivered to Spam as unchecked, saying so: not held for an outage, not let through unseen.
+- **Reading HTML** (`readHtml()`). The app shows the HTML part when there is one, so that's what the models read,
+  not a plain-text part the sender could make say something else. HTMLRewriter parses the whole document as the
+  iframe renders it, and only visible text counts toward the 4,000-character budget, so padding that isn't seen
+  (markup, empty elements, zero-width characters, a `<form>` the sanitizer removes) can't push the visible part
+  out (plain-text mail is cleaned the same way). Subtrees under `display: none`, `hidden`, `opacity: 0`, a closed
+  `<dialog>`, or a `<canvas>`, `<video>`, or `<audio>` (whose fallback doesn't show) are skipped, as is a closed
+  `<details>` but for its first summary; `visibility` and a zero `font-size` hide text until a descendant sets
+  them again; inline styles are parsed as declarations (comments, custom properties, `!important`). Form controls
+  count with their values, images that don't show (no source, a remote one, blocked by default, or a `cid:` with
+  no attachment) with their alt text. Link hosts come from anchors with something showing in them (and at most 5
+  image-map areas), resolved with `URL` after decoding character references, so
+  `https://trusted.example@phish.example/` reads as `phish.example`; the first 40 are kept. It's best-effort: text
+  drawn by CSS (`content:`), hidden by a stylesheet class, or behind a character reference outside the common ones
+  isn't read, and only a browser could. Evading it gets a stranger's mail into the inbox, where all of it went
+  before there were checks; who's trusted, forged senders, and Spam clicks don't depend on it.
 - **Verdicts.** `Mailbox.ingest()` decides, in order: failed its domain's authentication → Spam; a judged sender
-  → their standing; verified mail from one of this install's own addresses → Inbox; anyone else → Inbox. It
-  happens inside the insert's transaction, so a click can't land between the check and the write. Each inbound
+  → their standing; verified mail from one of this install's own addresses → Inbox; anyone else → the checks'
+  call (spam and phishing → Spam). Standing is read inside the insert's transaction, so a click can't land
+  between the check and the write, and it overrides a check made before the sender became known. Each inbound
   message keeps its verdict, and mail in Spam shows it with a Not spam button, like Gmail's "Why is this message
-  in spam?".
+  in spam?". Every Spam or Not spam click on mail the filter placed otherwise logs the verdicts it got wrong
+  (`spam verdict corrected`, no content or addresses), to tune the thresholds by.
 
 ### 5.7 Reliability summary
 
@@ -493,6 +526,10 @@ apart for one person's mailbox is who you know, and what you've said about who y
   emails a month.
 - Inbound, D1, DO, R2, and Queues usage for one to a few people sits inside the plan's included allowances.
   The one variable is R2 storage for large attachment archives (~$0.015/GB-month).
+- Spam checks only read mail from senders a mailbox doesn't know. Clef costs $0.24 per million input tokens,
+  about 0.012¢ a message, inside Workers AI's free 10,000 neurons a day for several hundred messages. GPT-6 Luna
+  ($0.10/M input, $0.50/M output) reads only the ones Clef isn't sure of, billed by OpenRouter to the key stored
+  on the gateway (see §5.6).
 
 ## 7. Checked on the pilot install
 
@@ -538,8 +575,8 @@ The web app is the only client, so it has to be good on phones and good enough t
 
 6. **Rules and filters** per mailbox (from/to/subject → labels, skip inbox, auto-archive), evaluated in ingest.
 7. **Image proxy** through the Worker so "Show images" doesn't leak your IP.
-8. **Workers AI**: spam and phishing scoring, category labels, thread summaries. Use **Vectorize** for
-   semantic search next to FTS5.
+8. **Workers AI**: category labels and thread summaries (spam and phishing checks are in, §5.6). Use
+   **Vectorize** for semantic search next to FTS5.
 9. **Vacation responder** via `env.EMAIL.send` (skip auto-submitted and list mail; honor `Auto-Submitted`).
 10. **DMARC aggregate report parsing** from the `rua` mailbox into a dashboard.
 11. **Retention/export**: per-label retention, full mailbox export (raw `.eml` is already in R2).

@@ -1,9 +1,10 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { type AddressFilter, type InboundJob, type SendInput } from "#shared";
+import { type AddressFilter, type InboundJob, type MailCategory, type SendInput } from "#shared";
 import { z } from "zod";
 import { app } from "../../worker/api";
 import { auth, signInWithoutCode } from "../../worker/auth";
 import { email, queue } from "../../worker/mail/inbound";
+import { DEEP_MODEL, type Models, QUICK_MODEL } from "../../worker/mail/checks";
 import { ingest } from "../../worker/mail/ingest";
 import { Mailbox as ProductionMailbox } from "../../worker/mailbox/mailbox";
 import { cleanDraftFiles } from "../../worker/drafts";
@@ -28,6 +29,35 @@ let pushes: { url: string; headers: Record<string, string>; body: Uint8Array }[]
 let pushStatus = 201;
 // A push service answering with a body that never ends, as any endpoint someone registers could.
 let pushEndless = false;
+
+/** What the stand-in models answer: Clef's probability of spam, and Luna's category. "fail" throws; "garbage" is off-schema. */
+type ModelAnswers = { quick: number | "fail" | "garbage"; deep: MailCategory | "fail" | "echo" };
+let answers: ModelAnswers = { quick: 0, deep: "personal" };
+/** Each model call, its inputs as JSON. */
+let modelCalls: { model: string; inputs: string }[] = [];
+
+// Answer in each provider's shape, so the parsing is what production runs.
+const models: Models = {
+	async run(model, inputs) {
+		modelCalls.push({ model, inputs: JSON.stringify(inputs) });
+		if (model === QUICK_MODEL) {
+			if (answers.quick === "fail") throw new Error("Injected model failure");
+			if (answers.quick === "garbage") return { answers: { category: { type: "choice", choice: "spam" } } };
+			const probabilities = { personal: 1 - answers.quick, transactional: 0, newsletter: 0, spam: answers.quick, phishing: 0 };
+			return { model: "clef", answers: { category: { type: "choice", choice: "personal", probabilities, confidence: 1 } }, usage: { input_tokens: 1, output_tokens: 0 } };
+		}
+		throw new Error(`Unexpected model ${model}`);
+	},
+	gateway: (id) => ({
+		async run(request) {
+			modelCalls.push({ model: DEEP_MODEL, inputs: JSON.stringify({ id, request }) });
+			if (answers.deep === "fail") return new Response("Injected model failure", { status: 502 });
+			// A model answering off-schema by repeating the mail back.
+			if (answers.deep === "echo") return Response.json({ choices: [{ message: { role: "assistant", content: `Sure: ${JSON.stringify(request.query)}` } }] });
+			return Response.json({ choices: [{ message: { role: "assistant", content: JSON.stringify({ category: answers.deep }) } }] });
+		},
+	}),
+};
 
 // Future alarms cannot fire on wall time; only drain() runs them. Restore the clock on every exit.
 async function atTestTime<T>(run: () => Promise<T>): Promise<T> {
@@ -76,6 +106,7 @@ async function afterIO(env: Env, operation: "get" | "put", key: string): Promise
 const JobSchema = z.object({
 	v: z.literal(1), ingestId: z.string(), rawKey: z.string(), rawSize: z.number(), mailboxId: z.string(),
 	envelopeFrom: z.string(), envelopeTo: z.string(), subaddress: z.string().nullable(), receivedAt: z.number(),
+	checkFailures: z.number().optional(),
 }) satisfies z.ZodType<InboundJob>;
 
 // Real storage throughout. Only the provider, queue handoff, and explicit failure/race points are controlled.
@@ -162,7 +193,8 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 		return a.api.createVerificationOTP({ body: { email: address, type: "sign-in" } });
 	}
 	forgetExpiredDevices() { return forgetExpiredDevices(this.env.DIRECTORY, Date.now()); }
-	parse(job: InboundJob) { return withPushService(() => ingest(controlled(this.env), job)); }
+	parse(job: InboundJob) { return withPushService(() => ingest(controlled(this.env), job, models)); }
+	setModels(next: Partial<ModelAnswers>) { answers = { ...answers, ...next }; }
 	cleanDrafts() { return cleanDraftFiles(controlled(this.env), now); }
 	setNow(value: number) { now = value; }
 	setSendErrors(codes: string[]) { sendErrors = codes; }
@@ -172,7 +204,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	stallDeletes(prefix: string) { stalls.push(prefix); }
 	afterIO(action: Hook) { hook = action; }
 	state() {
-		return { jobs, sends: sends.map((message) => ({
+		return { jobs, modelCalls, sends: sends.map((message) => ({
 			from: message.from, to: message.to, cc: message.cc, bcc: message.bcc, subject: message.subject, text: message.text, html: message.html,
 			attachments: message.attachments?.map((a) => ({
 				filename: a.filename, type: a.type, disposition: a.disposition, contentId: a.contentId,
@@ -180,7 +212,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 			})),
 		})) };
 	}
-	reset() { now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; }
+	reset() { now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; answers = { quick: 0, deep: "personal" }; modelCalls = []; }
 
 	async consume(bodies: unknown[], attempts = 1) {
 		const acks: string[] = [];
@@ -195,7 +227,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 			metadata: { metrics: { backlogCount: messages.length, backlogBytes: 0 } },
 			ackAll() { throw new Error("Must acknowledge individually"); },
 			retryAll() { throw new Error("Must retry individually"); },
-		}, controlled(this.env));
+		}, controlled(this.env), models);
 		return { acks, retries };
 	}
 }

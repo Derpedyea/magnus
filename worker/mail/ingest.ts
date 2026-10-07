@@ -4,6 +4,7 @@ import {
 	type InboundJob,
 	type IngestInput,
 	isValidAddress,
+	type MailCheck,
 	labelFromTag,
 	normalizeAddress,
 	parseMessageIds,
@@ -16,9 +17,17 @@ import {
 import PostalMime, { type Address as ParsedAddress, type Email } from "postal-mime";
 import { isOwnAddress, mailboxExists } from "../directory";
 import { notifyNewMail } from "../push";
+import { CheckError, checkMail, type MailFacts, type Models, readHtml, readText } from "./checks";
+
+/**
+ * Tries at checking mail from an unknown sender, about a minute and a half apart in all, before it's delivered unchecked
+ * instead: to Spam, saying so. Mail isn't held for an outage, and isn't let through unseen.
+ */
+const CHECK_ATTEMPTS = 3;
+const MAX_CHECK_ERROR = 300;
 
 /** Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. */
-export async function ingest(env: Env, job: InboundJob): Promise<void> {
+export async function ingest(env: Env, job: InboundJob, models: Models = env.AI): Promise<void> {
 	// The mailbox can be gone since this was queued: its person removed, or a failed add undone after its address took
 	// mail. Delivering would bring it back, mail and all, with nobody to open it. (It can also go while this runs: see
 	// the end.)
@@ -32,6 +41,34 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 
 	const email = await PostalMime.parse(await raw.arrayBuffer(), { attachmentEncoding: "arraybuffer" });
 	const messageId = job.ingestId;
+	const mailbox = env.MAILBOX.getByName(job.mailboxId);
+
+	const from = firstAddress(email.from) ?? { address: job.envelopeFrom };
+	const results = stampedResults(email);
+	const sender = await checkSender(env, from.address, results);
+	const text = email.text ?? (email.html ? htmlToText(email.html) : null);
+	const replyTo = flatten(email.replyTo);
+	const subject = email.subject ?? "(no subject)";
+	const messageIdHeader = email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null;
+	const needed = await mailbox.needsCheck(sender, messageIdHeader, messageId);
+	// Read for the models only when they're asked: parsing a big body costs CPU that known senders' mail needn't.
+	const read = async (): Promise<MailFacts> => ({
+		to: job.envelopeTo,
+		from,
+		verifiedSender: sender.verified !== null,
+		replyTo,
+		subject,
+		// What the recipient sees: the app shows the HTML part when there is one, and the sender can make a plain-text
+		// part say anything else.
+		page: email.html ? await readHtml(email.html, attachedIds(email)) : readText(text ?? ""),
+		attachments: email.attachments.map((a) => ({ filename: a.filename ?? "", contentType: a.mimeType })),
+	});
+	const facts = needed ? await read() : null;
+	// Mail of a mailbox deleted since the first check (reading a big body takes a while) mustn't reach the models.
+	if (facts && !(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
+	const check = facts ? await checkOrGiveUp(env, models, facts, job) : null;
+	// Back in the queue with the failure counted (checkOrGiveUp()): this copy of the job is done.
+	if (check === "requeued") return;
 
 	let htmlKey: string | null = null;
 	if (email.html) {
@@ -59,34 +96,31 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 		});
 	}
 
-	const from = firstAddress(email.from) ?? { address: job.envelopeFrom };
-	const results = stampedResults(email);
-	const auth = results && authResults(results);
-
 	const input: IngestInput = {
 		id: messageId,
 		rawKey: job.rawKey,
 		envelopeFrom: job.envelopeFrom,
 		envelopeTo: job.envelopeTo,
 		receivedAt: job.receivedAt,
-		messageIdHeader: email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null,
+		messageIdHeader,
 		inReplyTo: parseMessageIds(email.inReplyTo),
 		references: parseMessageIds(email.references),
 		from,
 		to: flatten(email.to),
 		cc: flatten(email.cc),
-		replyTo: flatten(email.replyTo),
-		subject: email.subject ?? "(no subject)",
+		replyTo,
+		subject,
 		date: parseDate(email.date) ?? job.receivedAt,
-		text: email.text ?? (email.html ? htmlToText(email.html) : null),
+		text,
 		htmlKey,
 		attachments,
-		auth,
-		sender: await checkSender(env, from.address, results),
+		auth: results && authResults(results),
+		sender,
+		check,
 		labels: job.subaddress ? [labelFromTag(job.subaddress)] : [],
 	};
 
-	const delivered = await env.MAILBOX.getByName(job.mailboxId)
+	const delivered = await mailbox
 		.ingest(input)
 		.then(
 			(result) => ({ result }),
@@ -103,6 +137,33 @@ export async function ingest(env: Env, job: InboundJob): Promise<void> {
 			console.error(JSON.stringify({ msg: "push failed", ingestId: job.ingestId, mailboxId: job.mailboxId, error: String(error) })),
 		);
 	}
+}
+
+/**
+ * A failed check queues the job again, counting the failure, until the last try, which delivers the mail as unchecked
+ * instead. If queueing it fails, this throws and the queue retries the job as it was.
+ */
+async function checkOrGiveUp(env: Env, models: Models, facts: MailFacts, job: InboundJob): Promise<MailCheck | "requeued"> {
+	try {
+		return await checkMail(models, facts);
+	} catch (error) {
+		const failures = (job.checkFailures ?? 0) + 1;
+		if (failures < CHECK_ATTEMPTS) {
+			console.error(JSON.stringify({ msg: "mail check failed", ingestId: job.ingestId, mailboxId: job.mailboxId, failures, error: checkErrorOf(error) }));
+			await env.INBOUND.send({ ...job, checkFailures: failures }, { delaySeconds: 30 * 2 ** (failures - 1) });
+			return "requeued";
+		}
+		console.error(JSON.stringify({ msg: "mail unchecked", ingestId: job.ingestId, mailboxId: job.mailboxId, error: checkErrorOf(error) }));
+		return { kind: "unchecked", error: checkErrorOf(error) };
+	}
+}
+
+/**
+ * What a failed check says, safe to log and keep: this code's own messages, or the platform's (the AI binding, the
+ * gateway), bounded. Never a model's answer, which can echo the mail (CheckError).
+ */
+function checkErrorOf(error: unknown): string {
+	return (error instanceof CheckError ? error.message : String(error)).slice(0, MAX_CHECK_ERROR);
 }
 
 /**
@@ -137,6 +198,11 @@ async function dropOriginal(env: Env, rawKey: string): Promise<void> {
 		.bind(JSON.stringify(listed.split(",")))
 		.first();
 	if (left === null) await env.MAIL.delete(rawKey);
+}
+
+/** Content-IDs of the attachments, as the renderer matches cid: images against them (worker/html.ts). */
+function attachedIds(email: Email): Set<string> {
+	return new Set(email.attachments.flatMap((a) => (a.contentId ? [a.contentId.replace(/^<|>$/g, "")] : [])));
 }
 
 function flatten(list: ParsedAddress[] | undefined): Address[] {
