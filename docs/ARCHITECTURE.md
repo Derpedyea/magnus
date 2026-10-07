@@ -162,7 +162,8 @@ whole mailbox is the one exception. Code that writes or drops `m/` objects keeps
    (the sender or their whole domain) or from Admin › Blocked senders.
 3. The raw bytes are buffered once and written to R2. Then one `InboundJob` per target mailbox is enqueued
    (group aliases fan out here). Returning ends the SMTP transaction. If R2 or the queue fails, the handler
-   throws instead of returning, so the message is never silently accepted (see §7 for the exact SMTP reply).
+   throws instead of returning. Email Routing then answers `421 4.3.0` and the sender retries later, so the
+   message is neither silently accepted nor bounced (§7 #4).
 4. `queue()` first checks the target mailbox is still in the directory: one deleted since (its person removed,
    or a failed add undone) gets nothing, and its original goes once no mailbox it was queued for is left. Then it
    parses with postal-mime, writes the HTML and attachments to R2, extracts the `Authentication-Results`
@@ -414,7 +415,7 @@ as a plain list.
 | --- | --- |
 | Parser crash or DO unavailable during ingest | Queue retry with backoff, then listed under Failed to retry, download, or delete; raw message kept in R2 |
 | Duplicate delivery (queue at-least-once, same mail to two aliases) | Idempotent on `ingestId` + `Message-ID` |
-| R2 or Queue failure inside `email()` | Handler throws instead of accepting; see §7 on whether the sender sees a retryable 4xx |
+| R2 or Queue failure inside `email()` | Handler throws instead of accepting; the sender gets `421 4.3.0` and retries |
 | Transient Email Sending error | DO alarm retries with backoff |
 | Permanent send failure, bounce, or rejection | Retry from the message, to just the recipients it didn't reach |
 | DO evicted mid-send | Marked failed rather than possibly duplicated |
@@ -427,21 +428,25 @@ as a plain list.
 - Inbound, D1, DO, R2, and Queues usage for one to a few people sits inside the plan's included allowances.
   The one variable is R2 storage for large attachment archives (~$0.015/GB-month).
 
-## 7. Things to verify on the first real send
+## 7. Checked on the pilot install
 
-The local simulator can't prove these:
+The local simulator can't prove these, so they were checked against real Cloudflare on derped.dev:
 
-1. **Returned `messageId` vs. the delivered `Message-ID` header.** Locally it looks like
-   `<…@yourdomain.com>`. Check "Show original" in Gmail and confirm it matches what the Sent message shows.
-   Reply threading depends on it.
-2. **Event subscription `payload.messageId` format vs. the binding's `messageId`.** The docs' examples show a
-   different shape (`0101018f…-msg-…`). `applyDeliveryEvent` matches either the raw or bracketed form. If the
-   IDs are unrelated, add a lookup by (sender, recipient, subject, time window).
-3. **Does onboarding Sending on a domain that already has mail rewrite its existing `_dmarc` record?**
-   Review `wrangler email sending dns get <domain>` before applying.
-4. **What the sending server sees when `email()` throws.** The docs don't say whether it's a temporary (4xx,
-   sender retries) or permanent failure. Test once with a forced exception on the pilot domain. If it's
-   permanent, catch R2/Queue errors and fall back to `message.forward()` to a verified backup address.
+1. **Returned `messageId` vs. the delivered `Message-ID` header.** They match. `env.EMAIL.send` returned
+   `<…@derped.dev>` and the recipient got that exact header, so reply threading can rely on it.
+2. **Event subscription `payload.messageId` vs. the binding's `messageId`.** Same id, in the same bracketed
+   `<…@derped.dev>` form, not the `0101018f…-msg-…` shape in the docs' examples. `applyDeliveryEvent` still
+   accepts the raw or bracketed form.
+3. **Does onboarding Sending on a domain that already has mail rewrite its existing `_dmarc` record?** No. It
+   left derped.dev's `_dmarc` record as it was. Still review `wrangler email sending dns get <domain>` before
+   applying.
+4. **What the sending server sees when `email()` throws.** A temporary failure. Email Routing replies
+   `421 4.3.0 Upstream error, please check https://developers.cloudflare.com/email-routing/postmaster …` and
+   logs "worker script threw an exception" as a temporary error. The sender retried the same message after
+   24 s and again 67 s later. So a brief R2 or Queue outage delays mail instead of bouncing it.
+
+Still open:
+
 5. **Does the 5 MiB limit count base64 or raw bytes?** Magnus assumes base64, so files over about 3.8 MB go as
    links. If a 4.5 MB attachment sends fine, `encodedSize()` in `shared/links.ts` can count raw bytes instead.
 
