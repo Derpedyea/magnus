@@ -7,10 +7,10 @@ import { fixture, type Fixture, job, type Mailboxes, MIME } from "./runtime/fixt
 const ecdh = { name: "ECDH", namedCurve: "P-256" };
 
 /** A browser: the subscription it hands the app, and the private half it reads pushes with. */
-async function browser(name: string) {
+async function browser(name: string, service = "https://push.example.net") {
 	const pair = await keyPair(ecdh, ["deriveBits"]);
 	const auth = crypto.getRandomValues(new Uint8Array(16));
-	const subscription = { endpoint: `https://push.example.net/${name}`, keys: { p256dh: toBase64Url(await rawKey(pair.publicKey)), auth: toBase64Url(auth) } };
+	const subscription = { endpoint: `${service}/${name}`, keys: { p256dh: toBase64Url(await rawKey(pair.publicKey)), auth: toBase64Url(auth) } };
 	return { pair, auth, subscription };
 }
 type Browser = Awaited<ReturnType<typeof browser>>;
@@ -124,6 +124,16 @@ describe("push notifications", () => {
 		const impersonating = started.headers.getSetCookie().map((cookie) => cookie.split(";")[0] ?? "").filter((cookie) => !cookie.endsWith("=")).join("; ");
 		expect((await post("/admin/stop-impersonating", impersonating)).status).toBe(200);
 		expect(await rows()).toHaveLength(1);
+	});
+
+	it("signs one VAPID token for pushes to several devices at once, on a push service it hasn't signed for yet", async () => {
+		const service = `https://push-${crypto.randomUUID()}.example.net`;
+		const [a, b] = [await browser("a", service), await browser("b", service)];
+		await push(await f.login("alice"), "PUT", a.subscription);
+		await push(await f.login("bob"), "PUT", b.subscription);
+		const sent = await deliver(ids.shared, "cold");
+		expect(sent).toHaveLength(2);
+		expect(new Set(sent.map((p) => p.headers.authorization)).size).toBe(1);
 	});
 
 	it("forgets browsers whose session expired unused", async () => {

@@ -36,10 +36,17 @@ export async function enablePush(permission: Promise<NotificationPermission>, pu
 	await api.enablePush({ endpoint: subscription.endpoint, keys: { p256dh: key(subscription, "p256dh"), auth: key(subscription, "auth") } });
 }
 
-/** Stops this session's notifications here: the server forgets this browser, then the browser drops its subscription. */
+/**
+ * Stops this session's notifications here. The browser drops its subscription first, so if it can't, nothing changes
+ * and turning them off again retries; once it has, nothing reaches this browser even if telling the server fails.
+ */
 export async function disablePush(): Promise<void> {
+	try {
+		await forgetDevice();
+	} catch (error) {
+		throw new Error("Couldn't turn off notifications in this browser. Try again.", { cause: error });
+	}
 	await api.disablePush();
-	await unsubscribe();
 }
 
 function key(subscription: PushSubscription, name: PushEncryptionKeyName): string {

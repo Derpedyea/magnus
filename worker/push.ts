@@ -119,14 +119,17 @@ async function start(res: Response, bytes: number): Promise<string> {
  * VAPID tokens, reused until an hour before they expire: Apple asks for one no more often than hourly, and each push
  * would otherwise sign its own. Keyed by push service, sender, and key, which a token names.
  */
-const tokens = new Map<string, { header: string; until: number }>();
+const tokens = new Map<string, { header: Promise<string>; until: number }>();
 
-async function authorization(endpoint: string, origin: string, keys: VapidKeys, now: number): Promise<string> {
+function authorization(endpoint: string, origin: string, keys: VapidKeys, now: number): Promise<string> {
 	const key = `${new URL(endpoint).origin} ${origin} ${keys.publicKey}`;
 	const cached = tokens.get(key);
 	if (cached && cached.until > now) return cached.header;
-	const header = await vapidAuthorization(endpoint, origin, keys, now);
-	tokens.set(key, { header, until: now + (TOKEN_SECONDS - 3600) * 1000 });
+	// Stored before it's signed, so pushes to several devices at once share it. A failed signing isn't kept.
+	const header = vapidAuthorization(endpoint, origin, keys, now);
+	const entry = { header, until: now + (TOKEN_SECONDS - 3600) * 1000 };
+	tokens.set(key, entry);
+	header.catch(() => tokens.get(key) === entry && tokens.delete(key));
 	return header;
 }
 
