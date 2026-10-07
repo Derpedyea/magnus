@@ -14,6 +14,9 @@ export interface User {
 /** Characters. Room for a few lines, not a letterhead. */
 export const MAX_SIGNATURE = 2000;
 
+/** Adding a passkey needs a sign-in from this many minutes ago at most. */
+export const FRESH_SIGN_IN_MINUTES = 15;
+
 export interface MailboxAddress {
 	address: string;
 	displayName: string | null;

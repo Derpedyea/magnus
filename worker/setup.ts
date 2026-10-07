@@ -5,7 +5,7 @@ import { z } from "zod";
 import { signInWithoutCode } from "./auth";
 import { cloudflare, findInstall, getZone, listZones } from "./cloudflare";
 import { domainStatus } from "./connect";
-import { addAddress, createMailbox } from "./directory";
+import { addAddress, codesWouldLandHere, createMailbox } from "./directory";
 import { cloudflareTokenStatement, getInstall, type Install, saveCloudflareToken } from "./settings";
 
 export const NOT_THIS_INSTALL =
@@ -67,7 +67,7 @@ export const setup = new Hono<{ Bindings: Env }>()
 		const zone = await getZone(cf, install.accountId, body.zoneId);
 		if (!zone) return c.json({ error: "That domain isn't in this Cloudflare account." }, 404);
 		if (body.email.endsWith(`@${zone.name}`)) {
-			return c.json({ error: `Codes sent to ${zone.name} would arrive in Magnus itself. Use an address somewhere else.` }, 400);
+			return c.json({ error: codesWouldLandHere(zone.name) }, 400);
 		}
 		const target = { domain: zone.name, zoneId: zone.id, email: body.email, address: `${body.localPart}@${zone.name}`, moveMail: body.moveMail };
 		const userId = crypto.randomUUID();

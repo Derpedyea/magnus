@@ -25,6 +25,7 @@ import { Route as AppSettingsAdminDomainsRouteImport } from './routes/_app._sett
 import { Route as AppSettingsAdminPeopleRouteImport } from './routes/_app._settings.admin.people'
 import { Route as AppSettingsSettingsIndexRouteImport } from './routes/_app._settings.settings.index'
 import { Route as AppSettingsSettingsAppearanceRouteImport } from './routes/_app._settings.settings.appearance'
+import { Route as AppSettingsSettingsSignInRouteImport } from './routes/_app._settings.settings.sign-in'
 import { Route as AppSettingsSettingsSignaturesRouteImport } from './routes/_app._settings.settings.signatures'
 import { Route as AppMailViewMailboxIdThreadIdRouteImport } from './routes/_app._mail.$view.$mailboxId.$threadId'
 
@@ -109,6 +110,12 @@ const AppSettingsSettingsAppearanceRoute =
     path: '/settings/appearance',
     getParentRoute: () => AppSettingsRoute,
   } as any)
+const AppSettingsSettingsSignInRoute =
+  AppSettingsSettingsSignInRouteImport.update({
+    id: '/settings/sign-in',
+    path: '/settings/sign-in',
+    getParentRoute: () => AppSettingsRoute,
+  } as any)
 const AppSettingsSettingsSignaturesRoute =
   AppSettingsSettingsSignaturesRouteImport.update({
     id: '/settings/signatures',
@@ -133,6 +140,7 @@ export interface FileRoutesByFullPath {
   '/admin/domains': typeof AppSettingsAdminDomainsRoute
   '/admin/people': typeof AppSettingsAdminPeopleRoute
   '/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
+  '/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
   '/$view/': typeof AppMailViewIndexRoute
   '/admin/': typeof AppSettingsAdminIndexRoute
@@ -148,6 +156,7 @@ export interface FileRoutesByTo {
   '/admin/domains': typeof AppSettingsAdminDomainsRoute
   '/admin/people': typeof AppSettingsAdminPeopleRoute
   '/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
+  '/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
   '/$view': typeof AppMailViewIndexRoute
   '/admin': typeof AppSettingsAdminIndexRoute
@@ -169,6 +178,7 @@ export interface FileRoutesById {
   '/_app/_settings/admin/domains': typeof AppSettingsAdminDomainsRoute
   '/_app/_settings/admin/people': typeof AppSettingsAdminPeopleRoute
   '/_app/_settings/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
+  '/_app/_settings/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/_app/_settings/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
   '/_app/_mail/$view/': typeof AppMailViewIndexRoute
   '/_app/_settings/admin/': typeof AppSettingsAdminIndexRoute
@@ -188,6 +198,7 @@ export interface FileRouteTypes {
     | '/admin/domains'
     | '/admin/people'
     | '/settings/appearance'
+    | '/settings/sign-in'
     | '/settings/signatures'
     | '/$view/'
     | '/admin/'
@@ -203,6 +214,7 @@ export interface FileRouteTypes {
     | '/admin/domains'
     | '/admin/people'
     | '/settings/appearance'
+    | '/settings/sign-in'
     | '/settings/signatures'
     | '/$view'
     | '/admin'
@@ -223,6 +235,7 @@ export interface FileRouteTypes {
     | '/_app/_settings/admin/domains'
     | '/_app/_settings/admin/people'
     | '/_app/_settings/settings/appearance'
+    | '/_app/_settings/settings/sign-in'
     | '/_app/_settings/settings/signatures'
     | '/_app/_mail/$view/'
     | '/_app/_settings/admin/'
@@ -350,6 +363,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsSettingsAppearanceRouteImport
       parentRoute: typeof AppSettingsRoute
     }
+    '/_app/_settings/settings/sign-in': {
+      id: '/_app/_settings/settings/sign-in'
+      path: '/settings/sign-in'
+      fullPath: '/settings/sign-in'
+      preLoaderRoute: typeof AppSettingsSettingsSignInRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
     '/_app/_settings/settings/signatures': {
       id: '/_app/_settings/settings/signatures'
       path: '/settings/signatures'
@@ -416,6 +436,7 @@ const AppSettingsAdminRouteWithChildren =
 interface AppSettingsRouteChildren {
   AppSettingsAdminRoute: typeof AppSettingsAdminRouteWithChildren
   AppSettingsSettingsAppearanceRoute: typeof AppSettingsSettingsAppearanceRoute
+  AppSettingsSettingsSignInRoute: typeof AppSettingsSettingsSignInRoute
   AppSettingsSettingsSignaturesRoute: typeof AppSettingsSettingsSignaturesRoute
   AppSettingsSettingsIndexRoute: typeof AppSettingsSettingsIndexRoute
 }
@@ -423,6 +444,7 @@ interface AppSettingsRouteChildren {
 const AppSettingsRouteChildren: AppSettingsRouteChildren = {
   AppSettingsAdminRoute: AppSettingsAdminRouteWithChildren,
   AppSettingsSettingsAppearanceRoute: AppSettingsSettingsAppearanceRoute,
+  AppSettingsSettingsSignInRoute: AppSettingsSettingsSignInRoute,
   AppSettingsSettingsSignaturesRoute: AppSettingsSettingsSignaturesRoute,
   AppSettingsSettingsIndexRoute: AppSettingsSettingsIndexRoute,
 }

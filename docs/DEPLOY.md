@@ -87,8 +87,9 @@ new token and give it to *Use a different token*.
 - **Domains.** Add more of your Cloudflare domains, turn them on, and choose what happens to mail for
   addresses that don't exist: reject it (the default), or deliver it to someone.
 - **People.** Add someone with their own mailbox and address; they sign in with a code sent to their sign-in
-  email. Make them an admin, suspend them (they can't sign in, but their mail keeps arriving), or remove
-  them (their mailbox and its mail are deleted).
+  email (which can't be at one of your Magnus domains), and can add a passkey after that. Make them an admin,
+  suspend them (they can't sign in, but their mail keeps arriving), or remove them (their mailbox and its mail
+  are deleted).
 - **Addresses.** Add addresses and choose who receives them. Several people makes a shared address like
   `family@`: each gets a copy and can reply from it.
 
