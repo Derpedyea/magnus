@@ -40,21 +40,25 @@ const CODE_ERRORS: Record<string, string> = {
 	"Too many attempts": "Too many wrong tries. Send a new code.",
 };
 
-/** Signed in: forget whatever the last account left in this tab, then go where sign-in was headed. */
-function useFinishSignIn(returnTo: string) {
+/**
+ * Signed in. `endPrevious` forgets whatever the last account left in this tab, its push subscription included (Back
+ * can bring you to this page still signed in), and runs before anything of the new account shows, the passkey offer
+ * included. `go` then heads where sign-in was going.
+ */
+function useSignedIn(returnTo: string) {
 	const qc = useQueryClient();
 	const navigate = useNavigate();
-	// Back can bring you to this page still signed in, so the session it held ends first, its push subscription included.
-	return async () => {
-		await endSession(qc);
-		return navigate({ href: returnTo });
-	};
+	return { endPrevious: () => endSession(qc), go: () => navigate({ href: returnTo }) };
 }
 
 function Login() {
 	const { redirect, error } = Route.useSearch();
 	const returnTo = redirect ?? "/";
-	const finish = useFinishSignIn(returnTo);
+	const signedIn = useSignedIn(returnTo);
+	const finish = async () => {
+		await signedIn.endPrevious();
+		return signedIn.go();
+	};
 	// Kept here, so "Use a different email" comes back to what was typed.
 	const [email, setEmail] = useState("");
 	// Set once a code has been requested: the page switches to entering it.
@@ -62,14 +66,21 @@ function Login() {
 	// Signed in with a code to this address and has no passkey yet: offer one before going on.
 	const [offerFor, setOfferFor] = useState<string | null>(null);
 
-	if (offerFor) return <PasskeyOffer email={offerFor} onDone={finish} />;
+	if (offerFor) return <PasskeyOffer email={offerFor} onDone={signedIn.go} />;
 
 	return (
 		<main className="flex h-full flex-col items-center justify-center gap-6 p-8 text-sm">
 			<img src="/favicon.svg" alt="" className="size-10" />
 			<h1 className="font-heading text-base font-semibold">Sign in to Magnus Mail</h1>
 			{sentTo ? (
-				<CodeForm email={sentTo} onBack={() => setSentTo(null)} onSignedIn={(offer) => (offer ? setOfferFor(sentTo) : finish())} />
+				<CodeForm
+					email={sentTo}
+					onBack={() => setSentTo(null)}
+					onSignedIn={async (offer) => {
+						await signedIn.endPrevious();
+						return offer ? setOfferFor(sentTo) : signedIn.go();
+					}}
+				/>
 			) : (
 				<StartForm returnTo={returnTo} error={error} email={email} onEmailChange={setEmail} onSent={setSentTo} onSignedIn={finish} />
 			)}

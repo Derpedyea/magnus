@@ -54,8 +54,8 @@ describe("push notifications", () => {
 	const rows = async () => (await f.env.DIRECTORY.prepare("SELECT endpoint, session_id FROM push_subscriptions ORDER BY endpoint").all<{ endpoint: string; session_id: string }>()).results;
 
 	/** New inbound mail to a mailbox, with its own Message-ID so it isn't taken for a copy of earlier mail. */
-	async function deliver(mailboxId: string, id: string, raw = MIME) {
-		const input = job(mailboxId, id);
+	async function deliver(mailboxId: string, id: string, raw = MIME, subaddress: string | null = null) {
+		const input = { ...job(mailboxId, id), subaddress };
 		await f.env.MAIL.put(input.rawKey, raw.replace("<receipt@outside.test>", `<${id}@outside.test>`), { customMetadata: { mailboxes: mailboxId } });
 		const before = (await f.control.pushes()).length;
 		await f.control.parse(input);
@@ -136,6 +136,15 @@ describe("push notifications", () => {
 		expect(new Set(sent.map((p) => p.headers.authorization)).size).toBe(1);
 	});
 
+	it("keeps using a VAPID token after the Worker restarts in a new isolate", async () => {
+		const a = await browser("a");
+		await push(await f.login("alice"), "PUT", a.subscription);
+		const [before] = await deliver(ids.alice, "before-restart");
+		await f.restart();
+		const [after] = await deliver(ids.alice, "after-restart");
+		expect(after?.headers.authorization).toBe(before?.headers.authorization);
+	});
+
 	it("forgets browsers whose session expired unused", async () => {
 		const [a, b] = [await browser("a"), await browser("b")];
 		await push(await f.login("alice"), "PUT", a.subscription);
@@ -178,6 +187,8 @@ describe("push notifications", () => {
 		const db = f.env.DIRECTORY;
 
 		expect(await deliver(ids.alice, "spam", MIME.replace("dmarc=pass", "dmarc=fail"))).toEqual([]);
+		// Even to alice+inbox@, whose tag adds the inbox label.
+		expect(await deliver(ids.alice, "spam-tagged", MIME.replace("dmarc=pass", "dmarc=fail"), "inbox")).toEqual([]);
 		await db.prepare("UPDATE auth_users SET banned = 1 WHERE id = 'alice'").run();
 		expect(await deliver(ids.alice, "suspended")).toEqual([]);
 		await db.prepare("UPDATE auth_users SET banned = 0 WHERE id = 'alice'").run();

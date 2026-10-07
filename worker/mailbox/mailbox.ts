@@ -359,7 +359,8 @@ export class Mailbox extends DurableObject<Env> {
 		}
 
 		const verdict = this.judge(input.sender);
-		const labels = [placeFor(verdict), ...input.labels];
+		const place = placeFor(verdict);
+		const labels = [place, ...input.labels];
 
 		// Same message delivered twice to this mailbox (e.g. sent to two of our addresses,
 		// or our own outbound copy coming back): keep one copy, merge labels.
@@ -430,7 +431,8 @@ export class Mailbox extends DurableObject<Env> {
 		});
 
 		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
-		return { threadId, duplicate: false, inbox: labels.includes("inbox") };
+		// From the verdict, not the labels: a `+inbox` subaddress adds that label to mail the verdict sent to Spam.
+		return { threadId, duplicate: false, inbox: place === "inbox" };
 	}
 
 	/**

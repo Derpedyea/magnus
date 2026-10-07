@@ -81,7 +81,7 @@ async function push(db: D1Database, keys: VapidKeys, device: Device, notice: Not
 	const res = await fetch(device.endpoint, {
 		method: "POST",
 		headers: {
-			Authorization: await authorization(device.endpoint, device.origin, keys, now),
+			Authorization: await authorization(db, device.endpoint, device.origin, keys, now),
 			TTL: String(TTL_SECONDS),
 			// Every push shows a notification, the kind FCM delivers at once rather than holding while a phone dozes.
 			Urgency: "high",
@@ -115,22 +115,47 @@ async function start(res: Response, bytes: number): Promise<string> {
 	return new TextDecoder().decode(value?.slice(0, bytes));
 }
 
+const TokenSchema = z.object({ header: z.string(), until: z.number() });
+type Token = z.infer<typeof TokenSchema>;
+
 /**
  * VAPID tokens, reused until an hour before they expire: Apple asks for one no more often than hourly, and each push
- * would otherwise sign its own. Keyed by push service, sender, and key, which a token names.
+ * would otherwise sign its own. Kept in D1's settings, since a Worker runs in many isolates, and here per isolate.
+ * Keyed by push service, sender, and key, which a token names.
  */
-const tokens = new Map<string, { header: Promise<string>; until: number }>();
+const tokens = new Map<string, Promise<Token>>();
 
-function authorization(endpoint: string, origin: string, keys: VapidKeys, now: number): Promise<string> {
-	const key = `${new URL(endpoint).origin} ${origin} ${keys.publicKey}`;
-	const cached = tokens.get(key);
-	if (cached && cached.until > now) return cached.header;
-	// Stored before it's signed, so pushes to several devices at once share it. A failed signing isn't kept.
-	const header = vapidAuthorization(endpoint, origin, keys, now);
-	const entry = { header, until: now + (TOKEN_SECONDS - 3600) * 1000 };
-	tokens.set(key, entry);
-	header.catch(() => tokens.get(key) === entry && tokens.delete(key));
-	return header;
+async function authorization(db: D1Database, endpoint: string, origin: string, keys: VapidKeys, now: number): Promise<string> {
+	const name = `vapid_token ${new URL(endpoint).origin} ${origin} ${keys.publicKey}`;
+	const cached = tokens.get(name);
+	const token = cached && (await cached);
+	if (token && token.until > now) return token.header;
+	// Kept before it's settled, so pushes to several devices at once share it. A failure isn't kept.
+	const shared = sharedToken(db, name, endpoint, origin, keys, now);
+	tokens.set(name, shared);
+	shared.catch(() => tokens.get(name) === shared && tokens.delete(name));
+	return (await shared).header;
+}
+
+/** The token every isolate uses, signing one when it's due. Isolates that sign at once all get whichever landed first. */
+async function sharedToken(db: D1Database, name: string, endpoint: string, origin: string, keys: VapidKeys, now: number): Promise<Token> {
+	const read = db.prepare(`SELECT value FROM settings WHERE key = ?1`).bind(name);
+	const stored = await read.first<{ value: string }>();
+	const token = stored && TokenSchema.parse(JSON.parse(stored.value));
+	if (token && token.until > now) return token;
+	const fresh: Token = { header: await vapidAuthorization(endpoint, origin, keys, now), until: now + (TOKEN_SECONDS - 3600) * 1000 };
+	const [, kept] = await db.batch<{ value: string }>([
+		db
+			.prepare(
+				`INSERT INTO settings (key, value) VALUES (?1, ?2)
+				 ON CONFLICT (key) DO UPDATE SET value = excluded.value WHERE json_extract(settings.value, '$.until') <= ?3`,
+			)
+			.bind(name, JSON.stringify(fresh), now),
+		read,
+	]);
+	const row = kept?.results[0];
+	if (!row) throw new Error("VAPID token missing after saving it");
+	return TokenSchema.parse(JSON.parse(row.value));
 }
 
 const VapidSchema = z.object({

@@ -294,18 +294,22 @@ Web Push with VAPID, on WebCrypto alone. Code: `worker/push.ts`, `worker/push-ap
    ends it (`endReplacedSession()`), so a shared browser stops showing their mail. Impersonation is the exception:
    Better Auth keeps the admin's session to return to. When a session ends in the app, or notifications are turned
    off, the browser also drops its subscription (`src/push.ts`), since a push service holds pushes for a device that's
-   offline and one could otherwise reach whoever signs in next. Google sign-in leaves the page, so it drops it first. The hourly cron forgets subscriptions whose session
-   expired unused, which Better Auth never deletes.
-3. **Notify:** once `ingest()` stores new mail labeled `inbox`, the queue consumer pushes to every member of the
-   mailbox with a live session: the sender, subject, and snippet, encrypted to the browser (RFC 8291) so the push
-   service can't read it, at `Urgency: high` so a dozing phone gets it at once. A VAPID token is reused until an hour
-   before it expires, since Apple refuses ones refreshed more than hourly. The tag is the ingest id, so mail fanned out to two of your mailboxes shows once. Spam,
-   copies of mail already there, and mail the outbox delivers locally (§4.2) don't notify.
+   offline and one could otherwise reach whoever signs in next. Signing in waits for that before showing the new
+   account (its passkey offer included), and Google sign-in, which leaves the page, does it first. The hourly cron
+   forgets subscriptions whose session expired unused, which Better Auth never deletes.
+3. **Notify:** once `ingest()` stores new mail its verdict puts in the inbox, the queue consumer pushes to every
+   member of the mailbox with a live session: the sender, subject, and snippet, encrypted to the browser (RFC 8291) so
+   the push service can't read it, at `Urgency: high` so a dozing phone gets it at once. The tag is the ingest id, so
+   mail fanned out to two of your mailboxes shows once. Spam doesn't notify, even sent to a `+inbox` tag, and neither
+   do copies of mail already there or mail the outbox delivers locally (§4.2). A VAPID token is reused until an hour
+   before it expires, since Apple refuses ones refreshed more than hourly; it's kept in `settings`, as a Worker runs in
+   many isolates.
 4. **Failures:** a push service answering 404 or 410 has dropped the subscription, so it's deleted. Anything else is
-   logged, with the start of its answer (never read whole: an endpoint can be any https URL), and not retried. The mail is in the inbox either way, and a retried job would find it delivered.
+   logged, with the start of its answer (never read whole: an endpoint can be any https URL), and not retried. The mail
+   is in the inbox either way, and a retried job would find it delivered.
 5. **Click:** the service worker tells an open window (not a message body's frame) to route to the thread, so a draft in
-   progress survives, or opens one. Every push shows a notification, even one it can't read, since Safari stops delivering to sites whose pushes
-   show nothing.
+   progress survives, or opens one. Every push shows a notification, even one it can't read, since Safari stops
+   delivering to sites whose pushes show nothing.
 
 ## 5. Cross-cutting design
 
