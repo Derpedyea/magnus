@@ -92,10 +92,14 @@ export function job(mailboxId: string, id = "inbound-1"): InboundJob {
 	return { v: 1, ingestId: id, rawKey: r2Keys.raw(id, NOW), rawSize: 0, mailboxId, envelopeFrom: "sender@outside.test", envelopeTo: "alice@example.com", subaddress: null, receivedAt: NOW };
 }
 
+/** Email Routing's verdicts, as it stamps them above the sender's headers. */
+export const STAMPED = "dkim=pass header.d=outside.test; dmarc=pass header.from=outside.test; spf=pass smtp.mailfrom=sender@outside.test";
+
 export const MIME = [
+	`Authentication-Results: mx.cloudflare.net; ${STAMPED}`, "X-CF-SpamH-Score: 1",
 	"From: Sender <sender@outside.test>", "To: Alice <alice@example.com>", "Cc: Friend <friend@outside.test>", "Reply-To: Replies <reply@outside.test>",
 	"Subject: Receipt", "Date: Tue, 01 Jan 2030 00:00:00 +0000", "Message-ID: <receipt@outside.test>", "In-Reply-To: <parent@outside.test>",
-	"References: <root@outside.test> <parent@outside.test>", "Authentication-Results: mx.example.com; spf=pass; dkim=pass; dmarc=pass",
+	"References: <root@outside.test> <parent@outside.test>",
 	"MIME-Version: 1.0", 'Content-Type: multipart/mixed; boundary="parts"', "", "--parts", 'Content-Type: multipart/alternative; boundary="body"', "",
 	"--body", "Content-Type: text/plain; charset=utf-8", "", "Your receipt", "--body", "Content-Type: text/html; charset=utf-8", "", "<p>Your <b>receipt</b></p>",
 	"--body--", "--parts", 'Content-Type: application/pdf; name="receipt.pdf"', 'Content-Disposition: attachment; filename="receipt.pdf"', "Content-Transfer-Encoding: base64", "", "JVBERg==",

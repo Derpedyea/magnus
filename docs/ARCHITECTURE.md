@@ -168,7 +168,9 @@ whole mailbox is the one exception. Code that writes or drops `m/` objects keeps
 4. `queue()` first checks the target mailbox is still in the directory: one deleted since (its person removed,
    or a failed add undone) gets nothing, and its original goes once no mailbox it was queued for is left. Then it
    parses with postal-mime, writes the HTML and attachments to R2, extracts the `Authentication-Results`
-   verdicts, applies first-pass triage (DMARC fail → `spam`), and calls `Mailbox.ingest()`. If the mailbox was
+   verdicts, applies first-pass triage (DMARC fail → `spam`), and calls `Mailbox.ingest()`. Only the verdicts
+   Email Routing stamped count: its `mx.cloudflare.net` header above its `X-CF-SpamH-Score`, since everything
+   below that came from the sender. SPF is the envelope sender's result, not the HELO name's. If the mailbox was
    deleted while that ran, it's cleared again (`destroy()`), in case its deletion got there first.
 5. `ingest()` is idempotent. It dedupes on `ingestId` and on `Message-ID`, so the same mail arriving via two
    of our addresses, or our own outbound copy coming back, is stored once with merged labels. It then threads
