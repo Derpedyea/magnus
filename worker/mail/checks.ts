@@ -146,7 +146,7 @@ function parsedJson(text: string): unknown {
 }
 
 /** Elements whose content isn't shown: what a browser doesn't render as text, and what the app's sanitizer removes. */
-const UNSHOWN = new Set<string>(["head", "title", "style", "template", ...REMOVED_ELEMENTS]);
+const UNSHOWN = new Set<string>(["head", "title", "style", "template", "canvas", "video", "audio", ...REMOVED_ELEMENTS]);
 /** Visible text collected, at most: describe() cuts the body one character shorter. */
 const MAX_COLLECTED = MAX_BODY + 1;
 /** Image-map areas among the links, at most: one isn't known to be usable, so it can't fill the list. */
@@ -160,8 +160,10 @@ interface Inherited {
 	tiny: boolean;
 	/** Inside a closed <details>, where only its <summary> shows. */
 	folded: boolean;
-	/** Set on a closed <details>: whether what's around it was folded, which its <summary> takes. */
+	/** Set on a closed <details>: whether what's around it was folded, which its first <summary> takes. */
 	outer?: boolean;
+	/** Set on a closed <details> once its first <summary> starts: later ones don't show. */
+	summarized?: boolean;
 }
 
 /**
@@ -173,7 +175,7 @@ interface Inherited {
  * stylesheet class, or behind a character reference this doesn't decode isn't read. That only gets a stranger's mail
  * past the checks into the inbox, where all of it went before there were checks.
  */
-export async function readHtml(html: string): Promise<Page> {
+export async function readHtml(html: string, attached: ReadonlySet<string>): Promise<Page> {
 	// Depth inside subtrees nothing in can show: display: none, `hidden`, opacity 0, elements the sanitizer removes.
 	// onEndTag fires on implicit closes too, so an unclosed one ends where the browser ends it.
 	let closed = 0;
@@ -199,11 +201,14 @@ export async function readHtml(html: string): Promise<Page> {
 				const parent = inherited.at(-1) ?? { invisible: false, tiny: false, folded: false };
 				const visibility = d.get("visibility");
 				const size = d.get("font-size");
+				// A closed <details> shows its first <summary>, and only that.
+				const summary = tag === "summary" && parent.outer !== undefined && !parent.summarized;
+				if (summary) parent.summarized = true;
 				const own: Inherited = {
 					invisible: visibility === undefined ? parent.invisible : visibility === "hidden" || visibility === "collapse",
 					// A relative size of nothing is still nothing.
 					tiny: size === undefined ? parent.tiny : isZero(size) || (parent.tiny && /(?:em|ex|ch|%)$/.test(size)),
-					folded: tag === "summary" && parent.outer !== undefined ? parent.outer : parent.folded || (tag === "details" && !el.hasAttribute("open")),
+					folded: summary && parent.outer !== undefined ? parent.outer : parent.folded || (tag === "details" && !el.hasAttribute("open")),
 					...(tag === "details" && !el.hasAttribute("open") ? { outer: parent.folded } : {}),
 				};
 				const display = d.get("display");
@@ -227,9 +232,11 @@ export async function readHtml(html: string): Promise<Page> {
 						areas++;
 					}
 					if (tag === "img") {
-						// Alt text shows when the image doesn't: no source, or a remote one, which the app blocks by default. An
-						// attached (cid:) or inline (data:) image shows itself.
-						if (!/^\s*(?:cid|data):/i.test(el.getAttribute("src") ?? "")) text.add(el.getAttribute("alt") ?? "");
+						// Alt text shows when the image doesn't: no source, a remote one (blocked by default), or a cid: with no
+						// attachment, whose source the app removes. One attached, or inline (data:), shows itself.
+						const src = el.getAttribute("src") ?? "";
+						const cid = /^cid:/i.test(src) ? src.slice(4).replace(/^<|>$/g, "") : null;
+						if (!(/^data:/i.test(src) || (cid !== null && attached.has(cid)))) text.add(el.getAttribute("alt") ?? "");
 						rendered();
 					}
 					// A form control shows its value.
@@ -320,12 +327,17 @@ function linkHost(href: string): string | null {
 
 /**
  * Declarations as a browser reads them: comments dropped, custom properties (`--x: …`) aren't styles, and a later
- * declaration wins unless an earlier one is `!important` and it isn't.
+ * declaration wins unless an earlier one is `!important` and it isn't. Walked one at a time, so an attribute of a
+ * million semicolons costs no million-entry array.
  */
 function declarations(style: string | null): Map<string, string> {
 	const out = new Map<string, string>();
 	const important = new Set<string>();
-	for (const decl of (style ?? "").replaceAll(/\/\*[\s\S]*?(?:\*\/|$)/g, "").split(";")) {
+	const css = (style ?? "").replaceAll(/\/\*[\s\S]*?(?:\*\/|$)/g, "");
+	for (let start = 0; start < css.length; ) {
+		const end = css.indexOf(";", start);
+		const decl = css.slice(start, end < 0 ? css.length : end);
+		start = end < 0 ? css.length : end + 1;
 		const at = decl.indexOf(":");
 		const name = decl.slice(0, at).trim().toLowerCase();
 		if (at < 0 || name.startsWith("--")) continue;

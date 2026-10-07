@@ -117,7 +117,10 @@ describe("checks by Workers AI", () => {
 		["the text being a form control's value", '<input style="width:400px" value="Wire the payment today."><input type="hidden" value="gone">'],
 		["a closed dialog full of padding", `<dialog>${"gone ".repeat(2000)}</dialog><p>Wire the payment today.</p>`],
 		["a closed details full of padding, though its summary shows", `<details><summary>Wire the payment today.</summary>${"gone ".repeat(2000)}</details>`],
-		["thousands of characters of alt text on images that show", `<img src="data:image/png;base64,AAAA" alt="${"gone ".repeat(1000)}"><img src="cid:logo" alt="gone"><p>Wire the payment today.</p>`],
+		["thousands of characters of alt text on an image that shows", `<img src="data:image/png;base64,AAAA" alt="${"gone ".repeat(1000)}"><p>Wire the payment today.</p>`],
+		["the text being the fallback of an image whose attachment is missing", '<img src="cid:missing" alt="Wire the payment today.">'],
+		["a second summary in closed details, which doesn't show", `<details><summary>Wire the payment today.</summary><summary>${"gone ".repeat(1000)}</summary>gone</details>`],
+		["a canvas's fallback full of padding", `<canvas>${"gone ".repeat(2000)}</canvas><p>Wire the payment today.</p>`],
 		["the text being an image's fallback", '<img width="600" src="https://img.example/x.png" alt="Wire the payment today."><img style="display:none" alt="gone">'],
 	])("reads visible text despite %s", async (_, html) => {
 		await f.control.setModels({ quick: 0.5 });

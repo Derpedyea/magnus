@@ -51,10 +51,8 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 	const subject = email.subject ?? "(no subject)";
 	const messageIdHeader = email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null;
 	const needed = await mailbox.needsCheck(sender, messageIdHeader, messageId);
-	// Mail of a mailbox deleted since the first check mustn't reach the models.
-	if (needed && !(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
 	// Read for the models only when they're asked: parsing a big body costs CPU that known senders' mail needn't.
-	const facts = async (): Promise<MailFacts> => ({
+	const read = async (): Promise<MailFacts> => ({
 		to: job.envelopeTo,
 		from,
 		verifiedSender: sender.verified !== null,
@@ -62,10 +60,13 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		subject,
 		// What the recipient sees: the app shows the HTML part when there is one, and the sender can make a plain-text
 		// part say anything else.
-		page: email.html ? await readHtml(email.html) : readText(text ?? ""),
+		page: email.html ? await readHtml(email.html, attachedIds(email)) : readText(text ?? ""),
 		attachments: email.attachments.map((a) => ({ filename: a.filename ?? "", contentType: a.mimeType })),
 	});
-	const check = needed ? await checkOrGiveUp(env, models, await facts(), job) : null;
+	const facts = needed ? await read() : null;
+	// Mail of a mailbox deleted since the first check (reading a big body takes a while) mustn't reach the models.
+	if (facts && !(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
+	const check = facts ? await checkOrGiveUp(env, models, facts, job) : null;
 	// Back in the queue with the failure counted (checkOrGiveUp()): this copy of the job is done.
 	if (check === "requeued") return;
 
@@ -197,6 +198,11 @@ async function dropOriginal(env: Env, rawKey: string): Promise<void> {
 		.bind(JSON.stringify(listed.split(",")))
 		.first();
 	if (left === null) await env.MAIL.delete(rawKey);
+}
+
+/** Content-IDs of the attachments, as the renderer matches cid: images against them (worker/html.ts). */
+function attachedIds(email: Email): Set<string> {
+	return new Set(email.attachments.flatMap((a) => (a.contentId ? [a.contentId.replace(/^<|>$/g, "")] : [])));
 }
 
 function flatten(list: ParsedAddress[] | undefined): Address[] {

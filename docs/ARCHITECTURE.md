@@ -489,12 +489,13 @@ apart for one person's mailbox is who you know, and what you've said about who y
   not a plain-text part the sender could make say something else. HTMLRewriter parses the whole document as the
   iframe renders it, and only visible text counts toward the 4,000-character budget, so padding that isn't seen
   (markup, empty elements, zero-width characters, a `<form>` the sanitizer removes) can't push the visible part
-  out (plain-text mail is cleaned the same way). Subtrees under `display: none`, `hidden`, `opacity: 0`, or a
-  closed `<dialog>` are skipped, as is a closed `<details>` but for its summary; `visibility` and a zero
-  `font-size` hide text until a descendant sets them again; inline styles are parsed as declarations (comments,
-  custom properties, `!important`). Form controls count with their values, images that don't show (no source, or a
-  remote one, blocked by default) with their alt text. Link hosts come from anchors with something showing in them
-  (and at most 5 image-map areas), resolved with `URL` after decoding character references, so
+  out (plain-text mail is cleaned the same way). Subtrees under `display: none`, `hidden`, `opacity: 0`, a closed
+  `<dialog>`, or a `<canvas>`, `<video>`, or `<audio>` (whose fallback doesn't show) are skipped, as is a closed
+  `<details>` but for its first summary; `visibility` and a zero `font-size` hide text until a descendant sets
+  them again; inline styles are parsed as declarations (comments, custom properties, `!important`). Form controls
+  count with their values, images that don't show (no source, a remote one, blocked by default, or a `cid:` with
+  no attachment) with their alt text. Link hosts come from anchors with something showing in them (and at most 5
+  image-map areas), resolved with `URL` after decoding character references, so
   `https://trusted.example@phish.example/` reads as `phish.example`; the first 40 are kept. It's best-effort: text
   drawn by CSS (`content:`), hidden by a stylesheet class, or behind a character reference outside the common ones
   isn't read, and only a browser could. Evading it gets a stranger's mail into the inbox, where all of it went
