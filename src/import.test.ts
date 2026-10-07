@@ -33,7 +33,7 @@ describe("planImport", () => {
 		const plan = await planImport([
 			...picked([["Saved/a.eml", "From: a@b.test\r\n\r\nA"], ["Saved/b.eml", "From: a@b.test\r\n\r\nB"], ["Saved/notes.txt", "x"]]),
 			{ path: "Saved/huge.eml", file: new File([new Uint8Array(25 * 1024 * 1024 + 1)], "huge.eml") },
-			...picked([["Saved/odd.eml", "x"], ["Saved/odd.metadata.json", "{not json"]]),
+			...picked([["Saved/labels.json", LABELS], ["Saved/odd.eml", "x"], ["Saved/odd.metadata.json", "{not json"]]),
 		]);
 		expect(plan).toMatchObject({ proton: true, tooBig: ["Saved/huge.eml"], unreadable: ["Saved/odd.eml"] });
 		expect(plan.items.map((i) => [i.file.name, i.placement])).toEqual([
@@ -47,6 +47,11 @@ describe("planImport", () => {
 			.rejects.toThrow("Couldn't read mail_x/labels.json");
 	});
 
+	it("refuses a Proton export missing its labels.json, rather than dropping every folder and label", async () => {
+		await expect(planImport(picked([["mail_z/a.eml", "x"], ["mail_z/a.metadata.json", metadata("a", 1, ["0", "w=="])]])))
+			.rejects.toThrow("mail_z/ has no labels.json");
+	});
+
 	it("leaves a labels.json alone in a folder Proton didn't export", async () => {
 		const plan = await planImport(picked([["Saved/labels.json", "[]"], ["Saved/a.eml", "From: a@b.test\r\n\r\nA"]]));
 		expect(plan).toMatchObject({ proton: false, items: [{ path: "Saved/a.eml" }] });
@@ -54,7 +59,7 @@ describe("planImport", () => {
 
 	it("reads only the version of Proton's details it knows", async () => {
 		const later = (json: string) => json.replace('"Version":1', '"Version":2');
-		const plan = await planImport(picked([["mail_y/a.eml", "x"], ["mail_y/a.metadata.json", later(metadata("a", 1, ["0"]))]]));
+		const plan = await planImport(picked([["mail_y/labels.json", LABELS], ["mail_y/a.eml", "x"], ["mail_y/a.metadata.json", later(metadata("a", 1, ["0"]))]]));
 		expect(plan.unreadable).toEqual(["mail_y/a.eml"]);
 		await expect(planImport(picked([["mail_y/labels.json", later(LABELS)], ["mail_y/a.eml", "x"], ["mail_y/a.metadata.json", metadata("a", 1, ["0"])]])))
 			.rejects.toThrow("Couldn't read mail_y/labels.json");

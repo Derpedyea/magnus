@@ -324,7 +324,9 @@ Code: `shared/import.ts`, `src/import.ts`, `worker/mail/import.ts`.
    Starred become those labels, the person's own folders and labels become labels (`Work/Clients` →
    `work-clients`), Archive and All mail need none, and Unread carries over. Drafts are left out, since drafts here
    live in the directory (§3), and so is mail Proton couldn't export as a message. Only version 1 of Proton's files
-   is read; a message whose details are another version is listed as unreadable rather than guessed at. An `.eml` with no details is filed
+   is read; a message whose details are another version is listed as unreadable rather than guessed at. An export
+   whose `labels.json` is missing or unreadable is refused, since the person's own folders and labels would be lost.
+   Where a message was comes first among its labels, so one with more than 20 loses only some of its own. An `.eml` with no details is filed
    as archived and read, or Sent when it's from one of the mailbox's addresses.
 2. **It sends each message on its own**, newest first and four at a time, to `POST /api/mailboxes/:id/import`, with
    where it goes in the query (one schema checks each label). Failures on the way are retried; being signed out or
@@ -476,9 +478,9 @@ Threading is RFC 5322 first, heuristic second:
 
 1. Every known Message-ID (inbound headers and Cloudflare-assigned outbound IDs) maps to a thread in
    `thread_refs`. An incoming message joins the first thread matched by `In-Reply-To`, then by `References`,
-   newest first. Imported mail (§4.7) comes in any order, so it also maps the ids it answers (unless it's spam) and
-   is matched by its own Message-ID, which lets a message join the replies that came before it. Live mail does
-   neither: anyone who writes in could claim an id that way.
+   newest first. Imported mail (§4.7) comes in any order, so it also maps up to 64 of the ids it answers (unless
+   it's spam) and is matched by its own Message-ID, which lets a message join the replies that came before it. Live
+   mail does neither: anyone who writes in could claim an id that way.
 2. If a message *claims* to be a reply but nothing matches, it falls back to the normalized subject
    (`Re:`/`Fwd:`/`AW:`… stripped) where the sender is already a participant, within 30 days. This covers
    replies whose parent Message-ID we never saw. Imported mail skips it: imports come in any order, so the

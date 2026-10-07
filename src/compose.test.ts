@@ -1,7 +1,7 @@
 import { noteBody } from "#shared/markdown";
 import { describe, expect, it } from "vitest";
 import type { Draft } from "./components/Composer";
-import { answerFrom, closeDraft, compose, openDraft, quote, withSignature } from "./compose";
+import { answerFrom, closeDraft, compose, isOutgoing, openDraft, quote, withSignature } from "./compose";
 import { normalizeMarkdown as normalize } from "./markdown";
 
 describe("openDraft", () => {
@@ -64,5 +64,18 @@ describe("answerFrom", () => {
 	});
 	it("answers sent mail imported from an old address from one this mailbox can send as", () => {
 		expect(answerFrom({ from: { address: "me@proton.test" }, to: [{ address: "pal@outside.test" }], cc: [] }, ctx)).toBe("me@example.com");
+	});
+});
+
+describe("isOutgoing", () => {
+	const identities = [{ mailboxId: "mbx", address: "me@example.com", displayName: null, signature: null }, { mailboxId: "mbx", address: "me@example.net", displayName: null, signature: null }];
+	const inView = (address: string) => address === "me@example.net";
+	it("reads mail one of our addresses sent another as received, when only the recipient is in view", () => {
+		expect(isOutgoing({ direction: "out", from: { address: "me@example.com" } }, identities, inView)).toBe(false);
+		expect(isOutgoing({ direction: "out", from: { address: "me@example.net" } }, identities, inView)).toBe(true);
+	});
+	it("keeps sent mail imported from an old address sent, whatever is in view", () => {
+		expect(isOutgoing({ direction: "out", from: { address: "me@proton.test" } }, identities, inView)).toBe(true);
+		expect(isOutgoing({ direction: "in", from: { address: "me@proton.test" } }, identities, inView)).toBe(false);
 	});
 });

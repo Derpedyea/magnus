@@ -198,6 +198,15 @@ const addressParam = (filter: AddressFilter) => (filter.addresses ? JSON.stringi
 /** IN_ADDRESSES for the failed table, whose rows carry the one address they were delivered to. */
 const FAILED_IN_ADDRESSES = (param: string) => `(${param} IS NULL OR address IN (SELECT value FROM json_each(${param})))`;
 
+/** Ids an imported message answers that ingest() points at its thread, so a huge References header stays cheap. */
+const MAX_NAMED_IDS = 64;
+
+/** What a message answers, each once: the first it names (its In-Reply-To) and the newest, at most MAX_NAMED_IDS. */
+function namedIds(input: Pick<IngestInput, "inReplyTo" | "references">): string[] {
+	const ids = [...new Set([...input.inReplyTo, ...input.references])];
+	return ids.length <= MAX_NAMED_IDS ? ids : [...ids.slice(0, 1), ...ids.slice(1 - MAX_NAMED_IDS)];
+}
+
 /** Predicate on deliveries alias `d`: the recipient's server refused the message, so a retry sends to them. */
 const REFUSED = `d.status IN (${[...RETRYABLE].map((s) => `'${s}'`).join(", ")})`;
 
@@ -455,7 +464,7 @@ export class Mailbox extends DurableObject<Env> {
 			if (input.messageIdHeader) this.registerRef(input.messageIdHeader, threadId);
 			// Imports come in any order, so the ids an imported message answers point here too, for those messages to join it
 			// when they come. Only for imports, and not spam: live mail naming an id would let anyone who writes in claim it.
-			if (input.imported && !input.labels.includes("spam")) for (const id of [...input.inReplyTo, ...input.references]) this.registerRef(id, threadId);
+			if (input.imported && !input.labels.includes("spam")) for (const id of namedIds(input)) this.registerRef(id, threadId);
 			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc], input.text);
 			this.touchThread(threadId, input.date, snippet, [input.from, ...input.to, ...input.cc]);
 			// Titled by the message that started it, which an import can bring after its replies. Not for live mail, whose

@@ -25,7 +25,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast-manager";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, errorMessage, formatList, messageUrl } from "../api";
-import { type AnswerContext, answerFrom, openDraft, quote, withSignature } from "../compose";
+import { type AnswerContext, answerFrom, isOutgoing, openDraft, quote, withSignature } from "../compose";
 import { formatDate } from "../dates";
 import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
@@ -123,7 +123,7 @@ export function ThreadView() {
 								mailboxId,
 								identities,
 								delivered: summary.addresses,
-								outgoing: m.direction === "out" && inView(m.from.address),
+								outgoing: isOutgoing(m, identities, inView),
 								inView,
 							};
 							return (

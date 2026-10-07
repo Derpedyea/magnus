@@ -116,18 +116,20 @@ export type ProtonLabel = z.infer<typeof ProtonLabelsSchema>["Payload"][number];
  */
 export function protonPlacement(meta: ProtonMetadata, labels: ReadonlyMap<string, ProtonLabel>): ImportPlacement | null {
 	if ((meta.Flags & (RECEIVED | SENT)) === 0) return null;
-	const out = new Set<string>();
+	const system = new Set<string>();
+	const own = new Set<string>();
 	for (const id of meta.LabelIDs) {
 		// Proton's own ids are numbers; the person's are base64 (proton-mail-export, go-lib/internal/mail/utils.go).
 		if (/^\d+$/.test(id)) {
-			const system = PROTON_SYSTEM[id];
-			if (system) out.add(system);
+			const label = PROTON_SYSTEM[id];
+			if (label) system.add(label);
 			continue;
 		}
 		const label = labels.get(id);
 		if (!label || label.Type === CONTACT_GROUP) continue;
 		const name = importLabel(label.Path || label.Name);
-		if (name) out.add(name);
+		if (name) own.add(name);
 	}
-	return { labels: [...out].slice(0, MAX_IMPORT_LABELS), read: meta.Unread === 0, sent: (meta.Flags & SENT) !== 0 };
+	// Where it was (Inbox, Sent, Trash…) first, so a message with more labels than fit loses only some of its own.
+	return { labels: [...system, ...own].slice(0, MAX_IMPORT_LABELS), read: meta.Unread === 0, sent: (meta.Flags & SENT) !== 0 };
 }

@@ -54,6 +54,9 @@ export async function planImport(files: PickedFile[]): Promise<ImportPlan> {
 			}),
 	);
 	const labelsByFolder = new Map<string, ReadonlyMap<string, ProtonLabel>>(labelFiles);
+	// Proton always writes one. Without it every folder and label of the person's own would be dropped, and importing
+	// the full export again couldn't add them: the messages would already be here.
+	for (const folder of exports) if (!labelsByFolder.has(folder)) throw new Error(`${folder} has no labels.json, which lists the folders and labels in Proton's export`);
 
 	const plan: ImportPlan = { items: [], bytes: 0, proton: labelsByFolder.size > 0, drafts: 0, unexported: 0, tooBig: [], unreadable: [] };
 	const emls = files.filter((f) => /\.eml$/i.test(f.file.name));

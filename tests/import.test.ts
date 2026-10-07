@@ -175,6 +175,14 @@ describe("import", () => {
 		expect(queued.receivedAt).toBeLessThanOrEqual(Date.now());
 	});
 
+	it("keeps how many ids an imported message can claim in bounds", async () => {
+		const refs = Array.from({ length: 2000 }, (_, i) => `<ref-${i}@outside.test>`).join(" ");
+		await importNow(eml({ inReplyTo: `${refs} ${refs}` }));
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		const [row] = await db.exec("SELECT count(*) AS n FROM thread_refs");
+		expect(Number(row?.n)).toBeLessThanOrEqual(65);
+	});
+
 	it("doesn't take the reference Proton adds to each message for a reply", async () => {
 		// Same sender and subject: a reply with nothing to match would fall back to joining the other.
 		await importNow(eml({ id: "<digest-1@outside.test>", subject: "Weekly digest", internal: "one==" }));

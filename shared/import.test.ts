@@ -31,6 +31,13 @@ describe("protonPlacement", () => {
 		expect(protonPlacement(message(["0", "2", "7"], 3), LABELS)).toMatchObject({ labels: ["inbox", "sent"], sent: true });
 	});
 
+	it("keeps where it was in Proton when it has more labels than fit", () => {
+		const many = new Map<string, ProtonLabel>(Array.from({ length: 25 }, (_, i) => [`l${i}==`, { ID: `l${i}==`, Name: `Label ${i}`, Type: 1 }]));
+		const placement = protonPlacement(message([...many.keys(), "3", "10"]), many);
+		expect(placement?.labels).toHaveLength(20);
+		expect(placement?.labels.slice(0, 2)).toEqual(["trash", "starred"]);
+	});
+
 	it("skips drafts, which aren't mail yet", () => {
 		expect(protonPlacement(message(["1", "8", "5"], 0), LABELS)).toBeNull();
 	});
