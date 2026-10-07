@@ -34,6 +34,8 @@ export interface ImportPlan {
 const METADATA = ".metadata.json";
 /** Proton's details for one message run to a few KB. */
 const MAX_METADATA_BYTES = 1024 * 1024;
+/** Its labels.json runs to a few hundred bytes a label, so thousands fit; anything bigger is another program's. */
+const MAX_MANIFEST_BYTES = 1024 * 1024;
 /** Files read at once while planning. */
 const READERS = 16;
 
@@ -54,7 +56,10 @@ export async function planImport(files: PickedFile[]): Promise<ImportPlan> {
 			return [path, metadata && metadata.size <= MAX_METADATA_BYTES ? await readJson(metadata) : metadata ? TOO_BIG : NONE] as const;
 		}),
 	);
-	const manifests = await Promise.all(files.filter((f) => f.file.name === "labels.json").map(async (f) => ({ ...f, json: await readJson(f.file) })));
+	const manifests = await pool(files.filter((f) => f.file.name === "labels.json"), READERS, async (f) => ({
+		...f,
+		json: f.file.size <= MAX_MANIFEST_BYTES ? await readJson(f.file) : TOO_BIG,
+	}));
 	const exports = new Set([
 		...manifests.filter((m) => isProtonShaped(m.json)).map((m) => folderOf(m.path)),
 		...[...sidecars].filter(([, json]) => isProtonShaped(json)).map(([path]) => folderOf(path)),

@@ -69,6 +69,21 @@ describe("planImport", () => {
 		expect(plan).toMatchObject({ proton: false, unexported: 0, unreadable: [], items: [{ path: "Saved/a.eml", placement: { labels: [], read: true } }] });
 	});
 
+	it("doesn't read a labels.json too big to be Proton's", async () => {
+		const huge = new File([new Uint8Array(2 * 1024 * 1024)], "labels.json");
+		let reads = 0;
+		huge.text = async () => (reads++, "");
+		const plan = await planImport([{ path: "Saved/labels.json", file: huge }, ...picked([["Saved/a.eml", "From: a@b.test\r\n\r\nA"]])]);
+		expect(reads).toBe(0);
+		expect(plan).toMatchObject({ proton: false, items: [{ path: "Saved/a.eml" }] });
+	});
+
+	it("lists a message whose Proton details say something other than read or unread as unreadable", async () => {
+		const odd = metadata("a", 1, ["0"]).replace('"Unread":1', '"Unread":2');
+		const plan = await planImport(picked([["mail_u/labels.json", LABELS], ["mail_u/a.eml", "x"], ["mail_u/a.metadata.json", odd]]));
+		expect(plan).toMatchObject({ items: [], unreadable: ["mail_u/a.eml"] });
+	});
+
 	it("leaves a labels.json alone in a folder Proton didn't export", async () => {
 		const plan = await planImport(picked([["Saved/labels.json", "[]"], ["Saved/a.eml", "From: a@b.test\r\n\r\nA"]]));
 		expect(plan).toMatchObject({ proton: false, items: [{ path: "Saved/a.eml" }] });

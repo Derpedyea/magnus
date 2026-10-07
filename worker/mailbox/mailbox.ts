@@ -630,8 +630,10 @@ export class Mailbox extends DurableObject<Env> {
 		const candidates = [...new Set([...input.inReplyTo, ...input.references.toReversed()])];
 		const own = input.imported && input.messageIdHeader ? [input.messageIdHeader] : [];
 		const lookup = (id: string) => this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM thread_refs WHERE message_id_header = ?1`, id).toArray()[0]?.thread_id;
+		// An import's lookups are bounded like the ids it registers, so thousands of References stay cheap.
+		const ids = input.imported ? [...namedIds(input), ...own] : candidates;
 		if (!input.imported || input.labels.includes("spam")) {
-			for (const id of [...candidates, ...own]) {
+			for (const id of ids) {
 				const hit = lookup(id);
 				if (hit) return hit;
 			}
@@ -639,8 +641,7 @@ export class Mailbox extends DurableObject<Env> {
 			// An import can connect threads its earlier messages started apart: two replies imported before what they both
 			// answer each began one. They become one, the first it matches. Not for live mail or spam, which could join any
 			// two conversations by naming them.
-			// Bounded like the ids it registers, so thousands of References stay cheap.
-			const [thread, ...others] = [...new Set([...namedIds(input), ...own].flatMap((id) => lookup(id) ?? []))];
+			const [thread, ...others] = [...new Set(ids.flatMap((id) => lookup(id) ?? []))];
 			for (const other of others) this.mergeThread(other, thread!);
 			if (thread) return thread;
 		}

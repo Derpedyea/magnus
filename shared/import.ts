@@ -86,8 +86,8 @@ export const ProtonMetadataSchema = z.object({
 	Payload: z.object({
 		ID: z.string(),
 		LabelIDs: z.array(z.string()),
-		/** 0 or 1 (go-proton-api APIBool). */
-		Unread: z.number(),
+		/** 0 or 1 (go-proton-api APIBool). Anything else is corrupt, and its message unreadable. */
+		Unread: z.union([z.literal(0), z.literal(1)]),
 		Flags: z.number(),
 		/** Unix seconds, when Proton received it. */
 		Time: z.number(),

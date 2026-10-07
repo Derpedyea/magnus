@@ -190,6 +190,13 @@ describe("import", () => {
 		expect(await alice().listThreads({ label: "inbox", limit: 50 })).toHaveLength(2);
 	});
 
+	it("bounds the ids imported spam looks up too", async () => {
+		await importNow(eml({ id: "<early@outside.test>", subject: "Early", internal: "early==" }));
+		const refs = Array.from({ length: 2000 }, (_, i) => (i === 1000 ? "<early@outside.test>" : `<ref-${i}@outside.test>`)).join(" ");
+		await importNow(eml({ id: "<junk@outside.test>", subject: "Junk", inReplyTo: refs, internal: "junk==" }), "labels=spam&read=1&sent=0");
+		expect(await alice().listThreads({ label: "spam", limit: 50 })).toMatchObject([{ messageCount: 1, subject: "Junk" }]);
+	});
+
 	it("doesn't let imported spam join threads together", async () => {
 		await importNow(eml({ id: "<one@outside.test>", subject: "One", internal: "one==" }));
 		await importNow(eml({ id: "<two@outside.test>", subject: "Two", inReplyTo: "<elsewhere@outside.test>", internal: "two==" }));

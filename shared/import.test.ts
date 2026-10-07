@@ -11,7 +11,7 @@ const LABELS = new Map<string, ProtonLabel>(
 		{ ID: "spm==", Name: "Spam", Type: 3 },
 	].map((l) => [l.ID, l]),
 );
-const message = (LabelIDs: string[], Flags = 1, Unread = 0) => ({ ID: "m", LabelIDs, Unread, Flags, Time: 0 });
+const message = (LabelIDs: string[], Flags = 1, Unread: 0 | 1 = 0) => ({ ID: "m", LabelIDs, Unread, Flags, Time: 0 });
 
 describe("protonPlacement", () => {
 	it.each([
