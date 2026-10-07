@@ -101,14 +101,14 @@ describe("Screener", () => {
 	it("lets in all of a flood of held mail with one answer", async () => {
 		const sender = { verified: "flood@outside.test", internal: false, spoofed: false };
 		const check = { kind: "checked", category: "personal", spam: 0, model: QUICK_MODEL } as const;
-		for (let i = 0; i < 150; i++) {
-			await box().ingest({ ...inbound(ids.alice, `flood-${i}`), messageIdHeader: `<flood-${i}@outside.test>`, subject: `Flood ${i}`, sender, check });
-		}
+		// All at once: one by one, 150 round trips can outlast the default timeout when every suite runs together.
+		await Promise.all(Array.from({ length: 150 }, (_, i) =>
+			box().ingest({ ...inbound(ids.alice, `flood-${i}`), messageIdHeader: `<flood-${i}@outside.test>`, subject: `Flood ${i}`, sender, check })));
 		expect((await box().counts({})).labels.find((l) => l.label === "screener")?.threads).toBe(150);
 		await box().judgeMessage({ messageId: "flood-0", verdict: "trusted" });
 		const counts = (await box().counts({})).labels;
 		expect([counts.find((l) => l.label === "screener"), counts.find((l) => l.label === "inbox")?.threads]).toEqual([undefined, 150]);
-	});
+	}, 30_000);
 
 	it("lets in only the message itself when its sender can't be verified", async () => {
 		const unverified = "dkim=none; dmarc=none; spf=pass smtp.mailfrom=bounce@bulk.test";
