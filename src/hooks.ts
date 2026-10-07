@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { LIVE_RECHECK, type Me, parseScope } from "#shared";
 import type { Identity } from "./api";
 import { countsQuery, meQuery } from "./queries";
+import { throttle } from "./throttle";
 
 /** The signed-in user, plus what the UI derives from their mailboxes. The root route loads it, so it never suspends. */
 export function useAccount() {
@@ -88,26 +89,6 @@ export function useLive(mailboxIds: string[]): boolean {
 	}, [key, qc]);
 
 	return mailboxIds.length > 0 && mailboxIds.every((id) => open.has(id));
-}
-
-/** Runs `run` at once, then at most once per `ms`: calls in between become one more run when the time is up. */
-export function throttle(run: () => void, ms: number): { call: () => void; cancel: () => void } {
-	let last = -Infinity;
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const fire = () => {
-		timer = undefined;
-		last = Date.now();
-		run();
-	};
-	return {
-		call: () => {
-			if (timer !== undefined) return;
-			const wait = last + ms - Date.now();
-			if (wait <= 0) fire();
-			else timer = setTimeout(fire, wait);
-		},
-		cancel: () => clearTimeout(timer),
-	};
 }
 
 /** One reconnecting WebSocket to a Mailbox DO. Returns a function that closes it for good. */
