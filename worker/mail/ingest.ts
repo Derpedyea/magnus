@@ -58,12 +58,12 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		subject: email.subject ?? "(no subject)",
 		// What the recipient sees: the app shows the HTML part when there is one, and the sender can make a plain-text
 		// part say anything else.
-		text: html ? htmlToText(html) : text,
+		text: html ? await visibleText(html) : text,
 		html,
 		attachments: email.attachments.map((a) => ({ filename: a.filename ?? "", contentType: a.mimeType })),
 	};
 	const messageIdHeader = email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null;
-	const check = (await mailbox.needsCheck(sender, messageIdHeader)) ? await checkOrGiveUp(env, models, facts, job) : null;
+	const check = (await mailbox.needsCheck(sender, messageIdHeader, messageId)) ? await checkOrGiveUp(env, models, facts, job) : null;
 	// Back in the queue with the failure counted (checkOrGiveUp()): this copy of the job is done.
 	if (check === "requeued") return;
 
@@ -284,6 +284,24 @@ function resultsOf(value: string): { method: string; result: string; props: Map<
 			}));
 			return [{ method: verdict[1].toLowerCase(), result: verdict[2].toLowerCase(), props }];
 		});
+}
+
+/**
+ * An HTML body's text as the app shows it, for the checks: elements hidden by their own style or `hidden` attribute are
+ * dropped, so hidden padding can't push what the recipient sees past what the models read. (Hiding by a stylesheet
+ * class isn't caught.)
+ */
+async function visibleText(html: string): Promise<string> {
+	const hidden = /display\s*:\s*none|visibility\s*:\s*hidden|(?:font-size|opacity|max-height|max-width)\s*:\s*0(?![.\d])/i;
+	const shown = await new HTMLRewriter()
+		.on("*", {
+			element(el) {
+				if (el.hasAttribute("hidden") || hidden.test(el.getAttribute("style") ?? "")) el.remove();
+			},
+		})
+		.transform(new Response(html))
+		.text();
+	return htmlToText(shown);
 }
 
 /** me+Receipts@… → label "receipts". */

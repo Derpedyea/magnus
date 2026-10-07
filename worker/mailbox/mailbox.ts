@@ -437,9 +437,16 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	/** Whether the queue should have Workers AI check mail from this sender before delivering it (worker/mail/checks.ts). */
-	async needsCheck(sender: SenderCheck, messageIdHeader: string | null): Promise<boolean> {
-		// A second copy of a message keeps where the first went (ingest()), so it needn't be checked again.
-		if (messageIdHeader && this.sql.exec(`SELECT 1 FROM messages WHERE message_id_header = ?1 OR provider_message_id = ?1 LIMIT 1`, messageIdHeader).toArray().length > 0) return false;
+	async needsCheck(sender: SenderCheck, messageIdHeader: string | null, ingestId: string): Promise<boolean> {
+		// Already delivered or deleted (the queue redelivered it), or a second copy of a message, which keeps where the
+		// first went (ingest()): no need to check it again.
+		const known = this.sql.exec(
+			`SELECT 1 FROM messages WHERE id = ?1 OR (?2 IS NOT NULL AND (message_id_header = ?2 OR provider_message_id = ?2))
+			 UNION ALL SELECT 1 FROM deleted_messages WHERE id = ?1 LIMIT 1`,
+			ingestId,
+			messageIdHeader,
+		);
+		if (known.toArray().length > 0) return false;
 		return this.judge(sender, null).kind === "unknown";
 	}
 

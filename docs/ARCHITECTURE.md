@@ -480,7 +480,9 @@ apart for one person's mailbox is who you know, and what you've said about who y
   and don't train on it (`data_collection: deny`), and tells the gateway not to log it. Without the key, Luna's mail ends up unchecked (below). The models read a bounded
   summary (sender, whether it's verified, subject, up to 5 Reply-To addresses, 20 link domains, and 10 file names,
   each cut to 200 characters, and the first 4,000 characters of the body as the recipient sees it: the HTML
-  part's text when there is one, not a plain-text part that could say something else), and
+  part's text when there is one, not a plain-text part that could say something else, and without elements its
+  own styles hide, so hidden padding can't push the visible text out; link domains include protocol-relative
+  links and bare IPs), and
   their answers are validated. Mail from known senders never reaches them, so a message written to sway a model
   can at most get a stranger's mail into the inbox. A check that fails puts the job back in the queue with the failure
   counted (`checkFailures`, 30 then 60 seconds later), so failures elsewhere don't use up its tries. After the

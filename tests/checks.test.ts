@@ -14,7 +14,8 @@ describe("checks by Workers AI", () => {
 
 	const box = () => f.env.MAILBOX.getByName(ids.alice);
 	/** `html` makes it multipart/alternative, with `body` as its plain-text part. */
-	async function store(stamped = VERIFIED, body = "Hello there", headers: { subject?: string; messageId?: string; replyTo?: string; html?: string } = {}) {
+	/** `messageId: null` leaves the Message-ID header out. */
+	async function store(stamped = VERIFIED, body = "Hello there", headers: { subject?: string; messageId?: string | null; replyTo?: string; html?: string } = {}) {
 		const n = ++serial;
 		const content = headers.html === undefined ? ["", body] : [
 			'Content-Type: multipart/alternative; boundary="b"', "", "--b", "Content-Type: text/plain", "", body,
@@ -23,7 +24,8 @@ describe("checks by Workers AI", () => {
 		const raw = [
 			`Authentication-Results: mx.cloudflare.net; ${stamped}`, "X-CF-SpamH-Score: 1",
 			"From: Stranger <stranger@outside.test>", "To: alice@example.com", `Subject: ${headers.subject ?? `Note ${n}`}`,
-			`Message-ID: ${headers.messageId ?? `<check-${n}@outside.test>`}`, ...(headers.replyTo ? [`Reply-To: ${headers.replyTo}`] : []), ...content, "",
+			...(headers.messageId === null ? [] : [`Message-ID: ${headers.messageId ?? `<check-${n}@outside.test>`}`]),
+			...(headers.replyTo ? [`Reply-To: ${headers.replyTo}`] : []), ...content, "",
 		].join("\r\n");
 		const input = job(ids.alice, `check-${n}`);
 		await f.env.MAIL.put(input.rawKey, raw, { customMetadata: { mailboxes: ids.alice } });
@@ -89,6 +91,29 @@ describe("checks by Workers AI", () => {
 		await f.control.consume([input], 4);
 		expect(await box().getMessage(input.ingestId)).toBeNull();
 		expect((await f.control.state()).jobs.at(-1)).toMatchObject({ checkFailures: 1 });
+	});
+
+	it("leaves out HTML hidden from the recipient, so padding can't push what they see past what's read", async () => {
+		await f.control.setModels({ quick: 0.5 });
+		const padding = `<div style="display: none">${"Nothing to see. ".repeat(400)}</div><span hidden>${"More. ".repeat(400)}</span>`;
+		await deliver(VERIFIED, "Lunch?", { html: `${padding}<p>Wire 4,000 USD to the account below.</p>` });
+		const [quick] = (await calls()).map((c) => JSON.parse(c.inputs));
+		expect(quick.state.body).toContain("Wire 4,000 USD");
+		expect(quick.state.body).not.toContain("Nothing to see");
+	});
+
+	it("finds protocol-relative links and bare IP hosts", async () => {
+		await f.control.setModels({ quick: 0.5 });
+		await deliver(VERIFIED, "See below", { html: '<a href="//phish.example/login">Review document</a> <a href="http://203.0.113.9/x">here</a> // not a link' });
+		const [quick] = (await calls()).map((c) => JSON.parse(c.inputs));
+		expect(quick.state.linkDomains).toEqual(["phish.example", "203.0.113.9"]);
+	});
+
+	it("doesn't check mail the queue redelivers after it was delivered, even without a Message-ID", async () => {
+		const input = await store(VERIFIED, "Hello there", { messageId: null });
+		await f.control.parse(input);
+		await f.control.parse(input);
+		expect(await calls()).toHaveLength(1);
 	});
 
 	it("checks the HTML the recipient sees, not a plain-text part that says something else", async () => {

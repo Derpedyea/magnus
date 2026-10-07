@@ -122,7 +122,8 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 /** Where links go, the first MAX_LINKS hosts, found without collecting every link a huge message has. */
 function linkDomains(text: string): string[] {
 	const found = new Set<string>();
-	for (const m of text.matchAll(/https?:\/\/([^/\s"'<>?#]+)/gi)) {
+	// Absolute links, and protocol-relative ones (href="//host/…"), which browsers open too; to a name or a bare IPv4.
+	for (const m of text.matchAll(/(?:https?:)?\/\/(\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})/gi)) {
 		const host = m[1]?.toLowerCase().slice(0, MAX_FIELD);
 		if (host) found.add(host);
 		if (found.size >= MAX_LINKS) break;
