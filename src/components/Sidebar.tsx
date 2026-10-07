@@ -49,8 +49,8 @@ export function Sidebar(props: {
 	const draftList = useDraftList(scope);
 	const unreadByAddress = new Map(counts.data?.addresses.map((a) => [a.address, a.unread]));
 	const userLabels = counts.data?.labels.filter((c) => !SYSTEM.has(c.label)).map((c) => c.label) ?? [];
-	// Failed is an alert: it shows while it holds mail, or while it's open so it doesn't vanish once emptied.
-	const systemViews = SYSTEM_VIEWS.filter((v) => !v.alert || view === v.label || rowCount(v.label, counts.data) > 0);
+	// Failed and the Screener show while they hold mail, or while open so they don't vanish once emptied.
+	const systemViews = SYSTEM_VIEWS.filter((v) => !v.transient || view === v.label || rowCount(v.label, counts.data) > 0);
 
 	/** null = all addresses. `combine` adds or removes one address instead of switching to it. */
 	const pick = (address: string | null, combine: boolean) => {
@@ -240,9 +240,13 @@ export function Sidebar(props: {
 	);
 }
 
-/** What a view's row counts, and dots in the rail: unread threads in the inbox and labels, and everything in Failed. */
+/**
+ * What a view's row counts, and dots in the rail: unread threads in the inbox and labels, and everything in Failed and
+ * the Screener, which wait on someone.
+ */
 function rowCount(label: string, counts: Counts | undefined): number {
 	if (label === "failed") return counts?.failed ?? 0;
+	if (label === "screener") return counts?.labels.find((c) => c.label === label)?.threads ?? 0;
 	if (label !== "inbox" && SYSTEM.has(label)) return 0;
 	return counts?.labels.find((c) => c.label === label)?.unread ?? 0;
 }

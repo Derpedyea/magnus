@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { fromBase64Url } from "./base64url";
 import { MAX_SIGNATURE } from "./directory";
+import type { MailSettings } from "./types";
 
 /** Email Service: to + cc + bcc combined. */
 export const MAX_RECIPIENTS = 50;
@@ -72,6 +73,9 @@ export const SignatureSchema = z.object({
 
 /** A banner's answer about one message's sender (Mailbox.judgeMessage()). */
 export const JudgeSchema = z.object({ verdict: z.enum(["trusted", "spam"]) });
+
+/** A change to some of a mailbox's MailSettings; what it leaves out stays as it is. */
+export const MailSettingsSchema = z.object({ screener: z.boolean() }).partial() satisfies z.ZodType<Partial<MailSettings>>;
 
 export const MarkReadSchema = z.object({
 	threadIds: z.array(z.string()).min(1).max(500),

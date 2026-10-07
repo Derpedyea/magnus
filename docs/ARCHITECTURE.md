@@ -111,7 +111,7 @@ push_subscriptions(endpoint, session_id, p256dh, auth, origin) ← a browser to 
 `contacts`, `sends` (every id Email Sending gave a message), `messages_fts` (FTS5, porter + unicode61). Migrations are an append-only array applied in `blockConcurrencyWhile`.
 
 Labels follow the Gmail model: they live on messages, and a thread appears in a view if any of its messages
-has the label. System labels are `inbox`, `sent`, `outbox`, `spam`, `trash`, `starred`. "Archive" means
+has the label. System labels are `inbox`, `sent`, `outbox`, `spam`, `trash`, `starred`, `screener`. "Archive" means
 removing `inbox`, and "All mail" is a pseudo-view. `+tag` subaddresses become labels automatically
 (`me+receipts@…` → `receipts`).
 
@@ -507,6 +507,12 @@ apart for one person's mailbox is who you know, and what you've said about who y
   message keeps its verdict, and mail in Spam shows it with a Not spam button, like Gmail's "Why is this message
   in spam?". Every Spam or Not spam click on mail the filter placed otherwise logs the verdicts it got wrong
   (`spam verdict corrected`, no content or addresses), to tune the thresholds by.
+- **Screener** (opt-in per mailbox in Settings › Spam, kept with the mailbox's other settings in its `_meta`). Like HEY's, mail from
+  first-time senders waits in a Screener view, listed while it holds mail, instead of the inbox. Account mail
+  (the checks' `transactional`: receipts, codes) still goes to the inbox, spam to Spam, and unchecked mail waits
+  in the Screener. Let in trusts the sender, Spam marks them, and either moves all their held mail at once, since
+  the Screener asks once per sender. Both answer for that message's sender alone (`judgeMessage()`), not others in
+  its thread; one whose address can't be verified only has that message moved. Writing to someone lets them in too.
 
 ### 5.7 Reliability summary
 

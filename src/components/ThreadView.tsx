@@ -13,7 +13,7 @@ import {
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi, useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, ArrowLeftIcon, CircleAlertIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon, type LucideIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, CircleAlertIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon, UserRoundCheckIcon, type LucideIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -102,7 +102,7 @@ export function ThreadView() {
 				<BackToList className="mr-auto" />
 				{inInbox
 					? action(ArchiveIcon, "Archive", () => (modify.mutate({ verb: "archive", remove: ["inbox"] }), close()))
-					: action(InboxIcon, "Move to inbox", () => modify.mutate({ verb: "move to inbox", add: ["inbox"], remove: ["trash", "spam"] }))}
+					: action(InboxIcon, "Move to inbox", () => modify.mutate({ verb: "move to inbox", add: ["inbox"], remove: ["trash", "spam", "screener"] }))}
 				{deleteForever
 					? <PermanentDelete key={`${mailboxId}/${threadId}`} thread={{ mailboxId, id: threadId, subject: summary.subject, count: trashed }} />
 					: action(Trash2Icon, "Trash", () => (modify.mutate({ verb: "move to trash", add: ["trash"] }), close()))}
@@ -277,7 +277,7 @@ function Message(props: {
 						{m.auth ? ` · spf ${m.auth.spf ?? "?"} · dkim ${m.auth.dkim ?? "?"} · dmarc ${m.auth.dmarc ?? "?"}` : ""}
 				</p>
 				{props.outgoing ? <Undelivered mailboxId={props.mailboxId} message={m} /> : null}
-				{m.direction === "in" && m.labels.includes("spam") ? <SpamReason mailboxId={props.mailboxId} message={m} /> : null}
+				<Triage mailboxId={props.mailboxId} message={m} />
 				{m.hasHtml ? (
 					<HtmlBody src={`${messageUrl(props.mailboxId, m.id)}/body`} fold={fold} onLink={openLinked} />
 				) : (
@@ -441,6 +441,61 @@ function SpamReason(props: { mailboxId: string; message: MessageDetail }) {
 				{notSpam.isPending ? <Spinner className="size-3" /> : <InboxIcon />}
 				Not spam
 			</Button>
+		</div>
+	);
+}
+
+/** Inbound mail the filter held back says why, with the way out. Nothing otherwise. */
+function Triage(props: { mailboxId: string; message: MessageDetail }) {
+	if (props.message.direction !== "in") return null;
+	if (props.message.labels.includes("spam")) return <SpamReason {...props} />;
+	if (props.message.labels.includes("screener")) return <Screening {...props} />;
+	return null;
+}
+
+/**
+ * A first-time sender waiting in the Screener: let them in, or send them to Spam. Either answers for this message's
+ * sender only, and, when their address is verified, for all their mail.
+ */
+function Screening(props: { mailboxId: string; message: MessageDetail }) {
+	const qc = useQueryClient();
+	const decide = useMutation({
+		mutationFn: (letIn: boolean) => api.judge(props.mailboxId, props.message.id, letIn ? "trusted" : "spam"),
+		onSuccess: () => qc.invalidateQueries({ queryKey: ["mail"] }),
+	});
+	const { from, verdict, senderVerified } = props.message;
+	const busy = decide.isPending || decide.isSuccess;
+	return (
+		// Phones put the choice on a row of its own, under who's asking.
+		<div className="mb-3 flex flex-wrap items-start gap-2 rounded-lg bg-muted px-3 py-2">
+			<UserRoundCheckIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+			<div className="min-w-0 flex-1">
+				<p className="font-medium break-words">First mail from {from.address}</p>
+				{decide.error ? (
+					<p className="text-xs break-words text-muted-foreground">{errorMessage(decide.error)}</p>
+				) : verdict?.kind === "unchecked" ? (
+					<p className="text-xs text-muted-foreground">It couldn't be checked for spam.</p>
+				) : null}
+			</div>
+			<div className="flex shrink-0 gap-1.5 max-md:basis-full max-md:pl-6">
+				<Tooltip>
+					<TooltipTrigger
+						render={
+							<Button variant="outline" size="xs" disabled={busy} onClick={() => decide.mutate(true)}>
+								{decide.isPending && decide.variables ? <Spinner className="size-3" /> : <InboxIcon />}
+								Let in
+							</Button>
+						}
+					/>
+					<TooltipContent>
+						{senderVerified ? "Their mail goes to your inbox from now on" : "Moves this message. Their address can't be verified, so their next mail waits here too"}
+					</TooltipContent>
+				</Tooltip>
+				<Button variant="ghost" size="xs" disabled={busy} onClick={() => decide.mutate(false)}>
+					{decide.isPending && !decide.variables ? <Spinner className="size-3" /> : <OctagonAlertIcon />}
+					Spam
+				</Button>
+			</div>
 		</div>
 	);
 }

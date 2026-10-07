@@ -1,4 +1,4 @@
-import { type Address, formatScope, type StepId } from "#shared";
+import { type Address, formatScope, type MailSettings, type StepId } from "#shared";
 import { adminClient, emailOTPClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/client";
 import { hc, type InferRequestType, parseResponse } from "hono/client";
@@ -88,6 +88,8 @@ export const api = {
 	/** Not spam (trusted) or Spam for one message and its sender, not the whole thread. */
 	judge: (mailboxId: string, messageId: string, verdict: "trusted" | "spam") =>
 		parseResponse(mailbox.messages[":messageId"].judge.$post({ param: { mailboxId, messageId }, json: { verdict } })),
+	settings: (mailboxId: string) => parseResponse(mailbox.settings.$get({ param: { mailboxId } })),
+	updateSettings: (mailboxId: string, change: Partial<MailSettings>) => parseResponse(mailbox.settings.$patch({ param: { mailboxId }, json: change })),
 	markRead: (mailboxId: string, threadIds: string[], read: boolean) =>
 		parseResponse(mailbox.threads.read.$post({ param: { mailboxId }, json: { threadIds, read } })),
 	upload: (mailboxId: string, file: File) =>
