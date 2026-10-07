@@ -1,5 +1,6 @@
 import { type Address, MAIL_CATEGORIES, type MailCategory, type MailCheck } from "#shared";
 import { z } from "zod";
+import { REMOVED_ELEMENTS } from "../html";
 
 // Workers AI's call on mail from senders a mailbox doesn't know. Clef, Cloudflare's decision model that answers with
 // a probability per category, reads all of it; GPT-6 Luna reads only what Clef wasn't sure of. Neither reads mail from
@@ -124,52 +125,109 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 	return { kind: "checked", category: DeepVerdict.parse(JSON.parse(text)).category, spam, model: DEEP_MODEL };
 }
 
-/** Elements whose content a browser doesn't show as text. */
-const UNSHOWN = new Set(["head", "title", "style", "script", "noscript", "template"]);
+/** Elements whose content isn't shown: what a browser doesn't render as text, and what the app's sanitizer removes. */
+const UNSHOWN = new Set<string>(["head", "title", "style", "template", ...REMOVED_ELEMENTS]);
+/** Visible text collected, at most: describe() cuts the body one character shorter. */
+const MAX_COLLECTED = MAX_BODY + 1;
+
+/** Styles that hide text but that a descendant can set again. */
+interface Inherited {
+	invisible: boolean;
+	tiny: boolean;
+}
 
 /**
- * What the app shows of an HTML body: its text, and the hosts its links go to. A parser reads the whole document the way
- * the iframe renders it, so padding before the visible part can't push it out of what the models read; only what's
- * collected is bounded. Content hidden by an element's own style or `hidden` attribute doesn't count, nor do links in
- * it. (Hiding through a stylesheet class isn't caught: only a browser could tell.)
+ * What the app shows of an HTML body: its text, and the hosts its links go to, as well as a parser can tell without a
+ * browser. It reads the whole document, the way the iframe renders it, and only what's collected counts towards the
+ * budget, so padding that isn't seen (markup, empty elements, zero-width characters) can't push the visible part out.
+ *
+ * It's a best-effort reading, and a sender set on hiding text from it can: text drawn by CSS (`content:`), hidden by a
+ * stylesheet class, or behind a character reference this doesn't decode isn't read. That only gets a stranger's mail
+ * past the checks into the inbox, where all of it went before there were checks.
  */
 export async function readHtml(html: string): Promise<Page> {
-	// Depth inside elements whose content isn't shown. onEndTag fires on implicit closes too, so an unclosed hidden
-	// element ends where the browser ends it.
-	let hidden = 0;
-	let text = "";
+	// Depth inside subtrees nothing in can show: display: none, `hidden`, opacity 0, elements the sanitizer removes.
+	// onEndTag fires on implicit closes too, so an unclosed one ends where the browser ends it.
+	let closed = 0;
+	// visibility and font-size, which descendants inherit but can set again.
+	const inherited: Inherited[] = [{ invisible: false, tiny: false }];
+	const shown = () => {
+		const top = inherited.at(-1);
+		return closed === 0 && !top?.invisible && !top?.tiny;
+	};
+	const text = new Collector();
 	const links = new Set<string>();
 	await new HTMLRewriter()
 		.on("*", {
 			element(el) {
-				const style = el.getAttribute("style");
-				const shown = !(UNSHOWN.has(el.tagName) || hiddenByStyle(style) || (el.hasAttribute("hidden") && !shownByStyle(style)));
-				if (hidden === 0 && shown) {
+				const tag = el.tagName;
+				const d = declarations(el.getAttribute("style"));
+				const parent = inherited.at(-1) ?? { invisible: false, tiny: false };
+				const visibility = d.get("visibility");
+				const size = d.get("font-size");
+				const own: Inherited = {
+					invisible: visibility === undefined ? parent.invisible : visibility === "hidden" || visibility === "collapse",
+					// A relative size of nothing is still nothing.
+					tiny: size === undefined ? parent.tiny : isZero(size) || (parent.tiny && /(?:em|ex|ch|%)$/.test(size)),
+				};
+				const display = d.get("display");
+				const closes =
+					UNSHOWN.has(tag) || display === "none" || isZero(d.get("opacity")) || (el.hasAttribute("hidden") && (display === undefined || display === "none"));
+				if (closed === 0 && !closes && !own.invisible && !own.tiny) {
 					// Elements break words, as blocks and <br> do on screen.
-					if (text.length < MAX_BODY * 2) text += " ";
-					const href = el.tagName === "a" || el.tagName === "area" ? el.getAttribute("href") : null;
+					text.separate();
+					const href = tag === "a" || tag === "area" ? el.getAttribute("href") : null;
 					const host = href === null ? null : linkHost(decodeEntities(href));
 					if (host && links.size < MAX_LINKS) links.add(host);
+					// A form control shows its value.
+					if (tag === "input" && el.getAttribute("type")?.toLowerCase() !== "hidden") text.add(el.getAttribute("value") ?? el.getAttribute("placeholder") ?? "");
 				}
-				if (shown) return;
 				try {
 					el.onEndTag(() => {
-						hidden--;
+						if (closes) closed--;
+						inherited.pop();
 					});
-					hidden++;
+					if (closes) closed++;
+					inherited.push(own);
 				} catch {
-					// A void element (an <img>, say) has no end tag, and no content to hide.
+					// A void element (an <img>, say) has no end tag, and no content to hide or style.
 				}
 			},
 		})
 		.onDocument({
 			text(chunk) {
-				if (hidden === 0 && text.length < MAX_BODY * 2) text += chunk.text;
+				if (shown()) text.add(chunk.text);
 			},
 		})
 		.transform(new Response(html))
 		.arrayBuffer();
-	return { text: decodeEntities(text).replaceAll(/\s+/g, " ").trim(), links: [...links] };
+	return { text: text.value(), links: [...links] };
+}
+
+/** Visible text, budgeted by what shows: whitespace collapsed, invisible formatting characters dropped. */
+class Collector {
+	private out = "";
+	private gap = false;
+
+	/** A boundary between elements: what comes next is a new word. */
+	separate(): void {
+		this.gap = true;
+	}
+
+	add(raw: string): void {
+		if (this.out.length >= MAX_COLLECTED) return;
+		const t = decodeEntities(raw).replaceAll(/\p{Cf}/gu, "").replaceAll(/\s+/g, " ");
+		const core = t.trim();
+		if (t.startsWith(" ")) this.gap = true;
+		if (!core) return;
+		if (this.gap && this.out) this.out += " ";
+		this.out += core.slice(0, MAX_COLLECTED - this.out.length);
+		this.gap = t.endsWith(" ");
+	}
+
+	value(): string {
+		return this.out;
+	}
 }
 
 /** A plain-text body, and the hosts of the links in it. */
@@ -195,37 +253,41 @@ function linkHost(href: string): string | null {
 	}
 }
 
-/** Declarations as a browser reads them: comments dropped, custom properties (`--x: …`) aren't styles. */
+/**
+ * Declarations as a browser reads them: comments dropped, custom properties (`--x: …`) aren't styles, and a later
+ * declaration wins unless an earlier one is `!important` and it isn't.
+ */
 function declarations(style: string | null): Map<string, string> {
 	const out = new Map<string, string>();
+	const important = new Set<string>();
 	for (const decl of (style ?? "").replaceAll(/\/\*[\s\S]*?(?:\*\/|$)/g, "").split(";")) {
 		const at = decl.indexOf(":");
 		const name = decl.slice(0, at).trim().toLowerCase();
 		if (at < 0 || name.startsWith("--")) continue;
-		out.set(name, decl.slice(at + 1).replace(/!\s*important\s*$/i, "").trim().toLowerCase());
+		const raw = decl.slice(at + 1);
+		const isImportant = /!\s*important\s*$/i.test(raw);
+		if (important.has(name) && !isImportant) continue;
+		out.set(name, raw.replace(/!\s*important\s*$/i, "").trim().toLowerCase());
+		if (isImportant) important.add(name);
 	}
 	return out;
 }
 
-/** Only what certainly hides content: an over-eager guess would hide what the recipient sees from the models. */
-function hiddenByStyle(style: string | null): boolean {
-	const d = declarations(style);
-	const zero = (v: string | undefined) => v !== undefined && /^0*(?:\.0*)?(?:[a-z%]+)?$/.test(v);
-	return d.get("display") === "none" || d.get("visibility") === "hidden" || d.get("visibility") === "collapse" || zero(d.get("opacity")) || zero(d.get("font-size"));
-}
-
-/** An inline `display` other than none overrides the `hidden` attribute. */
-function shownByStyle(style: string | null): boolean {
-	const display = declarations(style).get("display");
-	return display !== undefined && display !== "none";
+function isZero(value: string | undefined): boolean {
+	return value !== undefined && /^0*(?:\.0*)?(?:[a-z%]+)?$/.test(value);
 }
 
 const NAMED: Record<string, string> = {
-	amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", colon: ":", sol: "/", period: ".", commat: "@",
-	quest: "?", num: "#", percnt: "%", equals: "=", lowbar: "_", hyphen: "-", dash: "-", plus: "+",
+	amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", colon: ":", sol: "/", bsol: "\\", period: ".",
+	commat: "@", quest: "?", num: "#", percnt: "%", equals: "=", lowbar: "_", hyphen: "-", dash: "-", plus: "+",
+	excl: "!", comma: ",", semi: ";", ast: "*", lpar: "(", rpar: ")", lsqb: "[", rsqb: "]", lcub: "{", rcub: "}",
+	verbar: "|", grave: "`", tab: "\t", newline: "\n", zwsp: "\u200b", shy: "\u00ad",
 };
 
-/** Character references as a browser decodes them in text and attributes: numeric ones, and the named ones links use. */
+/**
+ * Character references as a browser decodes them in text and attributes: numeric ones, and the named ones URLs and
+ * padding use. (HTML has over two thousand names; one this doesn't know stays as written.)
+ */
 function decodeEntities(text: string): string {
 	return text.replaceAll(/&(?:#(\d+)|#x([\da-f]+)|([a-z]+));?/gi, (whole, dec: string | undefined, hex: string | undefined, name: string | undefined) => {
 		const code = dec ? Number(dec) : hex ? Number.parseInt(hex, 16) : null;

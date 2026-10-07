@@ -487,11 +487,16 @@ apart for one person's mailbox is who you know, and what you've said about who y
   third, the mail is delivered to Spam as unchecked, saying so: not held for an outage, not let through unseen.
 - **Reading HTML** (`readHtml()`). The app shows the HTML part when there is one, so that's what the models read,
   not a plain-text part the sender could make say something else. HTMLRewriter parses the whole document as the
-  iframe renders it, so nothing placed before the visible part can push it out; only what's collected is bounded.
-  Text inside elements hidden by their own style (declarations parsed, comments and custom properties ignored) or
-  `hidden` attribute doesn't count, nor do links in them. Link hosts come from anchors' `href`s resolved with `URL`
-  after decoding character references, so `https://trusted.example@phish.example/` reads as `phish.example`; the
-  first 40 shown hosts are kept. Hiding through a stylesheet class isn't caught: only a browser could tell.
+  iframe renders it, and only visible text counts toward the 4,000-character budget, so padding that isn't seen
+  (markup, empty elements, zero-width characters, a `<form>` the sanitizer removes) can't push the visible part
+  out. Subtrees under `display: none`, `hidden`, or `opacity: 0` are skipped; `visibility` and a zero `font-size`
+  hide text until a descendant sets them again; inline styles are parsed as declarations (comments, custom
+  properties, `!important`). Form controls count with their values. Link hosts come from shown anchors' `href`s
+  resolved with `URL` after decoding character references, so `https://trusted.example@phish.example/` reads as
+  `phish.example`; the first 40 are kept. It's best-effort: text drawn by CSS (`content:`), hidden by a stylesheet
+  class, or behind a character reference outside the common ones isn't read, and only a browser could. Evading it
+  gets a stranger's mail into the inbox, where all of it went before there were checks; who's trusted, forged
+  senders, and Spam clicks don't depend on it.
 - **Verdicts.** `Mailbox.ingest()` decides, in order: failed its domain's authentication → Spam; a judged sender
   → their standing; verified mail from one of this install's own addresses → Inbox; anyone else → the checks'
   call (spam and phishing → Spam). Standing is read inside the insert's transaction, so a click can't land

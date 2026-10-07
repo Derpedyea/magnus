@@ -108,6 +108,13 @@ describe("checks by Workers AI", () => {
 		["over 200,000 characters of markup before it", `<!-- ${"x".repeat(250_000)} --><p>Wire the payment today.</p>`],
 		["an unclosed hidden element in an earlier cell", '<table><tr><td><span style="display:none">gone</td><td>Wire the payment today.</td></tr></table>'],
 		["a hidden image before it", '<img style="display:none" src="cid:x"><p>Wire the payment today.</p>'],
+		["a form full of padding, which the app removes", `<form>${"gone ".repeat(2000)}</form><p>Wire the payment today.</p>`],
+		["thousands of zero-width spaces", `${"\u200b".repeat(5000)}${"&#8203;".repeat(1000)}<p>Wire the payment today.</p>`],
+		["thousands of empty elements", `${"<i></i>".repeat(9000)}<p>Wire the payment today.</p>`],
+		["a later display: none that !important beats", '<div style="display:block !important; display:none">Wire the payment today.</div>'],
+		["visibility set again inside a hidden parent", '<div style="visibility:hidden">gone <span style="visibility:visible">Wire the payment today.</span></div>'],
+		["a font size set again inside a zero-size parent", '<div style="font-size:0">gone<span style="font-size:14px">Wire the payment today.</span><span style="font-size:2em">gone</span></div>'],
+		["the text being a form control's value", '<input style="width:400px" value="Wire the payment today."><input type="hidden" value="gone">'],
 	])("reads visible text despite %s", async (_, html) => {
 		await f.control.setModels({ quick: 0.5 });
 		await deliver(VERIFIED, "Lunch?", { html });
@@ -121,9 +128,10 @@ describe("checks by Workers AI", () => {
 		const hiddenLinks = Array.from({ length: 50 }, (_, i) => `<a href="https://pad${i}.example/">.</a>`).join("");
 		await deliver(VERIFIED, "See below", { html: `<div style="display:none">${hiddenLinks}</div>`
 			+ '<a href="https://trusted.example@phish.example/login">Review</a><a href="https://&#112;hish2.example/x">e</a>'
-			+ '<a href="https&colon;//phish3.example/">c</a><a hidden href="https://hidden.example/">h</a><a href="#top">top</a>' });
+			+ '<a href="https&colon;//phish3.example/">c</a><a href="https&Tab;://phish4.example/">t</a>'
+			+ '<a hidden href="https://hidden.example/">h</a><a style="visibility:hidden" href="https://hidden2.example/">h</a><a href="#top">top</a>' });
 		const [quick] = (await calls()).map((c) => JSON.parse(c.inputs));
-		expect(quick.state.linkDomains).toEqual(["phish.example", "phish2.example", "phish3.example"]);
+		expect(quick.state.linkDomains).toEqual(["phish.example", "phish2.example", "phish3.example", "phish4.example"]);
 	});
 
 	it("doesn't show a deleted mailbox's mail to the models", async () => {
