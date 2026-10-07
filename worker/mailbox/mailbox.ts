@@ -388,7 +388,7 @@ export class Mailbox extends DurableObject<Env> {
 		}
 
 		const snippet = makeSnippet(input.text);
-		const threadId = this.ctx.storage.transactionSync(() => {
+		const delivered = this.ctx.storage.transactionSync(() => {
 			const threadId =
 				this.findThread(input) ?? this.createThread(input.subject, input.date);
 			// A first-time sender replying in a conversation already in the inbox, or one this mailbox wrote in, isn't held:
@@ -435,12 +435,12 @@ export class Mailbox extends DurableObject<Env> {
 			if (!labels.includes("spam")) this.recordContacts([input.from], false, input.date);
 			// Delivered by a retry.
 			this.sql.exec(`DELETE FROM failed WHERE id = ?1`, input.id);
-			return threadId;
+			// Where it was placed, not every label it has; a +tag can't add `inbox` (labelFromTag()).
+			return { threadId, inbox: placed[0] === "inbox" };
 		});
 
-		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
-		// From the verdict, not the labels: a `+inbox` subaddress adds that label to mail the verdict sent to Spam.
-		return { threadId, duplicate: false, inbox: place === "inbox" };
+		this.broadcast({ type: "threads.changed", threadIds: [delivered.threadId] });
+		return { threadId: delivered.threadId, duplicate: false, inbox: delivered.inbox };
 	}
 
 	async settings(): Promise<MailSettings> {

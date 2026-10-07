@@ -92,6 +92,16 @@ describe("Screener", () => {
 		expect((await deliver("carol@outside.test")).labels).toEqual(["screener"]);
 	});
 
+	it("says a reply it let into the inbox reached the inbox, so it's notified", async () => {
+		const check = { kind: "checked", category: "personal", spam: 0, model: QUICK_MODEL } as const;
+		const known = { verified: null, internal: true, spoofed: false };
+		const stranger = { verified: "carol@outside.test", internal: false, spoofed: false };
+		const first = await box().ingest({ ...inbound(ids.alice, "conv-1"), messageIdHeader: "<conv-1@outside.test>", sender: known, check: null });
+		const reply = await box().ingest({ ...inbound(ids.alice, "conv-2"), messageIdHeader: "<conv-2@outside.test>", inReplyTo: ["<conv-1@outside.test>"], sender: stranger, check });
+		const held = await box().ingest({ ...inbound(ids.alice, "conv-3"), messageIdHeader: "<conv-3@outside.test>", subject: "New", sender: stranger, check });
+		expect([first, reply, held].map((r) => "inbox" in r && r.inbox)).toEqual([true, true, false]);
+	});
+
 	it("files a +screener or +spam tag as a label of its own, not a system view", async () => {
 		await box().enqueueSend(sendInput(ids.alice, { to: [{ address: "bob@outside.test" }] }));
 		expect((await deliver("bob@outside.test", { tag: "Screener" })).labels.toSorted()).toEqual(["inbox", "screener-tag"]);
