@@ -47,22 +47,25 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 	const results = stampedResults(email);
 	const sender = await checkSender(env, from.address, results);
 	const text = email.text ?? (email.html ? htmlToText(email.html) : null);
-	const facts: MailFacts = {
-		to: job.envelopeTo,
-		from,
-		verifiedSender: sender.verified !== null,
-		replyTo: flatten(email.replyTo),
-		subject: email.subject ?? "(no subject)",
-		// What the recipient sees: the app shows the HTML part when there is one, and the sender can make a plain-text
-		// part say anything else.
-		page: email.html ? await readHtml(email.html) : readText(text ?? ""),
-		attachments: email.attachments.map((a) => ({ filename: a.filename ?? "", contentType: a.mimeType })),
-	};
+	const replyTo = flatten(email.replyTo);
+	const subject = email.subject ?? "(no subject)";
 	const messageIdHeader = email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null;
 	const needed = await mailbox.needsCheck(sender, messageIdHeader, messageId);
 	// Mail of a mailbox deleted since the first check mustn't reach the models.
 	if (needed && !(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
-	const check = needed ? await checkOrGiveUp(env, models, facts, job) : null;
+	// Read for the models only when they're asked: parsing a big body costs CPU that known senders' mail needn't.
+	const facts = async (): Promise<MailFacts> => ({
+		to: job.envelopeTo,
+		from,
+		verifiedSender: sender.verified !== null,
+		replyTo,
+		subject,
+		// What the recipient sees: the app shows the HTML part when there is one, and the sender can make a plain-text
+		// part say anything else.
+		page: email.html ? await readHtml(email.html) : readText(text ?? ""),
+		attachments: email.attachments.map((a) => ({ filename: a.filename ?? "", contentType: a.mimeType })),
+	});
+	const check = needed ? await checkOrGiveUp(env, models, await facts(), job) : null;
 	// Back in the queue with the failure counted (checkOrGiveUp()): this copy of the job is done.
 	if (check === "requeued") return;
 
@@ -104,8 +107,8 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		from,
 		to: flatten(email.to),
 		cc: flatten(email.cc),
-		replyTo: facts.replyTo,
-		subject: facts.subject,
+		replyTo,
+		subject,
 		date: parseDate(email.date) ?? job.receivedAt,
 		text,
 		htmlKey,

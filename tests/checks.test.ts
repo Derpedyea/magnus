@@ -115,6 +115,9 @@ describe("checks by Workers AI", () => {
 		["visibility set again inside a hidden parent", '<div style="visibility:hidden">gone <span style="visibility:visible">Wire the payment today.</span></div>'],
 		["a font size set again inside a zero-size parent", '<div style="font-size:0">gone<span style="font-size:14px">Wire the payment today.</span><span style="font-size:2em">gone</span></div>'],
 		["the text being a form control's value", '<input style="width:400px" value="Wire the payment today."><input type="hidden" value="gone">'],
+		["a closed dialog full of padding", `<dialog>${"gone ".repeat(2000)}</dialog><p>Wire the payment today.</p>`],
+		["a closed details full of padding, though its summary shows", `<details><summary>Wire the payment today.</summary>${"gone ".repeat(2000)}</details>`],
+		["thousands of characters of alt text on images that show", `<img src="data:image/png;base64,AAAA" alt="${"gone ".repeat(1000)}"><img src="cid:logo" alt="gone"><p>Wire the payment today.</p>`],
 		["the text being an image's fallback", '<img width="600" src="https://img.example/x.png" alt="Wire the payment today."><img style="display:none" alt="gone">'],
 	])("reads visible text despite %s", async (_, html) => {
 		await f.control.setModels({ quick: 0.5 });
@@ -133,6 +136,21 @@ describe("checks by Workers AI", () => {
 			+ '<a hidden href="https://hidden.example/">h</a><a style="visibility:hidden" href="https://hidden2.example/">h</a><a href="#top">top</a>' });
 		const [quick] = (await calls()).map((c) => JSON.parse(c.inputs));
 		expect(quick.state.linkDomains).toEqual(["phish.example", "phish2.example", "phish3.example", "phish4.example"]);
+	});
+
+	it("reads plain text as it shows, without thousands of zero-width spaces before it", async () => {
+		await f.control.setModels({ quick: 0.5 });
+		await deliver(VERIFIED, `${"\u200b".repeat(5000)}Wire the payment today.`);
+		const [quick] = (await calls()).map((c) => JSON.parse(c.inputs));
+		expect(quick.state.body).toBe("Wire the payment today.");
+	});
+
+	it("counts a link whose text shows though the link was hidden, and only a few image-map areas", async () => {
+		await f.control.setModels({ quick: 0.5 });
+		const areas = Array.from({ length: 40 }, (_, i) => `<area href="https://area${i}.example/">`).join("");
+		await deliver(VERIFIED, "See below", { html: `${areas}<a href="https://phish.example/" style="visibility:hidden"><span style="visibility:visible">Review</span></a>` });
+		const [quick] = (await calls()).map((c) => JSON.parse(c.inputs));
+		expect(quick.state.linkDomains).toEqual(["area0.example", "area1.example", "area2.example", "area3.example", "area4.example", "phish.example"]);
 	});
 
 	it("doesn't let links with nothing showing fill the list", async () => {

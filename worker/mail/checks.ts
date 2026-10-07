@@ -149,11 +149,19 @@ function parsedJson(text: string): unknown {
 const UNSHOWN = new Set<string>(["head", "title", "style", "template", ...REMOVED_ELEMENTS]);
 /** Visible text collected, at most: describe() cuts the body one character shorter. */
 const MAX_COLLECTED = MAX_BODY + 1;
+/** Image-map areas among the links, at most: one isn't known to be usable, so it can't fill the list. */
+const MAX_AREAS = 5;
+/** A plain-text body is read this much at a time, until enough of it shows. */
+const TEXT_SLICE = 65_536;
 
-/** Styles that hide text but that a descendant can set again. */
+/** What hides text but a descendant can show again. */
 interface Inherited {
 	invisible: boolean;
 	tiny: boolean;
+	/** Inside a closed <details>, where only its <summary> shows. */
+	folded: boolean;
+	/** Set on a closed <details>: whether what's around it was folded, which its <summary> takes. */
+	outer?: boolean;
 }
 
 /**
@@ -170,11 +178,12 @@ export async function readHtml(html: string): Promise<Page> {
 	// onEndTag fires on implicit closes too, so an unclosed one ends where the browser ends it.
 	let closed = 0;
 	// visibility and font-size, which descendants inherit but can set again.
-	const inherited: Inherited[] = [{ invisible: false, tiny: false }];
+	const inherited: Inherited[] = [{ invisible: false, tiny: false, folded: false }];
 	const shown = () => {
 		const top = inherited.at(-1);
-		return closed === 0 && !top?.invisible && !top?.tiny;
+		return closed === 0 && !top?.invisible && !top?.tiny && !top?.folded;
 	};
+	let areas = 0;
 	const text = new Collector();
 	const links = new Set<string>();
 	// Hosts of the open, shown anchors: one counts once something in it shows, so empty links can't fill the list.
@@ -187,28 +196,40 @@ export async function readHtml(html: string): Promise<Page> {
 			element(el) {
 				const tag = el.tagName;
 				const d = declarations(el.getAttribute("style"));
-				const parent = inherited.at(-1) ?? { invisible: false, tiny: false };
+				const parent = inherited.at(-1) ?? { invisible: false, tiny: false, folded: false };
 				const visibility = d.get("visibility");
 				const size = d.get("font-size");
 				const own: Inherited = {
 					invisible: visibility === undefined ? parent.invisible : visibility === "hidden" || visibility === "collapse",
 					// A relative size of nothing is still nothing.
 					tiny: size === undefined ? parent.tiny : isZero(size) || (parent.tiny && /(?:em|ex|ch|%)$/.test(size)),
+					folded: tag === "summary" && parent.outer !== undefined ? parent.outer : parent.folded || (tag === "details" && !el.hasAttribute("open")),
+					...(tag === "details" && !el.hasAttribute("open") ? { outer: parent.folded } : {}),
 				};
 				const display = d.get("display");
 				const closes =
-					UNSHOWN.has(tag) || display === "none" || isZero(d.get("opacity")) || (el.hasAttribute("hidden") && (display === undefined || display === "none"));
-				const visible = closed === 0 && !closes && !own.invisible && !own.tiny;
-				const href = visible && tag === "a" ? el.getAttribute("href") : null;
+					UNSHOWN.has(tag) ||
+					display === "none" ||
+					isZero(d.get("opacity")) ||
+					(el.hasAttribute("hidden") && (display === undefined || display === "none")) ||
+					(tag === "dialog" && !el.hasAttribute("open"));
+				const visible = closed === 0 && !closes && !own.invisible && !own.tiny && !own.folded;
+				// Any anchor not removed: what's in it can show even if it can't (visibility set again), and its host counts then.
+				const href = closed === 0 && !closes && tag === "a" ? el.getAttribute("href") : null;
 				const host = href === null ? null : linkHost(decodeEntities(href));
 				if (visible) {
 					// Elements break words, as blocks and <br> do on screen.
 					text.separate();
 					// An image map's area is clickable on the image; an image shows (or, blocked, shows its alt text).
 					const area = tag === "area" ? linkHost(decodeEntities(el.getAttribute("href") ?? "")) : null;
-					if (area && links.size < MAX_LINKS) links.add(area);
+					if (area && areas < MAX_AREAS && links.size < MAX_LINKS && !links.has(area)) {
+						links.add(area);
+						areas++;
+					}
 					if (tag === "img") {
-						text.add(el.getAttribute("alt") ?? "");
+						// Alt text shows when the image doesn't: no source, or a remote one, which the app blocks by default. An
+						// attached (cid:) or inline (data:) image shows itself.
+						if (!/^\s*(?:cid|data):/i.test(el.getAttribute("src") ?? "")) text.add(el.getAttribute("alt") ?? "");
 						rendered();
 					}
 					// A form control shows its value.
@@ -249,9 +270,9 @@ class Collector {
 		this.gap = true;
 	}
 
-	/** Whether any of it shows: whitespace and formatting characters alone don't. */
-	add(raw: string): boolean {
-		const t = decodeEntities(raw).replaceAll(/\p{Cf}/gu, "").replaceAll(/\s+/g, " ");
+	/** Whether any of it shows: whitespace and formatting characters alone don't. Plain text has no references to decode. */
+	add(raw: string, html = true): boolean {
+		const t = (html ? decodeEntities(raw) : raw).replaceAll(/\p{Cf}/gu, "").replaceAll(/\s+/g, " ");
 		const core = t.trim();
 		if (t.startsWith(" ")) this.gap = true;
 		if (!core) return false;
@@ -263,12 +284,16 @@ class Collector {
 		return true;
 	}
 
+	full(): boolean {
+		return this.out.length >= MAX_COLLECTED;
+	}
+
 	value(): string {
 		return this.out;
 	}
 }
 
-/** A plain-text body, and the hosts of the links in it. */
+/** A plain-text body as it shows (no character references here), and the hosts of the links in it. */
 export function readText(text: string): Page {
 	const links = new Set<string>();
 	for (const m of text.slice(0, MAX_LINK_SCAN).matchAll(/https?:\/\/[^\s<>"']+/gi)) {
@@ -276,7 +301,9 @@ export function readText(text: string): Page {
 		if (host) links.add(host);
 		if (links.size >= MAX_LINKS) break;
 	}
-	return { text, links: [...links] };
+	const shown = new Collector();
+	for (let at = 0; at < text.length && !shown.full(); at += TEXT_SLICE) shown.add(text.slice(at, at + TEXT_SLICE), false);
+	return { text: shown.value(), links: [...links] };
 }
 
 /** Where a browser takes a link: http(s) only, with userinfo (`trusted.example@phish.example`) and IDNs resolved. */

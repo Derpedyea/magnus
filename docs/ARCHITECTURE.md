@@ -489,14 +489,16 @@ apart for one person's mailbox is who you know, and what you've said about who y
   not a plain-text part the sender could make say something else. HTMLRewriter parses the whole document as the
   iframe renders it, and only visible text counts toward the 4,000-character budget, so padding that isn't seen
   (markup, empty elements, zero-width characters, a `<form>` the sanitizer removes) can't push the visible part
-  out. Subtrees under `display: none`, `hidden`, or `opacity: 0` are skipped; `visibility` and a zero `font-size`
-  hide text until a descendant sets them again; inline styles are parsed as declarations (comments, custom
-  properties, `!important`). Form controls count with their values, images with their alt text. Link hosts come
-  from the `href`s of shown anchors with something showing in them, resolved with `URL` after decoding character
-  references, so `https://trusted.example@phish.example/` reads as `phish.example`; the first 40 are kept. It's best-effort: text drawn by CSS (`content:`), hidden by a stylesheet
-  class, or behind a character reference outside the common ones isn't read, and only a browser could. Evading it
-  gets a stranger's mail into the inbox, where all of it went before there were checks; who's trusted, forged
-  senders, and Spam clicks don't depend on it.
+  out (plain-text mail is cleaned the same way). Subtrees under `display: none`, `hidden`, `opacity: 0`, or a
+  closed `<dialog>` are skipped, as is a closed `<details>` but for its summary; `visibility` and a zero
+  `font-size` hide text until a descendant sets them again; inline styles are parsed as declarations (comments,
+  custom properties, `!important`). Form controls count with their values, images that don't show (no source, or a
+  remote one, blocked by default) with their alt text. Link hosts come from anchors with something showing in them
+  (and at most 5 image-map areas), resolved with `URL` after decoding character references, so
+  `https://trusted.example@phish.example/` reads as `phish.example`; the first 40 are kept. It's best-effort: text
+  drawn by CSS (`content:`), hidden by a stylesheet class, or behind a character reference outside the common ones
+  isn't read, and only a browser could. Evading it gets a stranger's mail into the inbox, where all of it went
+  before there were checks; who's trusted, forged senders, and Spam clicks don't depend on it.
 - **Verdicts.** `Mailbox.ingest()` decides, in order: failed its domain's authentication → Spam; a judged sender
   → their standing; verified mail from one of this install's own addresses → Inbox; anyone else → the checks'
   call (spam and phishing → Spam). Standing is read inside the insert's transaction, so a click can't land
