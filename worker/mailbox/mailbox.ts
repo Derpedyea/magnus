@@ -391,9 +391,11 @@ export class Mailbox extends DurableObject<Env> {
 		const delivered = this.ctx.storage.transactionSync(() => {
 			const threadId =
 				this.findThread(input) ?? this.createThread(input.subject, input.date);
-			// A first-time sender replying in a conversation already in the inbox, or one this mailbox wrote in, isn't held:
-			// half a conversation in the Screener would still show in the inbox.
-			const placed = labels[0] === "screener" && this.inConversation(threadId) ? ["inbox", ...labels.slice(1)] : labels;
+			// Not held after all: a sender whose mail this mailbox already took (they're not new), or a reply in a
+			// conversation already in the inbox or one this mailbox wrote in (half a conversation in the Screener would still
+			// show in the inbox).
+			const held = labels[0] === "screener" && !this.heardFrom(input.sender.verified) && !this.inConversation(threadId);
+			const placed = labels[0] === "screener" && !held ? ["inbox", ...labels.slice(1)] : labels;
 
 			const { rowid } = this.sql
 				.exec<{ rowid: number }>(
@@ -533,6 +535,23 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	/** Whether this thread holds mail in the inbox, or mail this mailbox sent. */
+	/**
+	 * Whether this verified sender's mail has been taken before: delivered and not in Spam or the Screener. Mail from before
+	 * verdicts were kept has no verified sender, and its From address alone could be forged, so it doesn't count.
+	 */
+	private heardFrom(sender: string | null): boolean {
+		if (sender === null) return false;
+		return (
+			this.sql
+				.exec(
+					`SELECT 1 FROM messages m WHERE m.sender = ?1 AND m.direction = 'in'
+						AND NOT EXISTS (SELECT 1 FROM message_labels l WHERE l.message_id = m.id AND l.label IN ('spam', 'screener')) LIMIT 1`,
+					sender,
+				)
+				.toArray().length > 0
+		);
+	}
+
 	private inConversation(threadId: string): boolean {
 		return (
 			this.sql

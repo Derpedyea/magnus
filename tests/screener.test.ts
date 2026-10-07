@@ -39,11 +39,11 @@ describe("Screener", () => {
 	it("holds first-time senders there, apart from account mail and spam", async () => {
 		expect((await deliver()).labels).toEqual(["screener"]);
 		await f.control.setModels({ quick: 0.5, deep: "transactional" });
-		expect((await deliver()).labels).toEqual(["inbox"]);
+		expect((await deliver("shop@outside.test")).labels).toEqual(["inbox"]);
 		await f.control.setModels({ quick: 0.95 });
-		expect((await deliver()).labels).toEqual(["spam"]);
+		expect((await deliver("pitch@outside.test")).labels).toEqual(["spam"]);
 		await f.control.setModels({ quick: "fail" });
-		expect(await deliver("new@outside.test", { checkFailures: 2 })).toMatchObject({ verdict: { kind: "unchecked" }, labels: ["screener"] });
+		expect(await deliver("other@outside.test", { checkFailures: 2 })).toMatchObject({ verdict: { kind: "unchecked" }, labels: ["screener"] });
 		await box().enqueueSend(sendInput(ids.alice, { to: [{ address: "friend@outside.test" }] }));
 		expect((await deliver("friend@outside.test")).labels).toEqual(["inbox"]);
 	});
@@ -88,8 +88,9 @@ describe("Screener", () => {
 		const ours = await box().getMessage(sent?.id ?? "");
 		await box().modifyThreads({ threadIds: [sent?.threadId ?? ""], remove: ["inbox"] });
 		expect((await deliver("dave@outside.test", { inReplyTo: ours?.message.messageIdHeader ?? "" })).labels).toEqual(["inbox"]);
-		// Their next conversation is new, so it's held.
-		expect((await deliver("carol@outside.test")).labels).toEqual(["screener"]);
+		// Their mail was taken, so they're not new: their next conversation isn't held either. Someone new still is.
+		expect((await deliver("carol@outside.test")).labels).toEqual(["inbox"]);
+		expect((await deliver("erin@outside.test")).labels).toEqual(["screener"]);
 	});
 
 	it("says a reply it let into the inbox reached the inbox, so it's notified", async () => {
@@ -98,8 +99,20 @@ describe("Screener", () => {
 		const stranger = { verified: "carol@outside.test", internal: false, spoofed: false };
 		const first = await box().ingest({ ...inbound(ids.alice, "conv-1"), messageIdHeader: "<conv-1@outside.test>", sender: known, check: null });
 		const reply = await box().ingest({ ...inbound(ids.alice, "conv-2"), messageIdHeader: "<conv-2@outside.test>", inReplyTo: ["<conv-1@outside.test>"], sender: stranger, check });
-		const held = await box().ingest({ ...inbound(ids.alice, "conv-3"), messageIdHeader: "<conv-3@outside.test>", subject: "New", sender: stranger, check });
+		const held = await box().ingest({
+			...inbound(ids.alice, "conv-3"), messageIdHeader: "<conv-3@outside.test>", subject: "New", sender: { ...stranger, verified: "dave@outside.test" }, check,
+		});
 		expect([first, reply, held].map((r) => "inbox" in r && r.inbox)).toEqual([true, true, false]);
+	});
+
+	it("doesn't hold someone whose mail was taken before it was turned on", async () => {
+		await box().updateSettings({ screener: false });
+		expect((await deliver("longtime@outside.test")).labels).toEqual(["inbox"]);
+		expect((await deliver("spammer@outside.test", { stamped: VERIFIED })).labels).toEqual(["inbox"]);
+		await box().modifyThreads({ threadIds: [(await deliver("spammer@outside.test")).threadId], add: ["spam"] });
+		await box().updateSettings({ screener: true });
+		expect((await deliver("longtime@outside.test")).labels).toEqual(["inbox"]);
+		expect((await deliver("newcomer@outside.test")).labels).toEqual(["screener"]);
 	});
 
 	it("files a +screener or +spam tag as a label of its own, not a system view", async () => {

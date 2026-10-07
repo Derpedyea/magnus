@@ -515,7 +515,9 @@ apart for one person's mailbox is who you know, and what you've said about who y
   the Screener asks once per sender. Both answer for that message's sender alone (`judgeMessage()`), not others in
   its thread; one whose address can't be verified only has that message moved. Writing to someone lets them in too.
   A first-time sender replying in a conversation already in the inbox, or one the mailbox wrote in, isn't held,
-  since half a held conversation would show in the inbox anyway; their next new conversation is.
+  since half a held conversation would show in the inbox anyway. A sender stops being first-time once mail from
+  them is taken (delivered, and not in Spam or the Screener); mail from before verdicts were kept has no verified
+  sender, so it doesn't count.
 
 ### 5.7 Reliability summary
 
