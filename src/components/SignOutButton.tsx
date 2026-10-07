@@ -7,7 +7,8 @@ import { useOptionalDraftSync } from "../drafts";
 import { toast } from "@/components/ui/toast-manager";
 import { errorMessage } from "../api";
 
-export function useSignOut() {
+/** `redirect` is where signing back in returns to. */
+export function useSignOut(redirect?: string) {
 	const qc = useQueryClient();
 	const navigate = useNavigate();
 	const drafts = useOptionalDraftSync();
@@ -16,7 +17,7 @@ export function useSignOut() {
 		onError: (error) => toast.add({ title: `Couldn't sign out: ${errorMessage(error)}`, type: "error", timeout: 0 }),
 		onSuccess: () => {
 			endSession(qc);
-			void navigate({ to: "/login" });
+			void navigate({ to: "/login", search: { redirect } });
 		},
 	});
 }

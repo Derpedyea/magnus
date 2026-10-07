@@ -1,4 +1,4 @@
-import type { DirectoryDomain, DirectoryMailbox } from "#shared";
+import type { DirectoryDomain, DirectoryMailbox, Person } from "#shared";
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { EllipsisIcon, PlusIcon } from "lucide-react";
@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Field, FieldContent, FieldError, FieldLabel, FieldTitle } from "@/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldError, FieldLabel, FieldTitle } from "@/components/ui/field";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
@@ -37,7 +37,7 @@ export const Route = createFileRoute("/_app/_settings/admin/domains")({ componen
 const REJECT = "reject";
 
 function Domains() {
-	const { domains, mailboxes, cloudflareTokenSaved } = useSuspenseQuery(directoryQuery).data;
+	const { domains, mailboxes, people, cloudflareTokenSaved } = useSuspenseQuery(directoryQuery).data;
 	const connect = useDomainConnect();
 	const [connecting, setConnecting] = useState<{ domain: string; moveMail: boolean } | null>(null);
 	/** "Use a different token": ask again even though one is saved. */
@@ -96,6 +96,7 @@ function Domains() {
 				open={adding}
 				onOpenChange={setAdding}
 				existing={domains.map((d) => d.name)}
+				people={people}
 				tokenSaved={cloudflareTokenSaved}
 				onAdded={(domain, moveMail) => {
 					setAdding(false);
@@ -274,6 +275,7 @@ function AddDomainDialog(props: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	existing: string[];
+	people: Person[];
 	tokenSaved: boolean;
 	onAdded: (domain: string, moveMail: boolean) => void;
 }) {
@@ -288,6 +290,8 @@ function AddDomainDialog(props: {
 	// The first domain until another is picked.
 	const zone = zones.data?.find((z) => z.id === picked) ?? zones.data?.[0];
 	const elsewhere = zone?.mail.kind === "other" ? zone.mail.provider : null;
+	// Their sign-in codes would start arriving in Magnus, where they can't read them while signed out.
+	const codesComeHere = zone ? props.people.filter((p) => p.email.endsWith(`@${zone.name}`)) : [];
 	const qc = useQueryClient();
 	const add = useMutation({
 		mutationFn: adminApi.addDomain,
@@ -335,6 +339,12 @@ function AddDomainDialog(props: {
 									</FieldLabel>
 								</Field>
 							) : null}
+							{codesComeHere.length ? (
+								<FieldDescription className="text-pretty text-amber-700 dark:text-amber-400">
+									{listNames(codesComeHere.map((p) => p.name))} {codesComeHere.length === 1 ? "signs" : "sign"} in with codes sent to {zone?.name}. Once
+									its mail comes here, they'll need a passkey to sign back in.
+								</FieldDescription>
+							) : null}
 							{add.error ? <FieldError>{errorMessage(add.error)}</FieldError> : null}
 						</>
 					)}
@@ -351,3 +361,7 @@ function AddDomainDialog(props: {
 		</Dialog>
 	);
 }
+
+/** "Ann", "Ann and Bo", "Ann, Bo, and Cy". */
+const NAMES = new Intl.ListFormat("en", { type: "conjunction" });
+const listNames = (names: string[]) => NAMES.format(names);

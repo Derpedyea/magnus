@@ -1,5 +1,6 @@
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import { adminApi, api } from "./api";
+import { passkeys } from "./passkeys";
 
 // One definition per read, shared by route loaders (which prefetch) and components (which subscribe).
 // Everything under ["mail"] is refetched when a mailbox's live socket reports a change.
@@ -31,6 +32,9 @@ export const countsQuery = (scope: string[]) => queryOptions({ queryKey: ["mail"
 
 export const threadQuery = (mailboxId: string, threadId: string) =>
 	queryOptions({ queryKey: ["mail", "thread", mailboxId, threadId], queryFn: () => api.thread(mailboxId, threadId) });
+
+/** Your passkeys. */
+export const passkeysQuery = queryOptions({ queryKey: ["passkeys"], queryFn: passkeys.list });
 
 /** Domains, people, mailboxes, and addresses. Admin changes invalidate ["admin"]. */
 export const directoryQuery = queryOptions({ queryKey: ["admin", "directory"], queryFn: adminApi.directory });

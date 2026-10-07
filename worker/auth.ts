@@ -1,23 +1,30 @@
+import { getAuthenticatorName, passkey } from "@better-auth/passkey";
+// Unused, but lets the emitted declarations name the WebAuthn types in the passkey plugin's endpoints.
+import type * as _webauthn from "@simplewebauthn/server";
 import { betterAuth } from "better-auth";
+import { APIError, createAuthMiddleware, getAuthoritativeSessionFromCtx } from "better-auth/api";
 import { admin } from "better-auth/plugins/admin";
 import { emailOTP } from "better-auth/plugins/email-otp";
 import { env, waitUntil } from "cloudflare:workers";
-import type { User } from "#shared";
+import { FRESH_SIGN_IN_MINUTES, type User } from "#shared";
 import { findUserByEmail, loginCodeSender } from "./directory";
 import { optional } from "./optional";
 import { authSecret } from "./settings";
 
 const CODE_MINUTES = 10;
+/** Both steps of adding a passkey. */
+const REGISTER_PATHS = new Set(["/passkey/generate-register-options", "/passkey/verify-registration"]);
 
 type Auth = ReturnType<typeof createAuth>;
 const instances = new Map<string, Promise<Auth>>();
 
 /**
- * Better Auth at /api/auth/*: a code emailed to your sign-in address, or Google when configured, then a session
- * cookie in D1. Nobody signs up; an admin adds people (the admin plugin).
+ * Better Auth at /api/auth/*: a passkey, a code emailed to your sign-in address, or Google when configured, then a
+ * session cookie in D1. Nobody signs up; an admin adds people (the admin plugin).
  *
  * One instance per origin the Worker is reached on (its workers.dev URL, a custom domain), so callbacks return
- * to the same site and only that origin is trusted. Created on first use, since Workers forbid I/O at import.
+ * to the same site and only that origin is trusted. Passkeys are bound to that origin's hostname too: one made on
+ * the custom domain doesn't work on workers.dev. Created on first use, since Workers forbid I/O at import.
  */
 export function auth(request: Request): Promise<Auth> {
 	const { origin } = new URL(request.url);
@@ -58,6 +65,9 @@ function createAuth(baseURL: string, secret: string) {
 			// Skips the D1 session lookup on most requests. A suspended person keeps access for up to 5 minutes, admin
 			// powers aside (isAdminNow()).
 			cookieCache: { enabled: true, maxAge: 5 * 60 },
+			// Adding a passkey (or unlinking Google) needs a recent sign-in, so a stolen session cookie can't plant a
+			// passkey that outlives the session.
+			freshAge: FRESH_SIGN_IN_MINUTES * 60,
 		},
 		socialProviders: googleConfig ? { google: { ...googleConfig, prompt: "select_account", disableSignUp: true } } : {},
 		plugins: [
@@ -70,10 +80,39 @@ function createAuth(baseURL: string, secret: string) {
 				allowedAttempts: 3,
 				storeOTP: "hashed",
 			}),
+			// Registering needs a session; nobody signs up with a passkey. Removing a person removes theirs (ON DELETE CASCADE).
+			passkey({
+				rpID: new URL(baseURL).hostname,
+				rpName: "Magnus Mail",
+				origin: baseURL,
+				// Named for the password manager that holds it, when it says (Apple's don't). Here rather than in the
+				// browser, where the lookup would bring the plugin's server code along.
+				registration: { afterVerification: ({ verification }) => ({ name: getAuthenticatorName(verification.registrationInfo?.aaguid) }) },
+				schema: { passkey: { modelName: "auth_passkeys" } },
+			}),
 			admin(),
 		],
-		// Sign-in endpoints allow a few tries per minute per client IP (the email-code plugin's own limits).
-		rateLimit: { enabled: true, storage: "database", modelName: "auth_rate_limits" },
+		hooks: {
+			before: createAuthMiddleware(async (ctx) => {
+				if (!REGISTER_PATHS.has(ctx.path)) return;
+				// Asks D1 rather than the 5-minute cookie cache, so a session revoked a minute ago can't add one. An admin
+				// signed in as someone else (impersonation) can't leave a passkey behind on their account either.
+				const session = await getAuthoritativeSessionFromCtx(ctx);
+				if (!session) throw new APIError("UNAUTHORIZED", { message: "Sign in to add a passkey." });
+				if (session.session.impersonatedBy) throw new APIError("FORBIDDEN", { message: "You can't add a passkey for someone else." });
+			}),
+		},
+		// Sign-in endpoints allow a few tries per minute per client IP (the email-code plugin's own limits). Each
+		// passkey challenge is a D1 row, so asking for them is limited too.
+		rateLimit: {
+			enabled: true,
+			storage: "database",
+			modelName: "auth_rate_limits",
+			customRules: {
+				"/passkey/generate-authenticate-options": { window: 60, max: 10 },
+				"/passkey/verify-authentication": { window: 60, max: 10 },
+			},
+		},
 		advanced: {
 			ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
 			// Codes send after the response, so its timing can't reveal which addresses have an account.

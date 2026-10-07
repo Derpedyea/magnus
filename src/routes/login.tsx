@@ -1,13 +1,16 @@
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
-import { useState } from "react";
+import { KeyRoundIcon } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { FieldSeparator } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputOTP, InputOTPGroup, InputOTPSeparator, InputOTPSlot } from "@/components/ui/input-otp";
 import { Spinner } from "@/components/ui/spinner";
+import { toast } from "@/components/ui/toast-manager";
 import { authClient } from "../api";
+import { passkeyFailure, passkeys, passkeysSupported } from "../passkeys";
 import { configQuery } from "../queries";
 import { endSession } from "../session";
 
@@ -36,90 +39,164 @@ const CODE_ERRORS: Record<string, string> = {
 	"Too many attempts": "Too many wrong tries. Send a new code.",
 };
 
+/** Signed in: forget whatever the last account left in this tab, then go where sign-in was headed. */
+function useFinishSignIn(returnTo: string) {
+	const qc = useQueryClient();
+	const navigate = useNavigate();
+	// Back can bring you to this page still signed in, so the session it held ends first.
+	return () => {
+		endSession(qc);
+		return navigate({ href: returnTo });
+	};
+}
+
 function Login() {
 	const { redirect, error } = Route.useSearch();
 	const returnTo = redirect ?? "/";
-	const { google: googleEnabled } = useSuspenseQuery(configQuery).data;
+	const finish = useFinishSignIn(returnTo);
+	// Kept here, so "Use a different email" comes back to what was typed.
 	const [email, setEmail] = useState("");
 	// Set once a code has been requested: the page switches to entering it.
 	const [sentTo, setSentTo] = useState<string | null>(null);
-	// Neither touches cached data: Google sign-in leaves the page (Better Auth's client redirects), and codes arrive by email.
-	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
-	const google = useMutation({
-		mutationFn: () =>
-			authClient.signIn.social({ provider: "google", callbackURL: returnTo, errorCallbackURL: `/login?redirect=${encodeURIComponent(returnTo)}` }),
-	});
-	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
-	const sendCode = useMutation({
-		mutationFn: (email: string) => authClient.emailOtp.sendVerificationOtp({ email, type: "sign-in" }),
-		onSuccess: (_, to) => setSentTo(to),
-	});
-	const failure = google.error?.message ?? sendCode.error?.message ?? (error ? (ERRORS[error] ?? `Couldn't sign in (${error}).`) : null);
+	// Signed in with a code to this address and has no passkey yet: offer one before going on.
+	const [offerFor, setOfferFor] = useState<string | null>(null);
+
+	if (offerFor) return <PasskeyOffer email={offerFor} onDone={finish} />;
 
 	return (
 		<main className="flex h-full flex-col items-center justify-center gap-6 p-8 text-sm">
 			<img src="/favicon.svg" alt="" className="size-10" />
 			<h1 className="font-heading text-base font-semibold">Sign in to Magnus Mail</h1>
 			{sentTo ? (
-				<CodeForm email={sentTo} returnTo={returnTo} onBack={() => setSentTo(null)} />
+				<CodeForm email={sentTo} onBack={() => setSentTo(null)} onSignedIn={(offer) => (offer ? setOfferFor(sentTo) : finish())} />
 			) : (
-				<div className="flex w-72 flex-col gap-4">
-					{googleEnabled ? (
-						<>
-							<Button
-								variant="outline"
-								size="lg"
-								onClick={() => google.mutate()}
-								// Stays disabled while the browser leaves for Google.
-								disabled={google.isPending || google.isSuccess}
-							>
-								<GoogleMark />
-								Continue with Google
-							</Button>
-							<FieldSeparator className="text-xs">or</FieldSeparator>
-						</>
-					) : null}
-					<form
-						className="flex flex-col gap-3"
-						onSubmit={(e) => {
-							e.preventDefault();
-							sendCode.mutate(email.trim());
-						}}
-					>
-						<Input
-							type="email"
-							required
-							autoComplete="email"
-							value={email}
-							onChange={(e) => setEmail(e.target.value)}
-							placeholder="Email address"
-							aria-label="Email address"
-							className="h-9"
-						/>
-						<Button type="submit" size="lg" disabled={sendCode.isPending}>
-							{sendCode.isPending ? <Spinner data-icon="inline-start" /> : null}
-							Email me a code
-						</Button>
-					</form>
-				</div>
+				<StartForm returnTo={returnTo} error={error} email={email} onEmailChange={setEmail} onSent={setSentTo} onSignedIn={finish} />
 			)}
-			{failure && !sentTo ? <p className="max-w-72 text-center text-destructive">{failure}</p> : null}
 		</main>
 	);
 }
 
-function CodeForm(props: { email: string; returnTo: string; onBack: () => void }) {
-	const qc = useQueryClient();
-	const navigate = useNavigate();
+/** A passkey, Google, or an emailed code. */
+function StartForm(props: {
+	returnTo: string;
+	/** From Google's redirect back here. */
+	error: string | undefined;
+	email: string;
+	onEmailChange: (email: string) => void;
+	onSent: (email: string) => void;
+	onSignedIn: () => void;
+}) {
+	const { google: googleEnabled } = useSuspenseQuery(configQuery).data;
+	// Neither touches cached data: Google sign-in leaves the page (Better Auth's client redirects), and codes arrive by email.
+	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
+	const google = useMutation({
+		mutationFn: () =>
+			authClient.signIn.social({
+				provider: "google",
+				callbackURL: props.returnTo,
+				errorCallbackURL: `/login?redirect=${encodeURIComponent(props.returnTo)}`,
+			}),
+	});
+	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
+	const sendCode = useMutation({
+		mutationFn: (email: string) => authClient.emailOtp.sendVerificationOtp({ email, type: "sign-in" }),
+		onSuccess: (_, to) => props.onSent(to),
+	});
+	// Starts a session; the page leaves right after, so nothing cached needs invalidating.
+	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
+	const passkey = useMutation({ mutationFn: (autoFill: boolean) => passkeys.signIn(autoFill), onSuccess: props.onSignedIn });
+	const startPasskey = passkey.mutate;
+	// Offers saved passkeys in the email field's autofill, like a saved password, until one is picked or the form goes.
+	// Pressing the passkey button starts a new request, which cancels this one.
+	useEffect(() => {
+		let active = true;
+		void (async () => {
+			if (passkeysSupported && (await PublicKeyCredential.isConditionalMediationAvailable?.()) && active) startPasskey(true);
+		})();
+		return () => {
+			active = false;
+		};
+	}, [startPasskey]);
+	const failure =
+		google.error?.message ??
+		sendCode.error?.message ??
+		passkeyFailure(passkey.error) ??
+		(props.error ? (ERRORS[props.error] ?? `Couldn't sign in (${props.error}).`) : null);
+
+	return (
+		<>
+			<div className="flex w-72 flex-col gap-4">
+				{passkeysSupported ? (
+					<Button
+						variant="outline"
+						size="lg"
+						onClick={() => passkey.mutate(false)}
+						// Autofill waits in the background the whole time; only a prompt that's open disables this.
+						disabled={passkey.isPending && passkey.variables === false}
+					>
+						<KeyRoundIcon data-icon="inline-start" />
+						Sign in with a passkey
+					</Button>
+				) : null}
+				{googleEnabled ? (
+					<>
+						<Button
+							variant="outline"
+							size="lg"
+							onClick={() => google.mutate()}
+							// Stays disabled while the browser leaves for Google.
+							disabled={google.isPending || google.isSuccess}
+						>
+							<GoogleMark />
+							Continue with Google
+						</Button>
+						<FieldSeparator className="text-xs">or</FieldSeparator>
+					</>
+				) : null}
+				<form
+					className="flex flex-col gap-3"
+					onSubmit={(e) => {
+						e.preventDefault();
+						sendCode.mutate(props.email.trim());
+					}}
+				>
+					<Input
+						type="email"
+						required
+						// "webauthn" lets the browser offer passkeys here too (see the effect above).
+						autoComplete="username webauthn"
+						value={props.email}
+						onChange={(e) => props.onEmailChange(e.target.value)}
+						placeholder="Email address"
+						aria-label="Email address"
+						className="h-9"
+					/>
+					<Button type="submit" size="lg" disabled={sendCode.isPending}>
+						{sendCode.isPending ? <Spinner data-icon="inline-start" /> : null}
+						Email me a code
+					</Button>
+				</form>
+			</div>
+			{failure ? <p className="max-w-72 text-center text-destructive">{failure}</p> : null}
+		</>
+	);
+}
+
+function CodeForm(props: { email: string; onBack: () => void; onSignedIn: (offerPasskey: boolean) => void }) {
 	const [code, setCode] = useState("");
 	const verify = useMutation({
-		mutationFn: (otp: string) => authClient.signIn.emailOtp({ email: props.email, otp }),
-		// The session cookie is set; the app's route guard picks it up from here. Back can bring you to this page
-		// still signed in, so whatever that account left in the tab goes first.
-		onSuccess: () => {
-			endSession(qc);
-			return navigate({ href: props.returnTo });
+		mutationFn: async (otp: string) => {
+			await authClient.signIn.emailOtp({ email: props.email, otp });
+			if (!passkeysSupported) return false;
+			// Whether to offer a passkey. It's optional, and signing in already worked, so if the list can't load the
+			// offer is skipped rather than holding up sign-in.
+			return passkeys.list().then(
+				(list) => list.length === 0,
+				() => false,
+			);
 		},
+		// The session cookie is set; the app's route guard picks it up from here.
+		onSuccess: props.onSignedIn,
 		onError: () => setCode(""),
 	});
 	// Only emails a new code; nothing cached changes.
@@ -180,6 +257,47 @@ function CodeForm(props: { email: string; returnTo: string; onBack: () => void }
 				</Button>
 			</div>
 		</form>
+	);
+}
+
+/**
+ * After signing in with a code: a passkey skips the code next time, and still works if that inbox is out of reach.
+ * Shown each time until there is one (code sign-ins are rare: sessions last a month). After Google's and GitHub's
+ * post-sign-in prompts.
+ */
+function PasskeyOffer(props: { email: string; onDone: () => void }) {
+	// Lists elsewhere refetch on mount; this page leaves right after.
+	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
+	const add = useMutation({
+		mutationFn: passkeys.add,
+		onSuccess: () => {
+			props.onDone();
+			toast.add({ title: "Passkey added", type: "success" });
+		},
+	});
+	return (
+		<main className="flex h-full flex-col items-center justify-center gap-6 p-8 text-sm">
+			<span className="flex size-10 items-center justify-center rounded-full bg-muted">
+				<KeyRoundIcon className="size-5" />
+			</span>
+			<div className="flex w-72 flex-col items-center gap-2 text-center">
+				<h1 className="font-heading text-base font-semibold">Skip the code next time</h1>
+				<p className="text-balance text-muted-foreground">
+					Add a passkey to sign in with your fingerprint, face, or screen lock, even when you can't get to{" "}
+					<span className="font-medium text-foreground">{props.email}</span>.
+				</p>
+			</div>
+			<div className="flex w-72 flex-col gap-2">
+				<Button size="lg" onClick={() => add.mutate()} disabled={add.isPending}>
+					{add.isPending ? <Spinner data-icon="inline-start" /> : null}
+					Add a passkey
+				</Button>
+				<Button variant="ghost" size="lg" onClick={props.onDone} className="text-muted-foreground">
+					Not now
+				</Button>
+			</div>
+			{passkeyFailure(add.error) ? <p className="max-w-72 text-center text-destructive">{passkeyFailure(add.error)}</p> : null}
+		</main>
 	);
 }
 

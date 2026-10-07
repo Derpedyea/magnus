@@ -201,6 +201,9 @@ export async function getDomain(db: D1Database, name: string): Promise<{ name: s
 	return row ? { name: row.name, zoneId: row.zone_id } : null;
 }
 
+/** Sign-in codes sent to an address at one of Magnus's own domains would land in the inbox they're meant to open. */
+export const codesWouldLandHere = (domain: string) => `Codes sent to ${domain} would arrive in Magnus itself. Use an address somewhere else.`;
+
 /** Email Routing hands this domain's mail to Magnus (connect.ts keeps the flag in line with Cloudflare). */
 export async function receivesMail(db: D1Database, name: string): Promise<boolean> {
 	return (await db.prepare(`SELECT 1 AS hit FROM domains WHERE name = ?1 AND receiving = 1`).bind(name).first()) !== null;

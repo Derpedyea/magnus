@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { blockPattern, normalizeAddress, STEP_IDS } from "#shared";
+import { blockPattern, normalizeAddress, splitAddress, STEP_IDS } from "#shared";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "./api";
@@ -11,6 +11,7 @@ import {
 	addDomain,
 	addressExists,
 	blockSender,
+	codesWouldLandHere,
 	createMailbox,
 	deleteMailboxes,
 	deleteMailboxStatements,
@@ -138,6 +139,8 @@ export const admin = new Hono<AppEnv>()
 			// Better Auth commits the person before their mailbox and address are made, so rule out what would predictably fail.
 			if (body.address && !(await getDomain(db, body.address.domain))) return c.json({ error: "That domain isn't in Magnus." }, 404);
 			if (address && (await addressExists(db, address))) return c.json({ error: "That address is already taken." }, 409);
+			const signInDomain = splitAddress(body.email).domain;
+			if (await getDomain(db, signInDomain)) return c.json({ error: codesWouldLandHere(signInDomain) }, 400);
 			// With the headers, Better Auth checks the caller may create users and set roles; without, it trusts the server.
 			const { user } = await (await auth(c.req.raw)).api.createUser({
 				body: { email: body.email, name: body.name, role: body.isAdmin ? "admin" : "user" },

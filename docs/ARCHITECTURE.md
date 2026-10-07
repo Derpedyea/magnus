@@ -93,6 +93,7 @@ Each store holds one kind of data:
 ```
 auth_users(id, name, email, role, banned, …)                  ← Better Auth + admin plugin; email = where codes go
 auth_sessions, auth_accounts, auth_verifications, …          ← Better Auth's own
+auth_passkeys(userId, credentialID, publicKey, counter, …)    ← passkey plugin; one row per passkey, gone with its person
 settings(key, value)                                         ← install (account, Worker name), session secret, saved Cloudflare token (encrypted)
 domains(name, zone_id, receiving, sending, catch_all_mailbox_id)
 mailboxes(id, name)                                          ← id = Durable Object name
@@ -278,9 +279,18 @@ work. Code: `shared/links.ts`, `worker/links.ts`.
 
 ### 5.1 Authentication and authorization
 
-- **Better Auth** runs at `/api/auth/*` with the email-code and admin plugins. You sign in with a 6-digit code
-  emailed to your *sign-in email*, an address outside this install so a code can always reach you, or with
-  Google if its client ID and secret are set. Either yields a 30-day rolling session cookie backed by D1.
+- **Better Auth** runs at `/api/auth/*` with the email-code, passkey, and admin plugins. You sign in with a
+  passkey, with a 6-digit code emailed to your *sign-in email*, or with Google if its client ID and secret are
+  set. Each yields a 30-day rolling session cookie backed by D1.
+- The sign-in email has to be outside this install: setup and adding a person refuse an address at one of
+  Magnus's domains, since its codes would land in the inbox they unlock. Adding a domain warns about anyone
+  whose sign-in email is there, because it can't be refused (their address may predate the domain).
+- **Passkeys** keep you in when codes can't reach you: that inbox moved into Magnus, or Email Sending is down.
+  After a code sign-in the app offers to add one; Settings → Sign-in lists and removes them. Adding one needs a
+  session under 15 minutes old (`freshAge`), read from D1 rather than the cookie cache, and not an admin's
+  impersonation, so a stolen or revoked session can't plant a passkey that outlives it. A passkey is bound to
+  the hostname it was made on (one Better Auth instance per origin), so one made on a custom domain doesn't work
+  on `workers.dev`. Each challenge is a D1 row used once; asking for them is rate-limited per IP.
 - **Nobody signs up.** `auth_users` is the list of people, and admins add them. Codes are only sent to
   people who exist (`disableSignUp`), though the page answers the same for anyone, and Google only signs in
   an existing person, matched by email.
@@ -301,7 +311,7 @@ work. Code: `shared/links.ts`, `worker/links.ts`.
   can't ride the session cookie. Better Auth checks its own endpoints.
 - Why not Cloudflare Access: it signs you in on its own domain before the app loads, which fights the
   planned installable app (login redirects inside a home-screen app, manifest and service-worker fetches
-  without the cookie) and leaves no room for in-app sign-in such as passkeys, a Better Auth plugin away.
+  without the cookie) and leaves no room for in-app sign-in such as passkeys.
 - Local dev: `DEV_USER_EMAIL` in `.dev.vars` signs that person in for real (a server-made one-time code), and
   only on localhost.
 
