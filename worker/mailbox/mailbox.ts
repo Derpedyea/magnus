@@ -983,7 +983,8 @@ export class Mailbox extends DurableObject<Env> {
 			if (!row) return null;
 			const ids = [input.messageId];
 			this.judgeSenders(ids, input.verdict);
-			this.removeLabels(ids, input.verdict === "spam" ? ["inbox"] : ["spam"]);
+			// Out of Spam is into the inbox, not left in Trash too, as Move to inbox does.
+			this.removeLabels(ids, input.verdict === "spam" ? ["inbox"] : ["spam", "trash"]);
 			this.addLabels(ids, [input.verdict === "spam" ? "spam" : "inbox"]);
 			return row.thread_id;
 		});
@@ -1017,20 +1018,21 @@ export class Mailbox extends DurableObject<Env> {
 
 	/**
 	 * Of these messages, the ones whose senders a Spam click on their threads reports. A thread from one sender speaks for
-	 * them. In a conversation with several, someone already trusted isn't reported for what the others sent.
+	 * them. In a conversation with several, someone already trusted isn't reported for what the others sent. Mail no one
+	 * verifiably sent counts as someone else, even under a trusted sender's address: it may be forged to get them reported.
 	 */
 	private reported(messageIds: string[]): string[] {
 		const rows = this.sql
-			.exec<{ id: string; thread_id: string; sender: string; trusted: number }>(
-				`SELECT m.id, m.thread_id, m.sender,
+			.exec<{ id: string; thread_id: string; sender: string | null; from_address: string; trusted: number }>(
+				`SELECT m.id, m.thread_id, m.sender, lower(json_extract(m.from_json, '$.address')) AS from_address,
 					json_extract(m.verdict_json, '$.kind') = 'trusted' OR EXISTS (SELECT 1 FROM senders s WHERE s.address = m.sender AND s.verdict = 'trusted') AS trusted
-				 FROM messages m WHERE m.id IN (SELECT value FROM json_each(?1)) AND m.direction = 'in' AND m.sender IS NOT NULL`,
+				 FROM messages m WHERE m.id IN (SELECT value FROM json_each(?1)) AND m.direction = 'in'`,
 				JSON.stringify(messageIds),
 			)
 			.toArray();
-		const senders = new Map<string, Set<string>>();
-		for (const r of rows) senders.set(r.thread_id, (senders.get(r.thread_id) ?? new Set()).add(r.sender));
-		return rows.filter((r) => (senders.get(r.thread_id)?.size ?? 0) <= 1 || !r.trusted).map((r) => r.id);
+		const people = new Map<string, Set<string>>();
+		for (const r of rows) people.set(r.thread_id, (people.get(r.thread_id) ?? new Set()).add(r.sender ?? `unverified:${r.from_address}`));
+		return rows.filter((r) => r.sender !== null && ((people.get(r.thread_id)?.size ?? 0) <= 1 || !r.trusted)).map((r) => r.id);
 	}
 
 	private labeled(messageIds: string[], label: string): string[] {

@@ -67,6 +67,23 @@ describe("spam verdicts", () => {
 		expect((await deliver("news@outside.test", VERIFIED)).verdict).toEqual({ kind: "marked" });
 	});
 
+	it("doesn't report a trusted sender for unverified mail in their thread, even under their address", async () => {
+		await writeTo("bob@outside.test");
+		const bob = await deliver("bob@outside.test", VERIFIED);
+		await deliver("Bob <bob@outside.test>", FORGED, { inReplyTo: bob.messageIdHeader ?? "" });
+		await mark(bob.threadId, ["spam"]);
+		expect((await deliver("bob@outside.test", VERIFIED)).verdict).toEqual({ kind: "trusted" });
+	});
+
+	it("takes Not spam mail out of Trash too", async () => {
+		const pitch = await deliver("pitch@outside.test", VERIFIED);
+		await mark(pitch.threadId, ["trash"]);
+		await mark(pitch.threadId, ["spam"]);
+		expect((await box().getMessage(pitch.id))?.message.labels.toSorted()).toEqual(["spam", "trash"]);
+		await box().judgeMessage({ messageId: pitch.id, verdict: "trusted" });
+		expect((await box().getMessage(pitch.id))?.message.labels).toEqual(["inbox"]);
+	});
+
 	it("takes one message out of Spam with Not spam, trusting only its sender", async () => {
 		const first = await deliver("pitch@outside.test", VERIFIED);
 		const reply = await deliver("other@outside.test", VERIFIED, { inReplyTo: first.messageIdHeader ?? "" });
