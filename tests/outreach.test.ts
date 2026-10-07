@@ -17,11 +17,11 @@ describe("cold outreach", () => {
 	});
 
 	const box = () => f.env.MAILBOX.getByName(ids.alice);
-	async function deliver() {
+	async function deliver(from = "hiring@outside.test") {
 		const n = ++serial;
 		const raw = [
 			`Authentication-Results: mx.cloudflare.net; ${VERIFIED}`, "X-CF-SpamH-Score: 1",
-			"From: Recruiter <hiring@outside.test>", "To: alice@example.com", `Subject: Role ${n}`, `Message-ID: <outreach-${n}@outside.test>`, "", "Open to a chat?", "",
+			`From: Recruiter <${from}>`, "To: alice@example.com", `Subject: Role ${n}`, `Message-ID: <outreach-${n}@outside.test>`, "", "Open to a chat?", "",
 		].join("\r\n");
 		const input = job(ids.alice, `outreach-${n}`);
 		await f.env.MAIL.put(input.rawKey, raw, { customMetadata: { mailboxes: ids.alice } });
@@ -34,7 +34,8 @@ describe("cold outreach", () => {
 		await box().updateSettings({ outreachToSpam: false });
 		expect((await deliver())?.labels).toEqual(["inbox"]);
 		await box().updateSettings({ screener: true });
-		expect((await deliver())?.labels).toEqual(["screener"]);
+		// Someone new: the recruiter above isn't, once their mail was taken.
+		expect((await deliver("talent@outside.test"))?.labels).toEqual(["screener"]);
 	});
 
 	it("says the setting sent it to Spam only when it did, not when someone moved it there", async () => {
