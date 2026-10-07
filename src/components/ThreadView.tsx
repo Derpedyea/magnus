@@ -277,6 +277,7 @@ function Message(props: {
 						{m.auth ? ` · spf ${m.auth.spf ?? "?"} · dkim ${m.auth.dkim ?? "?"} · dmarc ${m.auth.dmarc ?? "?"}` : ""}
 				</p>
 				{props.outgoing ? <Undelivered mailboxId={props.mailboxId} message={m} /> : null}
+				{m.direction === "in" && m.labels.includes("spam") ? <SpamReason mailboxId={props.mailboxId} message={m} /> : null}
 				{m.hasHtml ? (
 					<HtmlBody src={`${messageUrl(props.mailboxId, m.id)}/body`} fold={fold} onLink={openLinked} />
 				) : (
@@ -418,6 +419,36 @@ function TextBody({ text, fold }: { text: string; fold: boolean }) {
 			{quote && showQuote ? <pre className="mt-4 font-sans break-words whitespace-pre-wrap text-muted-foreground">{quote}</pre> : null}
 			{quote ? <QuoteToggle open={showQuote} onToggle={() => setShowQuote(!showQuote)} /> : null}
 		</>
+	);
+}
+
+/** Why inbound mail is in Spam, Gmail-style, and the way out for this message, which also trusts its sender. */
+function SpamReason(props: { mailboxId: string; message: MessageDetail }) {
+	const qc = useQueryClient();
+	const notSpam = useMutation({
+		mutationFn: () => api.judge(props.mailboxId, props.message.id, "trusted"),
+		onSuccess: () => qc.invalidateQueries({ queryKey: ["mail"] }),
+	});
+	const { from, verdict } = props.message;
+	const forged = verdict?.kind === "spoofed";
+	const reason =
+		verdict?.kind === "marked"
+			? `Earlier mail from ${from.address} was marked as spam.`
+			: forged
+				? `It failed ${from.address.split("@").at(-1)}'s sender checks, so it may not be from them.`
+				: "It was marked as spam.";
+	return (
+		<div className={cn("mb-3 flex items-start gap-2 rounded-lg px-3 py-2", forged ? "bg-destructive/10" : "bg-muted")}>
+			<OctagonAlertIcon className={cn("mt-0.5 size-4 shrink-0", forged ? "text-destructive" : "text-muted-foreground")} />
+			<div className="min-w-0 flex-1">
+				<p className={cn("font-medium", forged && "text-destructive")}>Why it's in Spam</p>
+				<p className="text-xs break-words text-muted-foreground">{notSpam.error ? errorMessage(notSpam.error) : reason}</p>
+			</div>
+			<Button variant="outline" size="xs" disabled={notSpam.isPending || notSpam.isSuccess} onClick={() => notSpam.mutate()}>
+				{notSpam.isPending ? <Spinner className="size-3" /> : <InboxIcon />}
+				Not spam
+			</Button>
+		</div>
 	);
 }
 

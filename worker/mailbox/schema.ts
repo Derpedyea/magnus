@@ -198,4 +198,17 @@ export const MIGRATIONS: string[] = [
 		retried_at INTEGER
 	);
 	`,
+	`
+	-- Why inbound mail went where it did (a Verdict, shared/types.ts), and who it verifiably came from: marking it as
+	-- spam, or taking it out of Spam, judges that sender.
+	ALTER TABLE messages ADD COLUMN verdict_json TEXT;
+	ALTER TABLE messages ADD COLUMN sender TEXT;
+	-- Verified senders this mailbox has judged, by marking their mail as spam, taking it out of Spam, or writing to
+	-- them. The latest judgment stands. Everyone it's written to so far is trusted.
+	CREATE TABLE senders (
+		address TEXT PRIMARY KEY,
+		verdict TEXT NOT NULL CHECK (verdict IN ('trusted', 'spam'))
+	);
+	INSERT INTO senders (address, verdict) SELECT address, 'trusted' FROM contacts WHERE sent > 0;
+	`,
 ];

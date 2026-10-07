@@ -69,6 +69,9 @@ export const SignatureSchema = z.object({
 	text: z.string().max(MAX_SIGNATURE),
 });
 
+/** A banner's answer about one message's sender (Mailbox.judgeMessage()). */
+export const JudgeSchema = z.object({ verdict: z.enum(["trusted", "spam"]) });
+
 export const MarkReadSchema = z.object({
 	threadIds: z.array(z.string()).min(1).max(500),
 	read: z.boolean(),

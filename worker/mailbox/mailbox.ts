@@ -29,12 +29,14 @@ import {
 	RETRYABLE,
 	type SendAttachmentRef,
 	type SendInput,
+	type SenderCheck,
 	type SendQueued,
 	type StoredAttachment,
 	stripSubaddress,
 	type ThreadDetail,
 	type ThreadSummary,
 	ulid,
+	type Verdict,
 	withForward,
 } from "#shared";
 import { noteBody } from "#shared/markdown";
@@ -111,6 +113,7 @@ interface MessageRow extends Row {
 	raw_key: string | null;
 	is_read: number;
 	auth_json: string | null;
+	verdict_json: string | null;
 	delivery_status: DeliveryStatus | null;
 	delivery_detail: string | null;
 	labels: string;
@@ -354,17 +357,22 @@ export class Mailbox extends DurableObject<Env> {
 			return { threadId: existing.thread_id, duplicate: true };
 		}
 
+		const verdict = this.judge(input.sender);
+		const labels = [placeFor(verdict), ...input.labels];
+
 		// Same message delivered twice to this mailbox (e.g. sent to two of our addresses,
 		// or our own outbound copy coming back): keep one copy, merge labels.
 		if (input.messageIdHeader) {
 			const twin = this.sql
-				.exec<{ id: string; thread_id: string }>(
-					`SELECT id, thread_id FROM messages WHERE message_id_header = ?1 OR provider_message_id = ?1 LIMIT 1`,
+				.exec<{ id: string; thread_id: string; direction: "in" | "out" }>(
+					`SELECT id, thread_id, direction FROM messages WHERE message_id_header = ?1 OR provider_message_id = ?1 LIMIT 1`,
 					input.messageIdHeader,
 				)
 				.toArray()[0];
 			if (twin) {
-				this.addLabels([twin.id], input.labels);
+				// Our own mail came back because it was sent to us too: it arrives like local delivery would leave it. A copy
+				// that came in before keeps where its verdict put it, since this one's could disagree.
+				this.addLabels([twin.id], twin.direction === "out" ? ["inbox", ...input.labels] : input.labels);
 				this.addAddress(twin.id, stripSubaddress(input.envelopeTo).base);
 				this.clearFailed(input.id);
 				this.broadcast({ type: "threads.changed", threadIds: [twin.thread_id] });
@@ -381,8 +389,8 @@ export class Mailbox extends DurableObject<Env> {
 				.exec<{ rowid: number }>(
 					`INSERT INTO messages (id, thread_id, direction, message_id_header, in_reply_to, refs,
 						envelope_from, envelope_to, from_json, to_json, cc_json, reply_to_json, subject, snippet,
-						date, received_at, text_body, html_key, raw_key, is_read, auth_json)
-					 VALUES (?1, ?2, 'in', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, 0, ?19)
+						date, received_at, text_body, html_key, raw_key, is_read, auth_json, verdict_json, sender)
+					 VALUES (?1, ?2, 'in', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, 0, ?19, ?20, ?21)
 					 RETURNING rowid`,
 					input.id,
 					threadId,
@@ -403,16 +411,18 @@ export class Mailbox extends DurableObject<Env> {
 					input.htmlKey,
 					input.rawKey,
 					input.auth ? JSON.stringify(input.auth) : null,
+					JSON.stringify(verdict),
+					input.sender.verified,
 				)
 				.one();
 
-			this.addLabels([input.id], input.labels);
+			this.addLabels([input.id], labels);
 			this.addAddress(input.id, stripSubaddress(input.envelopeTo).base);
 			for (const a of input.attachments) this.insertAttachment(input.id, a);
 			if (input.messageIdHeader) this.registerRef(input.messageIdHeader, threadId);
 			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc], input.text);
 			this.touchThread(threadId, input.date, snippet, [input.from, ...input.to, ...input.cc]);
-			if (!input.labels.includes("spam")) this.recordContacts([input.from], false, input.date);
+			if (!labels.includes("spam")) this.recordContacts([input.from], false, input.date);
 			// Delivered by a retry.
 			this.sql.exec(`DELETE FROM failed WHERE id = ?1`, input.id);
 			return threadId;
@@ -420,6 +430,34 @@ export class Mailbox extends DurableObject<Env> {
 
 		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
 		return { threadId, duplicate: false };
+	}
+
+	/**
+	 * Where inbound mail goes, from what the queue checked of its sender and what this mailbox has said about them. A
+	 * forged From address can't borrow anyone's standing: only a verified sender has one.
+	 */
+	private judge(sender: SenderCheck): Verdict {
+		if (sender.spoofed) return { kind: "spoofed" };
+		const judged = sender.verified
+			? this.sql.exec<{ verdict: string }>(`SELECT verdict FROM senders WHERE address = ?1`, sender.verified).toArray()[0]
+			: undefined;
+		if (judged) return { kind: judged.verdict === "spam" ? "marked" : "trusted" };
+		if (sender.internal) return { kind: "trusted" };
+		return { kind: "unknown" };
+	}
+
+	/**
+	 * Judges who verifiably sent these messages, so their next mail goes where this mail was put. Mail they didn't
+	 * verifiably send says nothing about them.
+	 */
+	private judgeSenders(messageIds: string[], verdict: "trusted" | "spam"): void {
+		this.sql.exec(
+			`INSERT INTO senders (address, verdict)
+			 SELECT DISTINCT sender, ?2 FROM messages WHERE id IN (SELECT value FROM json_each(?1)) AND direction = 'in' AND sender IS NOT NULL
+			 ON CONFLICT (address) DO UPDATE SET verdict = excluded.verdict`,
+			JSON.stringify(messageIds),
+			verdict,
+		);
 	}
 
 	/**
@@ -529,12 +567,19 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	/**
-	 * Remembers who this mailbox writes to (`sent`) and hears from, for recipient suggestions. An undone send still
-	 * counts: the address was typed on purpose.
+	 * Remembers who this mailbox writes to (`sent`) and hears from, for recipient suggestions. Writing to someone also
+	 * trusts their mail, even if it was marked as spam before. An undone send still counts: the address was typed on
+	 * purpose.
 	 */
 	private recordContacts(people: Address[], sent: boolean, at: number): void {
 		for (const p of people) {
 			if (!isValidAddress(p.address)) continue;
+			if (sent) {
+				this.sql.exec(
+					`INSERT INTO senders (address, verdict) VALUES (?1, 'trusted') ON CONFLICT (address) DO UPDATE SET verdict = 'trusted'`,
+					normalizeAddress(p.address),
+				);
+			}
 			this.sql.exec(
 				`INSERT INTO contacts (address, name, sent, last_at) VALUES (?1, ?2, ?3, ?4)
 				 ON CONFLICT (address) DO UPDATE SET
@@ -917,10 +962,35 @@ export class Mailbox extends DurableObject<Env> {
 		const remove = [...(input.remove ?? []), ...(add.some((l) => l === "trash" || l === "spam") ? ["inbox"] : [])];
 		this.ctx.storage.transactionSync(() => {
 			const ids = this.messageIdsForThreads(input.threadIds);
+			// Spam and Not spam teach it about the senders.
+			if (add.includes("spam")) this.judgeSenders(this.reported(ids), "spam");
+			else if (remove.includes("spam") && add.includes("inbox")) this.judgeSenders(this.labeled(ids, "spam"), "trusted");
 			this.removeLabels(ids, remove);
 			this.addLabels(ids, add);
 		});
 		this.broadcast({ type: "threads.changed", threadIds: input.threadIds });
+	}
+
+	/**
+	 * A banner's answer about one inbound message: Not spam (trusted) or Spam. It moves only that message and judges only
+	 * its sender, whoever else is in the thread. False if there's no such inbound message.
+	 */
+	async judgeMessage(input: { messageId: string; verdict: "trusted" | "spam" }): Promise<boolean> {
+		const threadId = this.ctx.storage.transactionSync(() => {
+			const row = this.sql
+				.exec<{ thread_id: string }>(`SELECT thread_id FROM messages WHERE id = ?1 AND direction = 'in'`, input.messageId)
+				.toArray()[0];
+			if (!row) return null;
+			const ids = [input.messageId];
+			this.judgeSenders(ids, input.verdict);
+			// Out of Spam is into the inbox, not left in Trash too, as Move to inbox does.
+			this.removeLabels(ids, input.verdict === "spam" ? ["inbox"] : ["spam", "trash"]);
+			this.addLabels(ids, [input.verdict === "spam" ? "spam" : "inbox"]);
+			return row.thread_id;
+		});
+		if (threadId === null) return false;
+		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
+		return true;
 	}
 
 	/** Stops or resumes a linked file's download link. Returns false if there's no such linked file. */
@@ -944,6 +1014,36 @@ export class Mailbox extends DurableObject<Env> {
 			this.sql.exec(`UPDATE messages SET is_read = ?2 WHERE thread_id = ?1`, threadId, input.read ? 1 : 0);
 		}
 		this.broadcast({ type: "threads.changed", threadIds: input.threadIds });
+	}
+
+	/**
+	 * Of these messages, the ones whose senders a Spam click on their threads reports. A thread from one sender speaks for
+	 * them. In a conversation with several, someone already trusted isn't reported for what the others sent. Mail no one
+	 * verifiably sent counts as someone else, even under a trusted sender's address: it may be forged to get them reported.
+	 */
+	private reported(messageIds: string[]): string[] {
+		const rows = this.sql
+			.exec<{ id: string; thread_id: string; sender: string | null; from_address: string; trusted: number }>(
+				`SELECT m.id, m.thread_id, m.sender, lower(json_extract(m.from_json, '$.address')) AS from_address,
+					json_extract(m.verdict_json, '$.kind') = 'trusted' OR EXISTS (SELECT 1 FROM senders s WHERE s.address = m.sender AND s.verdict = 'trusted') AS trusted
+				 FROM messages m WHERE m.id IN (SELECT value FROM json_each(?1)) AND m.direction = 'in'`,
+				JSON.stringify(messageIds),
+			)
+			.toArray();
+		const people = new Map<string, Set<string>>();
+		for (const r of rows) people.set(r.thread_id, (people.get(r.thread_id) ?? new Set()).add(r.sender ?? `unverified:${r.from_address}`));
+		return rows.filter((r) => r.sender !== null && ((people.get(r.thread_id)?.size ?? 0) <= 1 || !r.trusted)).map((r) => r.id);
+	}
+
+	private labeled(messageIds: string[], label: string): string[] {
+		return this.sql
+			.exec<{ message_id: string }>(
+				`SELECT message_id FROM message_labels WHERE label = ?2 AND message_id IN (SELECT value FROM json_each(?1))`,
+				JSON.stringify(messageIds),
+				label,
+			)
+			.toArray()
+			.map((r) => r.message_id);
 	}
 
 	private messageIdsForThreads(threadIds: string[]): string[] {
@@ -1629,5 +1729,11 @@ function toMessageDetail(m: MessageRow, attachments: AttachmentRow[], undelivere
 		attachments: attachments.map(toAttachmentMeta),
 		delivery: m.delivery_status ? { status: m.delivery_status, detail: m.delivery_detail, undelivered } : null,
 		auth: m.auth_json ? JSON.parse(m.auth_json) : null,
+		verdict: m.verdict_json ? JSON.parse(m.verdict_json) : null,
 	};
+}
+
+/** Where a verdict puts inbound mail. */
+function placeFor(verdict: Verdict): string {
+	return verdict.kind === "spoofed" || verdict.kind === "marked" ? "spam" : "inbox";
 }

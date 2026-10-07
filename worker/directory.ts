@@ -124,6 +124,11 @@ export async function mailboxExists(db: D1Database, mailboxId: string): Promise<
 	return (await db.prepare(`SELECT 1 AS ok FROM mailboxes WHERE id = ?1`).bind(mailboxId).first()) !== null;
 }
 
+/** One of this install's addresses (normalized, no +tag), enabled or not. */
+export async function isOwnAddress(db: D1Database, address: string): Promise<boolean> {
+	return (await db.prepare(`SELECT 1 AS ok FROM addresses WHERE address = ?1`).bind(address).first()) !== null;
+}
+
 export interface SendIdentity {
 	address: string;
 	displayName: string | null;

@@ -51,6 +51,7 @@ describe("API permissions", () => {
 		["GET", "/messages/inbound-1/attachments/file/receipt.pdf", undefined],
 		["PATCH", "/messages/inbound-1/attachments/file", { shared: false }],
 		["POST", "/threads/modify", { threadIds: ["guessed"], add: ["trash"] }],
+		["POST", "/messages/inbound-1/judge", { verdict: "spam" }],
 		["POST", "/threads/read", { threadIds: ["guessed"], read: true }],
 		["POST", "/uploads", undefined],
 		["POST", "/send", compose()],

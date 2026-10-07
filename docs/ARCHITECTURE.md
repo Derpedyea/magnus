@@ -168,13 +168,14 @@ whole mailbox is the one exception. Code that writes or drops `m/` objects keeps
 4. `queue()` first checks the target mailbox is still in the directory: one deleted since (its person removed,
    or a failed add undone) gets nothing, and its original goes once no mailbox it was queued for is left. Then it
    parses with postal-mime, writes the HTML and attachments to R2, extracts the `Authentication-Results`
-   verdicts, applies first-pass triage (DMARC fail → `spam`), and calls `Mailbox.ingest()`. Only the verdicts
+   verdicts, works out who the sender verifiably is (§5.6), and calls `Mailbox.ingest()`. Only the verdicts
    Email Routing stamped count: its `mx.cloudflare.net` header above its `X-CF-SpamH-Score`, since everything
    below that came from the sender. SPF is the envelope sender's result, not the HELO name's. If the mailbox was
    deleted while that ran, it's cleared again (`destroy()`), in case its deletion got there first.
 5. `ingest()` is idempotent. It dedupes on `ingestId` and on `Message-ID`, so the same mail arriving via two
-   of our addresses, or our own outbound copy coming back, is stored once with merged labels. It then threads
-   the message (§5.5), indexes it for search, and broadcasts `threads.changed` over WebSocket.
+   of our addresses, or our own outbound copy coming back, is stored once with merged labels. It decides between
+   Inbox and Spam (§5.6), threads the message (§5.5), indexes it for search, and broadcasts `threads.changed`
+   over WebSocket.
 
 Failures retry with exponential backoff, 10 tries over about three hours. A message that still fails goes to its
 mailbox's **Failed** box (a `failed` table in the Mailbox DO), which shows in the sidebar only while it holds mail.
@@ -421,7 +422,28 @@ the nearest `References` entry that's here, matching any id a retried send went 
 that out as a tree that only branches where replies fork (`src/replies.ts`), so a thread without forks reads
 as a plain list.
 
-### 5.6 Reliability summary
+### 5.6 Spam
+
+Modern spam passes SPF, DKIM, and DMARC, so authentication alone catches forgeries, not spam. What tells them
+apart for one person's mailbox is who you know, and what you've said about who you don't, the way
+[mox](https://www.xmox.nl/features/#hdr-junk-filtering) judges senders by your own mail.
+
+- **Verified senders.** The queue counts the From address as verified when DMARC passed for its domain or, for
+  domains without a DMARC policy, a DKIM signature or the envelope sender's SPF passed for that domain or a
+  parent of it (a child of a shared domain can belong to anyone). Only a verified sender can be trusted or
+  marked, so a forged From address can't borrow a friend's standing or get them marked as spam.
+- **Standing.** Each mailbox keeps a `senders` table: marking a thread as spam marks who verifiably sent it, and
+  taking a thread out of Spam into the inbox (Move to inbox) trusts them. A thread from one sender speaks for
+  them; in a conversation with several, someone already trusted isn't marked for what the others sent. The Not
+  spam button answers for one message and its sender only (`judgeMessage()`). Writing to someone trusts them too,
+  and everyone a mailbox had written to before this existed starts out trusted. The latest judgment stands.
+- **Verdicts.** `Mailbox.ingest()` decides, in order: failed its domain's authentication → Spam; a judged sender
+  → their standing; verified mail from one of this install's own addresses → Inbox; anyone else → Inbox. It
+  happens inside the insert's transaction, so a click can't land between the check and the write. Each inbound
+  message keeps its verdict, and mail in Spam shows it with a Not spam button, like Gmail's "Why is this message
+  in spam?".
+
+### 5.7 Reliability summary
 
 | Failure | Outcome |
 | --- | --- |
