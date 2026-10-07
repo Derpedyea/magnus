@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { fixture, type Fixture, inbound, job, type Mailboxes } from "./runtime/fixture";
-import { r2Keys } from "#shared";
+import { fixture, type Fixture, inbound, job, type Mailboxes, MIME } from "./runtime/fixture";
+import { keyPair, rawKey } from "../worker/push";
+import { r2Keys, toBase64Url } from "#shared";
 import { z } from "zod";
 
 const RECEIVED = Date.UTC(2021, 4, 2, 9, 30);
@@ -105,6 +106,8 @@ describe("import", () => {
 		expect(await db.exec("SELECT bcc_json FROM messages")).toEqual([{ bcc_json: '[{"address":"quiet@outside.test","name":"Quiet"}]' }]);
 		expect(await alice().contacts(10)).toEqual(expect.arrayContaining([expect.objectContaining({ address: "quiet@outside.test", sent: 1 })]));
 		expect(await alice().search({ query: "quiet", limit: 50 })).toHaveLength(1);
+		const [thread] = await alice().listThreads({ label: "sent", limit: 50 });
+		expect((await alice().getThread(thread!.id))?.messages[0]?.bcc).toEqual([{ address: "quiet@outside.test", name: "Quiet" }]);
 	});
 
 	it("files mail that names none of the mailbox's addresses under its first one, so address views show it", async () => {
@@ -128,6 +131,19 @@ describe("import", () => {
 		await db.exec("INSERT INTO senders (address, verdict) VALUES ('pal@outside.test', 'spam')");
 		await importNow(eml({ from: "Alice <alice@example.com>", to: "Pal <pal@outside.test>" }), "read=1");
 		expect(await db.exec("SELECT address, verdict FROM senders")).toEqual([{ address: "pal@outside.test", verdict: "spam" }]);
+	});
+
+	it("doesn't notify about mail imported into the inbox, as it does about mail that just arrived", async () => {
+		const pair = await keyPair({ name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
+		const subscription = { endpoint: "https://push.example.net/alice", keys: { p256dh: toBase64Url(await rawKey(pair.publicKey)), auth: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) } };
+		await f.worker.fetch("https://magnus.test/api/push", { method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify(subscription) });
+		await importNow(eml(), "labels=inbox&read=0&sent=0");
+		expect(await f.control.pushes()).toEqual([]);
+		// Mail that just arrived does notify that browser.
+		const live = job(ids.alice, "live-push");
+		await f.env.MAIL.put(live.rawKey, MIME.replace("<receipt@outside.test>", "<live-push@outside.test>"));
+		await f.control.parse(live);
+		expect(await f.control.pushes()).toHaveLength(1);
 	});
 
 	it("is the same message when the same file is imported again", async () => {

@@ -109,6 +109,7 @@ interface MessageRow extends Row {
 	from_json: string;
 	to_json: string;
 	cc_json: string;
+	bcc_json: string;
 	reply_to_json: string;
 	subject: string;
 	date: number;
@@ -1952,6 +1953,7 @@ function toMessageDetail(m: MessageRow, attachments: AttachmentRow[], undelivere
 		from: JSON.parse(m.from_json),
 		to: JSON.parse(m.to_json),
 		cc: JSON.parse(m.cc_json),
+		bcc: JSON.parse(m.bcc_json),
 		replyTo: JSON.parse(m.reply_to_json),
 		subject: m.subject,
 		date: m.date,

@@ -1,7 +1,7 @@
 import { noteBody } from "#shared/markdown";
 import { describe, expect, it } from "vitest";
 import type { Draft } from "./components/Composer";
-import { answerFrom, closeDraft, compose, isOutgoing, openDraft, quote, withSignature } from "./compose";
+import { answerFrom, closeDraft, compose, isOutgoing, openDraft, quote, replyRecipients, withSignature } from "./compose";
 import { normalizeMarkdown as normalize } from "./markdown";
 
 describe("openDraft", () => {
@@ -81,5 +81,20 @@ describe("isOutgoing", () => {
 	it("keeps sent mail imported from an old address sent, whatever is in view", () => {
 		expect(isOutgoing({ direction: "out", from: { address: "me@proton.test" } }, ours, inView)).toBe(true);
 		expect(isOutgoing({ direction: "in", from: { address: "me@proton.test" } }, ours, inView)).toBe(false);
+	});
+});
+
+describe("replyRecipients", () => {
+	const pal = { address: "pal@outside.test" };
+	const quiet = { address: "quiet@outside.test" };
+	const message = { from: { address: "me@example.com" }, replyTo: [], to: [], cc: [], bcc: [] };
+	it("answers received mail to its sender, or where it asks", () => {
+		expect(replyRecipients({ ...message, from: pal }, false)).toEqual({ to: [pal], bcc: [] });
+		expect(replyRecipients({ ...message, from: pal, replyTo: [quiet] }, false)).toEqual({ to: [quiet], bcc: [] });
+	});
+	it("answers sent mail to whom it went to, keeping Bcc'd people hidden", () => {
+		expect(replyRecipients({ ...message, to: [pal], bcc: [quiet] }, true)).toEqual({ to: [pal], bcc: [] });
+		expect(replyRecipients({ ...message, cc: [pal] }, true)).toEqual({ to: [pal], bcc: [] });
+		expect(replyRecipients({ ...message, bcc: [pal, quiet] }, true)).toEqual({ to: [], bcc: [pal, quiet] });
 	});
 });

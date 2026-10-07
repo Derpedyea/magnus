@@ -219,6 +219,8 @@ export interface MessageDetail {
 	from: Address;
 	to: Address[];
 	cc: Address[];
+	/** Who sent mail was Bcc'd to. Empty for received mail, which never says. */
+	bcc: Address[];
 	replyTo: Address[];
 	subject: string;
 	date: number;

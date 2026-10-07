@@ -25,7 +25,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast-manager";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, errorMessage, formatList, messageUrl } from "../api";
-import { type AnswerContext, answerFrom, isOutgoing, openDraft, quote, withSignature } from "../compose";
+import { type AnswerContext, answerFrom, isOutgoing, openDraft, quote, replyRecipients, withSignature } from "../compose";
 import { formatDate } from "../dates";
 import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
@@ -274,8 +274,7 @@ function Message(props: {
 			</CardHeader>
 			<CollapsibleContent render={<CardContent />}>
 				<p className="pb-2 text-xs text-muted-foreground">
-						to {formatList(m.to)}
-						{m.cc.length ? ` · cc ${formatList(m.cc)}` : ""}
+						{recipientsLine(m)}
 						{m.auth ? ` · spf ${m.auth.spf ?? "?"} · dkim ${m.auth.dkim ?? "?"} · dmarc ${m.auth.dmarc ?? "?"}` : ""}
 				</p>
 				{props.outgoing ? <Undelivered mailboxId={props.mailboxId} message={m} /> : null}
@@ -719,6 +718,15 @@ function DeliveryBadge({ message }: { message: MessageDetail }) {
 	);
 }
 
+/** "to Ann · cc Bo · bcc Cy", naming only the fields it has. Received mail never says who was Bcc'd. */
+function recipientsLine(m: MessageDetail): string {
+	const fields = [["to", m.to], ["cc", m.cc], ["bcc", m.bcc]] as const;
+	return fields
+		.filter(([, list]) => list.length > 0)
+		.map(([field, list]) => `${field} ${formatList(list)}`)
+		.join(" · ");
+}
+
 const signatureOf = (from: string, ctx: AnswerContext) => ctx.identities.find((i) => i.address === from)?.signature ?? null;
 
 function replyDraft(m: MessageDetail, all: boolean, ctx: AnswerContext): Draft {
@@ -726,7 +734,7 @@ function replyDraft(m: MessageDetail, all: boolean, ctx: AnswerContext): Draft {
 	const isOurs = (a: Address) => ours.has(a.address.toLowerCase());
 	const recipients = [...m.to, ...m.cc];
 	const from = answerFrom(m, ctx);
-	const primary = ctx.outgoing ? m.to : m.replyTo.length ? m.replyTo : [m.from];
+	const { to: primary, bcc } = replyRecipients(m, ctx.outgoing);
 	const extra = all ? recipients.filter((a) => !isOurs(a) && !primary.some((p) => p.address === a.address)) : [];
 	const signature = signatureOf(from, ctx);
 	return {
@@ -734,7 +742,7 @@ function replyDraft(m: MessageDetail, all: boolean, ctx: AnswerContext): Draft {
 		from,
 		to: primary,
 		cc: extra,
-		bcc: [],
+		bcc,
 		subject: /^re:/i.test(m.subject) ? m.subject : `Re: ${m.subject}`,
 		text: withSignature(quote(m), null, signature),
 		attachments: [],

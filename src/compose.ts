@@ -75,6 +75,16 @@ export function isOutgoing(m: Pick<MessageDetail, "direction" | "from">, ours: s
 	return inView(from) || !ours.some((a) => a.toLowerCase() === from);
 }
 
+/**
+ * Who a reply goes to. Received mail answers its sender, or where it asks replies to go. Sent mail answers whom it was
+ * sent to: its To, else its Cc, else its Bcc, kept in Bcc so they stay hidden from each other as they were.
+ */
+export function replyRecipients(m: Pick<MessageDetail, "from" | "replyTo" | "to" | "cc" | "bcc">, outgoing: boolean): { to: Address[]; bcc: Address[] } {
+	if (!outgoing) return { to: m.replyTo.length ? m.replyTo : [m.from], bcc: [] };
+	if (m.to.length) return { to: m.to, bcc: [] };
+	return m.cc.length ? { to: m.cc, bcc: [] } : { to: [], bcc: m.bcc };
+}
+
 /** Which of our addresses answers or forwards a message: the one being viewed when it reached several of ours. */
 export function answerFrom(m: Pick<MessageDetail, "from" | "to" | "cc">, ctx: AnswerContext): string {
 	const ours = new Set(ctx.identities.map((i) => i.address.toLowerCase()));
