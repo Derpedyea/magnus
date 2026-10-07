@@ -104,6 +104,7 @@ async function afterIO(env: Env, operation: "get" | "put", key: string): Promise
 const JobSchema = z.object({
 	v: z.literal(1), ingestId: z.string(), rawKey: z.string(), rawSize: z.number(), mailboxId: z.string(),
 	envelopeFrom: z.string(), envelopeTo: z.string(), subaddress: z.string().nullable(), receivedAt: z.number(),
+	checkFailures: z.number().optional(),
 }) satisfies z.ZodType<InboundJob>;
 
 // Real storage throughout. Only the provider, queue handoff, and explicit failure/race points are controlled.
@@ -190,7 +191,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 		return a.api.createVerificationOTP({ body: { email: address, type: "sign-in" } });
 	}
 	forgetExpiredDevices() { return forgetExpiredDevices(this.env.DIRECTORY, Date.now()); }
-	parse(job: InboundJob, attempts = 1) { return withPushService(() => ingest(controlled(this.env), job, models, attempts)); }
+	parse(job: InboundJob) { return withPushService(() => ingest(controlled(this.env), job, models)); }
 	setModels(next: Partial<ModelAnswers>) { answers = { ...answers, ...next }; }
 	cleanDrafts() { return cleanDraftFiles(controlled(this.env), now); }
 	setNow(value: number) { now = value; }

@@ -84,7 +84,7 @@ async function inbound(env: Env, job: InboundJob, attempts: number, models: Mode
 	// mail failed. Parsing again could end the same way.
 	if (attempts > INGEST_ATTEMPTS) return recordFailed(env, job, null);
 	try {
-		await ingest(env, job, models, attempts);
+		await ingest(env, job, models);
 	} catch (err) {
 		if (attempts < INGEST_ATTEMPTS) throw err;
 		// Bounded: it's stored and shown in the list.

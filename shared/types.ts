@@ -24,6 +24,11 @@ export interface InboundJob {
 	envelopeTo: string;
 	subaddress: string | null;
 	receivedAt: number;
+	/**
+	 * How many times checking it with Workers AI has failed (worker/mail/checks.ts). Each failure queues the job again
+	 * with this one higher, so failures elsewhere, which the queue's own attempt count includes, don't use up its tries.
+	 */
+	checkFailures?: number;
 }
 
 // ─── Queue: magnus-email-events (Email Sending event subscription) ──────────

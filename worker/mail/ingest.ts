@@ -20,17 +20,16 @@ import { notifyNewMail } from "../push";
 import { checkMail, type MailFacts, type Models } from "./checks";
 
 /**
- * Tries at checking mail from an unknown sender, about a minute and a half with the queue's backoff, before it's
- * delivered unchecked instead: to Spam, saying so. Mail isn't held for an outage, and isn't let through unseen.
+ * Tries at checking mail from an unknown sender, about a minute and a half apart in all, before it's delivered unchecked
+ * instead: to Spam, saying so. Mail isn't held for an outage, and isn't let through unseen.
  */
 const CHECK_ATTEMPTS = 3;
 const MAX_CHECK_ERROR = 300;
+/** HTML read for the checks, at most: what the models see is cut far shorter, so the rest would only cost CPU. */
+const MAX_SCANNED = 200_000;
 
-/**
- * Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. `attempts` is the
- * queue's count for this job, so the last check attempt knows to give up.
- */
-export async function ingest(env: Env, job: InboundJob, models: Models = env.AI, attempts = 1): Promise<void> {
+/** Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. */
+export async function ingest(env: Env, job: InboundJob, models: Models = env.AI): Promise<void> {
 	// The mailbox can be gone since this was queued: its person removed, or a failed add undone after its address took
 	// mail. Delivering would bring it back, mail and all, with nobody to open it. (It can also go while this runs: see
 	// the end.)
@@ -50,18 +49,23 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI,
 	const results = stampedResults(email);
 	const sender = await checkSender(env, from.address, results);
 	const text = email.text ?? (email.html ? htmlToText(email.html) : null);
+	const html = email.html?.slice(0, MAX_SCANNED) ?? null;
 	const facts: MailFacts = {
 		to: job.envelopeTo,
 		from,
 		verifiedSender: sender.verified !== null,
 		replyTo: flatten(email.replyTo),
 		subject: email.subject ?? "(no subject)",
-		text,
-		html: email.html ?? null,
+		// What the recipient sees: the app shows the HTML part when there is one, and the sender can make a plain-text
+		// part say anything else.
+		text: html ? htmlToText(html) : text,
+		html,
 		attachments: email.attachments.map((a) => ({ filename: a.filename ?? "", contentType: a.mimeType })),
 	};
 	const messageIdHeader = email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null;
-	const check = (await mailbox.needsCheck(sender, messageIdHeader)) ? await checkOrGiveUp(models, facts, attempts, job) : null;
+	const check = (await mailbox.needsCheck(sender, messageIdHeader)) ? await checkOrGiveUp(env, models, facts, job) : null;
+	// Back in the queue with the failure counted (checkOrGiveUp()): this copy of the job is done.
+	if (check === "requeued") return;
 
 	let htmlKey: string | null = null;
 	if (email.html) {
@@ -132,12 +136,20 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI,
 	}
 }
 
-/** Throws for the queue to retry, until the last try, which delivers the mail as unchecked instead. */
-async function checkOrGiveUp(models: Models, facts: MailFacts, attempts: number, job: InboundJob): Promise<MailCheck> {
+/**
+ * A failed check queues the job again, counting the failure, until the last try, which delivers the mail as unchecked
+ * instead. If queueing it fails, this throws and the queue retries the job as it was.
+ */
+async function checkOrGiveUp(env: Env, models: Models, facts: MailFacts, job: InboundJob): Promise<MailCheck | "requeued"> {
 	try {
 		return await checkMail(models, facts);
 	} catch (error) {
-		if (attempts < CHECK_ATTEMPTS) throw error;
+		const failures = (job.checkFailures ?? 0) + 1;
+		if (failures < CHECK_ATTEMPTS) {
+			console.error(JSON.stringify({ msg: "mail check failed", ingestId: job.ingestId, mailboxId: job.mailboxId, failures, error: String(error) }));
+			await env.INBOUND.send({ ...job, checkFailures: failures }, { delaySeconds: 30 * 2 ** (failures - 1) });
+			return "requeued";
+		}
 		console.error(JSON.stringify({ msg: "mail unchecked", ingestId: job.ingestId, mailboxId: job.mailboxId, error: String(error) }));
 		return { kind: "unchecked", error: String(error).slice(0, MAX_CHECK_ERROR) };
 	}

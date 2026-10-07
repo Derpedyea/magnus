@@ -23,6 +23,8 @@ const SURE_SPAM = 0.9;
 const SURE_CLEAN = 0.2;
 /** Bounds what a message costs to check: about a thousand tokens of body, and little of anything else. */
 const MAX_BODY = 4000;
+/** Text searched for links, at most. */
+const MAX_LINK_SCAN = 200_000;
 const MAX_FIELD = 200;
 const MAX_LINKS = 20;
 const MAX_FILES = 10;
@@ -107,7 +109,7 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 					},
 				},
 				// Only providers that honour the schema, and don't keep what they're sent.
-				provider: { require_parameters: true, data_collection: "deny" },
+				provider: { require_parameters: true, data_collection: "deny", zdr: true },
 			},
 		},
 	);
@@ -115,6 +117,17 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 	const text = DeepReply.parse(await response.json()).choices[0]?.message.content;
 	if (!text) throw new Error(`${DEEP_MODEL} gave no answer`);
 	return { kind: "checked", category: DeepVerdict.parse(JSON.parse(text)).category, spam, model: DEEP_MODEL };
+}
+
+/** Where links go, the first MAX_LINKS hosts, found without collecting every link a huge message has. */
+function linkDomains(text: string): string[] {
+	const found = new Set<string>();
+	for (const m of text.matchAll(/https?:\/\/([^/\s"'<>?#]+)/gi)) {
+		const host = m[1]?.toLowerCase().slice(0, MAX_FIELD);
+		if (host) found.add(host);
+		if (found.size >= MAX_LINKS) break;
+	}
+	return [...found];
 }
 
 function likeliest(probabilities: Record<MailCategory, number>): MailCategory {
@@ -133,9 +146,7 @@ function describe(facts: MailFacts) {
 		replyTo: facts.replyTo.slice(0, MAX_REPLY_TO).map(address),
 		subject: cut(facts.subject),
 		// Where links go, since phishing hides them behind text.
-		linkDomains: [...new Set(Array.from(`${facts.html ?? ""} ${body}`.matchAll(/https?:\/\/([^/\s"'<>?#]+)/gi), (m) => cut(m[1]?.toLowerCase() ?? "")))]
-			.filter(Boolean)
-			.slice(0, MAX_LINKS),
+		linkDomains: linkDomains(`${facts.html ?? ""} ${body}`.slice(0, MAX_LINK_SCAN)),
 		attachments: facts.attachments.slice(0, MAX_FILES).map((a) => ({ filename: cut(a.filename), contentType: cut(a.contentType) })),
 		body: cut(body, MAX_BODY),
 	};

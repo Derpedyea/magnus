@@ -476,14 +476,15 @@ apart for one person's mailbox is who you know, and what you've said about who y
   personal, where Clef gave both 0.78. When Clef's odds of spam or phishing land between 0.2 and 0.9, OpenAI's
   GPT-6 Luna reads it too and its category stands. Luna goes through OpenRouter on the account's `default` AI
   Gateway, which holds the OpenRouter key (BYOK, Provider Keys) and adds it to the request, so the Worker never
-  has it. The request asks for providers that keep nothing (`data_collection: deny`) and tells the gateway not to
-  log it. Without the key, Luna's mail ends up unchecked (below). The models read a bounded
+  has it. The request asks only for providers that retain nothing (OpenRouter's `zdr`, which for Luna means Azure)
+  and don't train on it (`data_collection: deny`), and tells the gateway not to log it. Without the key, Luna's mail ends up unchecked (below). The models read a bounded
   summary (sender, whether it's verified, subject, up to 5 Reply-To addresses, 20 link domains, and 10 file names,
-  each cut to 200 characters, and the first 4,000 characters of the body), and
+  each cut to 200 characters, and the first 4,000 characters of the body as the recipient sees it: the HTML
+  part's text when there is one, not a plain-text part that could say something else), and
   their answers are validated. Mail from known senders never reaches them, so a message written to sway a model
-  can at most get a stranger's mail into the inbox. A check that fails is retried with the queue (about a minute
-  and a half), then the mail is delivered to Spam as unchecked, saying so: not held for an outage, not let
-  through unseen.
+  can at most get a stranger's mail into the inbox. A check that fails puts the job back in the queue with the failure
+  counted (`checkFailures`, 30 then 60 seconds later), so failures elsewhere don't use up its tries. After the
+  third, the mail is delivered to Spam as unchecked, saying so: not held for an outage, not let through unseen.
 - **Verdicts.** `Mailbox.ingest()` decides, in order: failed its domain's authentication → Spam; a judged sender
   → their standing; verified mail from one of this install's own addresses → Inbox; anyone else → the checks'
   call (spam and phishing → Spam). Standing is read inside the insert's transaction, so a click can't land
