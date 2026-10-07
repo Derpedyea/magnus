@@ -154,6 +154,8 @@ describe("push notifications", () => {
 		// A shared mailbox tells everyone in it.
 		const shared = await deliver(ids.shared, "mail-2");
 		expect(shared.map((p) => p.url).sort()).toEqual([a.subscription.endpoint, b.subscription.endpoint]);
+		// One VAPID token for the push service, not one per push: Apple refuses tokens refreshed more than hourly.
+		expect(new Set([...sent, ...shared].map((p) => p.headers.authorization)).size).toBe(1);
 		expect(await read(b, shared.find((p) => p.url === b.subscription.endpoint)!.body)).toMatchObject({ tag: "mail-2" });
 	});
 
@@ -177,6 +179,11 @@ describe("push notifications", () => {
 		await db.prepare("UPDATE auth_sessions SET impersonatedBy = NULL WHERE id = ?1").bind(session).run();
 		await db.prepare("DELETE FROM mailbox_members WHERE mailbox_id = ?1 AND user_id = 'alice'").bind(ids.shared).run();
 		expect(await deliver(ids.shared, "former")).toEqual([]);
+
+		// A refusal is logged from the start of its answer, even one that never ends, and the browser is kept.
+		await f.control.setPushStatus(500, true);
+		expect(await deliver(ids.alice, "refused")).toHaveLength(1);
+		expect(await rows()).toHaveLength(1);
 
 		await f.control.setPushStatus(410);
 		expect(await deliver(ids.alice, "gone")).toHaveLength(1);

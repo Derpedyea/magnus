@@ -26,6 +26,8 @@ let stalls: string[] = [];
 let hook: Hook | null = null;
 let pushes: { url: string; headers: Record<string, string>; body: Uint8Array }[] = [];
 let pushStatus = 201;
+// A push service answering with a body that never ends, as any endpoint someone registers could.
+let pushEndless = false;
 
 // Future alarms cannot fire on wall time; only drain() runs them. Restore the clock on every exit.
 async function atTestTime<T>(run: () => Promise<T>): Promise<T> {
@@ -45,7 +47,8 @@ async function withPushService<T>(run: () => Promise<T>): Promise<T> {
 	Reflect.set(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
 		const request = new Request(input, init);
 		pushes.push({ url: request.url, headers: Object.fromEntries(request.headers), body: new Uint8Array(await request.arrayBuffer()) });
-		return new Response(null, { status: pushStatus });
+		const endless = new ReadableStream({ start: (controller) => controller.enqueue(new TextEncoder().encode("x".repeat(1000))) });
+		return new Response(pushEndless ? endless : null, { status: pushStatus });
 	});
 	try {
 		return await run();
@@ -163,7 +166,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	cleanDrafts() { return cleanDraftFiles(controlled(this.env), now); }
 	setNow(value: number) { now = value; }
 	setSendErrors(codes: string[]) { sendErrors = codes; }
-	setPushStatus(status: number) { pushStatus = status; }
+	setPushStatus(status: number, endless = false) { pushStatus = status; pushEndless = endless; }
 	pushes() { return pushes; }
 	failNext(operation: Operation, prefix = "", count = 1) { failures.push({ operation, prefix, remaining: count }); }
 	stallDeletes(prefix: string) { stalls.push(prefix); }
@@ -177,7 +180,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 			})),
 		})) };
 	}
-	reset() { now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; }
+	reset() { now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; }
 
 	async consume(bodies: unknown[], attempts = 1) {
 		const acks: string[] = [];

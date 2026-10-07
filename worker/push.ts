@@ -81,7 +81,7 @@ async function push(db: D1Database, keys: VapidKeys, device: Device, notice: Not
 	const res = await fetch(device.endpoint, {
 		method: "POST",
 		headers: {
-			Authorization: await vapidAuthorization(device.endpoint, device.origin, keys, now),
+			Authorization: await authorization(device.endpoint, device.origin, keys, now),
 			TTL: String(TTL_SECONDS),
 			// Every push shows a notification, the kind FCM delivers at once rather than holding while a phone dozes.
 			Urgency: "high",
@@ -93,17 +93,41 @@ async function push(db: D1Database, keys: VapidKeys, device: Device, notice: Not
 	});
 	// The endpoint alone lets anyone push to the browser, so only its host is logged.
 	const host = new URL(device.endpoint).host;
-	if (res.ok) {
-		await res.body?.cancel();
-		return;
-	}
+	// Any https URL can be an endpoint, so its answer is never read whole: just enough of a refusal to say why.
+	const reason = res.ok ? "" : await start(res, 200);
+	await res.body?.cancel();
+	if (res.ok) return;
 	if (res.status === 404 || res.status === 410) {
 		// Unsubscribed or expired. Push services never reuse an endpoint, so it can go whoever holds it now.
 		await db.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?1`).bind(device.endpoint).run();
 		console.log(JSON.stringify({ msg: "push subscription gone", host, status: res.status }));
 		return;
 	}
-	throw new Error(`${host} answered ${res.status}: ${(await res.text()).slice(0, 200)}`);
+	throw new Error(`${host} answered ${res.status}: ${reason}`);
+}
+
+/** The first `bytes` of a response body, from its first chunk only. */
+async function start(res: Response, bytes: number): Promise<string> {
+	const reader = res.body?.getReader();
+	if (!reader) return "";
+	const { value } = await reader.read();
+	reader.releaseLock();
+	return new TextDecoder().decode(value?.slice(0, bytes));
+}
+
+/**
+ * VAPID tokens, reused until an hour before they expire: Apple asks for one no more often than hourly, and each push
+ * would otherwise sign its own. Keyed by push service, sender, and key, which a token names.
+ */
+const tokens = new Map<string, { header: string; until: number }>();
+
+async function authorization(endpoint: string, origin: string, keys: VapidKeys, now: number): Promise<string> {
+	const key = `${new URL(endpoint).origin} ${origin} ${keys.publicKey}`;
+	const cached = tokens.get(key);
+	if (cached && cached.until > now) return cached.header;
+	const header = await vapidAuthorization(endpoint, origin, keys, now);
+	tokens.set(key, { header, until: now + (TOKEN_SECONDS - 3600) * 1000 });
+	return header;
 }
 
 const VapidSchema = z.object({

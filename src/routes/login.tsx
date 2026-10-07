@@ -11,6 +11,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast-manager";
 import { authClient } from "../api";
 import { passkeyFailure, passkeys, passkeysSupported } from "../passkeys";
+import { forgetDevice } from "../push";
 import { configQuery } from "../queries";
 import { endSession } from "../session";
 
@@ -90,12 +91,16 @@ function StartForm(props: {
 	// Neither touches cached data: Google sign-in leaves the page (Better Auth's client redirects), and codes arrive by email.
 	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
 	const google = useMutation({
-		mutationFn: () =>
-			authClient.signIn.social({
+		mutationFn: async () => {
+			// The page leaves for Google, so useFinishSignIn's cleanup never runs. A session still here has its browser
+			// subscription dropped first, or pushes already on their way could show its mail to whoever signs in.
+			await forgetDevice();
+			return authClient.signIn.social({
 				provider: "google",
 				callbackURL: props.returnTo,
 				errorCallbackURL: `/login?redirect=${encodeURIComponent(props.returnTo)}`,
-			}),
+			});
+		},
 	});
 	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
 	const sendCode = useMutation({
