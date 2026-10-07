@@ -60,6 +60,8 @@ const MAX_PARTICIPANTS = 12;
 const INGEST_WINDOW_MS = 24 * 3600 * 1000;
 /** Failed mail listed at once. counts() has the total. */
 const FAILED_LIMIT = 200;
+/** Threads a release of held mail names in its live event, at most (judgeAddresses()). */
+const MAX_RELEASED_THREADS = 100;
 /** Message ids per holding() call when a deleted mailbox asks the others what they still hold. */
 const HOLDING_BATCH = 10_000;
 /** A socket is authorized once, when it opens. After this long it has to reconnect, which checks the sign-in again. */
@@ -389,6 +391,9 @@ export class Mailbox extends DurableObject<Env> {
 		const threadId = this.ctx.storage.transactionSync(() => {
 			const threadId =
 				this.findThread(input) ?? this.createThread(input.subject, input.date);
+			// A first-time sender replying in a conversation already in the inbox, or one this mailbox wrote in, isn't held:
+			// half a conversation in the Screener would still show in the inbox.
+			const placed = labels[0] === "screener" && this.inConversation(threadId) ? ["inbox", ...labels.slice(1)] : labels;
 
 			const { rowid } = this.sql
 				.exec<{ rowid: number }>(
@@ -421,7 +426,7 @@ export class Mailbox extends DurableObject<Env> {
 				)
 				.one();
 
-			this.addLabels([input.id], labels);
+			this.addLabels([input.id], placed);
 			this.addAddress(input.id, stripSubaddress(input.envelopeTo).base);
 			for (const a of input.attachments) this.insertAttachment(input.id, a);
 			if (input.messageIdHeader) this.registerRef(input.messageIdHeader, threadId);
@@ -514,17 +519,30 @@ export class Mailbox extends DurableObject<Env> {
 			list,
 			verdict,
 		);
-		const held = this.sql
-			.exec<{ id: string; thread_id: string }>(
-				`SELECT m.id, m.thread_id FROM messages m JOIN message_labels l ON l.message_id = m.id AND l.label = 'screener'
-				 WHERE m.sender IN (SELECT value FROM json_each(?1))`,
-				list,
-			)
-			.toArray();
-		const ids = held.map((m) => m.id);
-		this.removeLabels(ids, ["screener"]);
-		this.addLabels(ids, [verdict === "spam" ? "spam" : "inbox"]);
-		return [...new Set(held.map((m) => m.thread_id))];
+		// A sender decides how much mail they leave here, so this is a few statements, whatever the count.
+		const HELD = `SELECT l.message_id FROM message_labels l JOIN messages m ON m.id = l.message_id
+			WHERE l.label = 'screener' AND m.sender IN (SELECT value FROM json_each(?1))`;
+		// Clients refetch on any change, so a few of the threads is enough to say so.
+		const threads = this.sql
+			.exec<{ thread_id: string }>(`SELECT DISTINCT thread_id FROM messages WHERE id IN (${HELD}) LIMIT ${MAX_RELEASED_THREADS}`, list)
+			.toArray()
+			.map((r) => r.thread_id);
+		this.sql.exec(`INSERT OR IGNORE INTO message_labels (message_id, label) SELECT message_id, ?2 FROM (${HELD})`, list, verdict === "spam" ? "spam" : "inbox");
+		this.sql.exec(`DELETE FROM message_labels WHERE label = 'screener' AND message_id IN (${HELD})`, list);
+		return threads;
+	}
+
+	/** Whether this thread holds mail in the inbox, or mail this mailbox sent. */
+	private inConversation(threadId: string): boolean {
+		return (
+			this.sql
+				.exec(
+					`SELECT 1 FROM messages m WHERE m.thread_id = ?1 AND (m.direction = 'out'
+						OR EXISTS (SELECT 1 FROM message_labels l WHERE l.message_id = m.id AND l.label = 'inbox')) LIMIT 1`,
+					threadId,
+				)
+				.toArray().length > 0
+		);
 	}
 
 	/**

@@ -211,4 +211,9 @@ export const MIGRATIONS: string[] = [
 	);
 	INSERT INTO senders (address, verdict) SELECT address, 'trusted' FROM contacts WHERE sent > 0;
 	`,
+	`
+	-- "screener" is now the Screener's own label. Any from before were +screener tags, which labelFromTag() now files as
+	-- "screener-tag".
+	UPDATE OR REPLACE message_labels SET label = 'screener-tag' WHERE label = 'screener';
+	`,
 ];

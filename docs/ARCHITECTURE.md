@@ -113,7 +113,8 @@ push_subscriptions(endpoint, session_id, p256dh, auth, origin) ← a browser to 
 Labels follow the Gmail model: they live on messages, and a thread appears in a view if any of its messages
 has the label. System labels are `inbox`, `sent`, `outbox`, `spam`, `trash`, `starred`, `screener`. "Archive" means
 removing `inbox`, and "All mail" is a pseudo-view. `+tag` subaddresses become labels automatically
-(`me+receipts@…` → `receipts`).
+(`me+receipts@…` → `receipts`). A tag that names a view gets a suffix, so it can't file mail there
+(`me+spam@…` → `spam-tag`, not Spam).
 
 ### Mailboxes vs. addresses
 
@@ -513,6 +514,8 @@ apart for one person's mailbox is who you know, and what you've said about who y
   in the Screener. Let in trusts the sender, Spam marks them, and either moves all their held mail at once, since
   the Screener asks once per sender. Both answer for that message's sender alone (`judgeMessage()`), not others in
   its thread; one whose address can't be verified only has that message moved. Writing to someone lets them in too.
+  A first-time sender replying in a conversation already in the inbox, or one the mailbox wrote in, isn't held,
+  since half a held conversation would show in the inbox anyway; their next new conversation is.
 
 ### 5.7 Reliability summary
 

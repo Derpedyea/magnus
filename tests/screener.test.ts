@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { fixture, type Fixture, job, type Mailboxes, sendInput } from "./runtime/fixture";
+import { QUICK_MODEL } from "../worker/mail/checks";
+import { fixture, type Fixture, inbound, job, type Mailboxes, sendInput } from "./runtime/fixture";
 
 const VERIFIED = "dkim=pass header.d=outside.test; dmarc=pass header.from=outside.test; spf=pass smtp.mailfrom=bounce@outside.test";
 
@@ -17,16 +18,16 @@ describe("Screener", () => {
 	const box = () => f.env.MAILBOX.getByName(ids.alice);
 	/**
 	 * `inReplyTo` threads it under that message; `stamped` replaces Email Routing's verdicts; `checkFailures` is how many
-	 * checks of it already failed.
+	 * checks of it already failed; `tag` is the +tag it was sent to.
 	 */
-	async function deliver(from = "new@outside.test", options: { inReplyTo?: string; stamped?: string; checkFailures?: number } = {}) {
+	async function deliver(from = "new@outside.test", options: { inReplyTo?: string; stamped?: string; checkFailures?: number; tag?: string } = {}) {
 		const n = ++serial;
 		const raw = [
 			`Authentication-Results: mx.cloudflare.net; ${options.stamped ?? VERIFIED}`, "X-CF-SpamH-Score: 1",
 			`From: ${from}`, "To: alice@example.com", `Subject: Hello ${n}`, `Message-ID: <screen-${n}@outside.test>`,
 			...(options.inReplyTo ? [`In-Reply-To: ${options.inReplyTo}`] : []), "", "Hi", "",
 		].join("\r\n");
-		const input = { ...job(ids.alice, `screen-${n}`), checkFailures: options.checkFailures };
+		const input = { ...job(ids.alice, `screen-${n}`), checkFailures: options.checkFailures, subaddress: options.tag ?? null };
 		await f.env.MAIL.put(input.rawKey, raw, { customMetadata: { mailboxes: ids.alice } });
 		await f.control.parse(input);
 		const stored = await box().getMessage(input.ingestId);
@@ -66,8 +67,8 @@ describe("Screener", () => {
 
 	it.each(["trusted", "spam"] as const)("answers %s for one held message's sender only, not others in the thread", async (verdict) => {
 		await box().enqueueSend(sendInput(ids.alice, { to: [{ address: "bob@outside.test" }] }));
-		const bob = await deliver("bob@outside.test");
-		const carol = await deliver("carol@outside.test", { inReplyTo: bob.messageIdHeader ?? "" });
+		const carol = await deliver("carol@outside.test");
+		const bob = await deliver("bob@outside.test", { inReplyTo: carol.messageIdHeader ?? "" });
 		const elsewhere = await deliver("carol@outside.test");
 		expect([bob.labels, carol.labels]).toEqual([["inbox"], ["screener"]]);
 		expect(carol.senderVerified).toBe(true);
@@ -75,6 +76,38 @@ describe("Screener", () => {
 		const place = verdict === "trusted" ? "inbox" : "spam";
 		expect([await labels(bob.id), await labels(carol.id), await labels(elsewhere.id)]).toEqual([["inbox"], [place], [place]]);
 		expect((await deliver("bob@outside.test")).verdict).toEqual({ kind: "trusted" });
+	});
+
+	it("doesn't hold a first-time sender's reply in a conversation already in the inbox or written in", async () => {
+		await box().enqueueSend(sendInput(ids.alice, { to: [{ address: "bob@outside.test" }] }));
+		const bob = await deliver("bob@outside.test");
+		expect((await deliver("carol@outside.test", { inReplyTo: bob.messageIdHeader ?? "" })).labels).toEqual(["inbox"]);
+		const sent = await box().enqueueSend(sendInput(ids.alice, { to: [{ address: "list@outside.test" }] }));
+		// Sending gives it the Message-ID a reply names.
+		await box().drain();
+		const ours = await box().getMessage(sent?.id ?? "");
+		await box().modifyThreads({ threadIds: [sent?.threadId ?? ""], remove: ["inbox"] });
+		expect((await deliver("dave@outside.test", { inReplyTo: ours?.message.messageIdHeader ?? "" })).labels).toEqual(["inbox"]);
+		// Their next conversation is new, so it's held.
+		expect((await deliver("carol@outside.test")).labels).toEqual(["screener"]);
+	});
+
+	it("files a +screener or +spam tag as a label of its own, not a system view", async () => {
+		await box().enqueueSend(sendInput(ids.alice, { to: [{ address: "bob@outside.test" }] }));
+		expect((await deliver("bob@outside.test", { tag: "Screener" })).labels.toSorted()).toEqual(["inbox", "screener-tag"]);
+		expect((await deliver("bob@outside.test", { tag: "spam" })).labels.toSorted()).toEqual(["inbox", "spam-tag"]);
+	});
+
+	it("lets in all of a flood of held mail with one answer", async () => {
+		const sender = { verified: "flood@outside.test", internal: false, spoofed: false };
+		const check = { kind: "checked", category: "personal", spam: 0, model: QUICK_MODEL } as const;
+		for (let i = 0; i < 150; i++) {
+			await box().ingest({ ...inbound(ids.alice, `flood-${i}`), messageIdHeader: `<flood-${i}@outside.test>`, subject: `Flood ${i}`, sender, check });
+		}
+		expect((await box().counts({})).labels.find((l) => l.label === "screener")?.threads).toBe(150);
+		await box().judgeMessage({ messageId: "flood-0", verdict: "trusted" });
+		const counts = (await box().counts({})).labels;
+		expect([counts.find((l) => l.label === "screener"), counts.find((l) => l.label === "inbox")?.threads]).toEqual([undefined, 150]);
 	});
 
 	it("lets in only the message itself when its sender can't be verified", async () => {
