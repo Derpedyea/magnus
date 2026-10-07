@@ -211,4 +211,12 @@ export const MIGRATIONS: string[] = [
 	);
 	INSERT INTO senders (address, verdict) SELECT address, 'trusted' FROM contacts WHERE sent > 0;
 	`,
+	`
+	-- "screener" is now the Screener's own label. Any from before were +screener tags, which labelFromTag() now files as
+	-- "screener-tag".
+	UPDATE OR REPLACE message_labels SET label = 'screener-tag' WHERE label = 'screener';
+	-- Tags named after a view that isn't a label were filed under it too, out of reach behind the view. Those are moved
+	-- the same way. Tags named after a system label can't be: mail tagged +spam and mail marked as spam both say "spam".
+	UPDATE OR REPLACE message_labels SET label = label || '-tag' WHERE label IN ('all', 'drafts', 'failed', 'search');
+	`,
 ];

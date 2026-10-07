@@ -1,4 +1,7 @@
-import type { LocalRecipient } from "./types";
+import { ALL_MAIL, type LocalRecipient, SYSTEM_LABELS } from "./types";
+
+/** Names a tag can't take as its label: system labels and the app's other views. */
+const RESERVED_LABELS = new Set<string>([...SYSTEM_LABELS, ALL_MAIL, "drafts", "failed", "search"]);
 
 export interface Address {
 	address: string;
@@ -47,10 +50,12 @@ export function stripSubaddress(address: string): { base: string; tag: string | 
 
 /** Subaddress tag → label name (`me+GitHub@…` → `github`). */
 export function labelFromTag(tag: string): string {
-	return tag
+	const label = tag
 		.toLowerCase()
 		.replaceAll(/[^a-z0-9._-]/g, "-")
 		.slice(0, 64);
+	// A tag can't file mail under a view of its own: me+spam@ isn't Spam, and me+screener@ isn't held.
+	return RESERVED_LABELS.has(label) ? `${label}-tag` : label;
 }
 
 /**

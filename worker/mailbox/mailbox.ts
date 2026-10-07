@@ -17,6 +17,7 @@ import {
 	type ListPage,
 	LIVE_RECHECK,
 	type MailCheck,
+	type MailSettings,
 	type LiveEvent,
 	type LocalRecipient,
 	type MessageBlobs,
@@ -59,6 +60,8 @@ const MAX_PARTICIPANTS = 12;
 const INGEST_WINDOW_MS = 24 * 3600 * 1000;
 /** Failed mail listed at once. counts() has the total. */
 const FAILED_LIMIT = 200;
+/** Threads a release of held mail names in its live event, at most (judgeAddresses()). */
+const MAX_RELEASED_THREADS = 100;
 /** Message ids per holding() call when a deleted mailbox asks the others what they still hold. */
 const HOLDING_BATCH = 10_000;
 /** A socket is authorized once, when it opens. After this long it has to reconnect, which checks the sign-in again. */
@@ -115,6 +118,7 @@ interface MessageRow extends Row {
 	is_read: number;
 	auth_json: string | null;
 	verdict_json: string | null;
+	sender: string | null;
 	delivery_status: DeliveryStatus | null;
 	delivery_detail: string | null;
 	labels: string;
@@ -360,7 +364,7 @@ export class Mailbox extends DurableObject<Env> {
 		}
 
 		const verdict = this.judge(input.sender, input.check);
-		const place = placeFor(verdict);
+		const place = placeFor(verdict, this.mailSettings());
 		const labels = [place, ...input.labels];
 
 		// Same message delivered twice to this mailbox (e.g. sent to two of our addresses,
@@ -384,9 +388,14 @@ export class Mailbox extends DurableObject<Env> {
 		}
 
 		const snippet = makeSnippet(input.text);
-		const threadId = this.ctx.storage.transactionSync(() => {
+		const delivered = this.ctx.storage.transactionSync(() => {
 			const threadId =
 				this.findThread(input) ?? this.createThread(input.subject, input.date);
+			// Not held after all: a sender whose mail this mailbox already took (they're not new), or a reply in a
+			// conversation already in the inbox or one this mailbox wrote in (half a conversation in the Screener would still
+			// show in the inbox).
+			const held = labels[0] === "screener" && !this.heardFrom(input.sender.verified) && !this.inConversation(threadId);
+			const placed = labels[0] === "screener" && !held ? ["inbox", ...labels.slice(1)] : labels;
 
 			const { rowid } = this.sql
 				.exec<{ rowid: number }>(
@@ -419,7 +428,7 @@ export class Mailbox extends DurableObject<Env> {
 				)
 				.one();
 
-			this.addLabels([input.id], labels);
+			this.addLabels([input.id], placed);
 			this.addAddress(input.id, stripSubaddress(input.envelopeTo).base);
 			for (const a of input.attachments) this.insertAttachment(input.id, a);
 			if (input.messageIdHeader) this.registerRef(input.messageIdHeader, threadId);
@@ -428,12 +437,29 @@ export class Mailbox extends DurableObject<Env> {
 			if (!labels.includes("spam")) this.recordContacts([input.from], false, input.date);
 			// Delivered by a retry.
 			this.sql.exec(`DELETE FROM failed WHERE id = ?1`, input.id);
-			return threadId;
+			// Where it was placed, not every label it has; a +tag can't add `inbox` (labelFromTag()).
+			return { threadId, inbox: placed[0] === "inbox" };
 		});
 
-		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
-		// From the verdict, not the labels: a `+inbox` subaddress adds that label to mail the verdict sent to Spam.
-		return { threadId, duplicate: false, inbox: place === "inbox" };
+		this.broadcast({ type: "threads.changed", threadIds: [delivered.threadId] });
+		return { threadId: delivered.threadId, duplicate: false, inbox: delivered.inbox };
+	}
+
+	async settings(): Promise<MailSettings> {
+		return this.mailSettings();
+	}
+
+	/** Changes the settings given, leaving the rest as they are. */
+	async updateSettings(change: Partial<MailSettings>): Promise<MailSettings> {
+		const next = { ...this.mailSettings(), ...change };
+		this.sql.exec(`INSERT OR REPLACE INTO _meta (key, value) VALUES ('settings', ?1)`, JSON.stringify(next));
+		return next;
+	}
+
+	/** Defaults for a mailbox that hasn't changed them. */
+	private mailSettings(): MailSettings {
+		const stored = this.sql.exec<{ value: string }>(`SELECT value FROM _meta WHERE key = 'settings'`).toArray()[0];
+		return { screener: false, ...(stored ? JSON.parse(stored.value) : {}) };
 	}
 
 	/** Whether the queue should have Workers AI check mail from this sender before delivering it (worker/mail/checks.ts). */
@@ -469,15 +495,72 @@ export class Mailbox extends DurableObject<Env> {
 
 	/**
 	 * Judges who verifiably sent these messages, so their next mail goes where this mail was put. Mail they didn't
-	 * verifiably send says nothing about them.
+	 * verifiably send says nothing about them. Returns the threads whose held mail it moved (judge()).
 	 */
-	private judgeSenders(messageIds: string[], verdict: "trusted" | "spam"): void {
+	private judgeSenders(messageIds: string[], verdict: "trusted" | "spam"): string[] {
+		const senders = this.sql
+			.exec<{ sender: string }>(
+				`SELECT DISTINCT sender FROM messages WHERE id IN (SELECT value FROM json_each(?1)) AND direction = 'in' AND sender IS NOT NULL`,
+				JSON.stringify(messageIds),
+			)
+			.toArray()
+			.map((r) => r.sender);
+		return this.judgeAddresses(senders, verdict);
+	}
+
+	/**
+	 * Records a judgment of these (normalized) senders. Their other mail waiting in the Screener follows it, to the inbox
+	 * or Spam, since the Screener asks once per sender. Returns the threads that mail is in.
+	 */
+	private judgeAddresses(addresses: string[], verdict: "trusted" | "spam"): string[] {
+		if (addresses.length === 0) return [];
+		const list = JSON.stringify(addresses);
 		this.sql.exec(
-			`INSERT INTO senders (address, verdict)
-			 SELECT DISTINCT sender, ?2 FROM messages WHERE id IN (SELECT value FROM json_each(?1)) AND direction = 'in' AND sender IS NOT NULL
+			`INSERT INTO senders (address, verdict) SELECT value, ?2 FROM json_each(?1) WHERE true
 			 ON CONFLICT (address) DO UPDATE SET verdict = excluded.verdict`,
-			JSON.stringify(messageIds),
+			list,
 			verdict,
+		);
+		// A sender decides how much mail they leave here, so this is a few statements, whatever the count.
+		const HELD = `SELECT l.message_id FROM message_labels l JOIN messages m ON m.id = l.message_id
+			WHERE l.label = 'screener' AND m.sender IN (SELECT value FROM json_each(?1))`;
+		// Clients refetch on any change, so a few of the threads is enough to say so.
+		const threads = this.sql
+			.exec<{ thread_id: string }>(`SELECT DISTINCT thread_id FROM messages WHERE id IN (${HELD}) LIMIT ${MAX_RELEASED_THREADS}`, list)
+			.toArray()
+			.map((r) => r.thread_id);
+		this.sql.exec(`INSERT OR IGNORE INTO message_labels (message_id, label) SELECT message_id, ?2 FROM (${HELD})`, list, verdict === "spam" ? "spam" : "inbox");
+		this.sql.exec(`DELETE FROM message_labels WHERE label = 'screener' AND message_id IN (${HELD})`, list);
+		return threads;
+	}
+
+	/** Whether this thread holds mail in the inbox, or mail this mailbox sent. */
+	/**
+	 * Whether this verified sender's mail has been taken before: delivered and not in Spam or the Screener. Mail from before
+	 * verdicts were kept has no verified sender, and its From address alone could be forged, so it doesn't count.
+	 */
+	private heardFrom(sender: string | null): boolean {
+		if (sender === null) return false;
+		return (
+			this.sql
+				.exec(
+					`SELECT 1 FROM messages m WHERE m.sender = ?1 AND m.direction = 'in'
+						AND NOT EXISTS (SELECT 1 FROM message_labels l WHERE l.message_id = m.id AND l.label IN ('spam', 'screener')) LIMIT 1`,
+					sender,
+				)
+				.toArray().length > 0
+		);
+	}
+
+	private inConversation(threadId: string): boolean {
+		return (
+			this.sql
+				.exec(
+					`SELECT 1 FROM messages m WHERE m.thread_id = ?1 AND (m.direction = 'out'
+						OR EXISTS (SELECT 1 FROM message_labels l WHERE l.message_id = m.id AND l.label = 'inbox')) LIMIT 1`,
+					threadId,
+				)
+				.toArray().length > 0
 		);
 	}
 
@@ -589,18 +672,12 @@ export class Mailbox extends DurableObject<Env> {
 
 	/**
 	 * Remembers who this mailbox writes to (`sent`) and hears from, for recipient suggestions. Writing to someone also
-	 * trusts their mail, even if it was marked as spam before. An undone send still counts: the address was typed on
-	 * purpose.
+	 * trusts their mail, even if it was marked as spam before, and lets them in from the Screener; returns the threads
+	 * that moved. An undone send still counts: the address was typed on purpose.
 	 */
-	private recordContacts(people: Address[], sent: boolean, at: number): void {
-		for (const p of people) {
-			if (!isValidAddress(p.address)) continue;
-			if (sent) {
-				this.sql.exec(
-					`INSERT INTO senders (address, verdict) VALUES (?1, 'trusted') ON CONFLICT (address) DO UPDATE SET verdict = 'trusted'`,
-					normalizeAddress(p.address),
-				);
-			}
+	private recordContacts(people: Address[], sent: boolean, at: number): string[] {
+		const valid = people.filter((p) => isValidAddress(p.address));
+		for (const p of valid) {
 			this.sql.exec(
 				`INSERT INTO contacts (address, name, sent, last_at) VALUES (?1, ?2, ?3, ?4)
 				 ON CONFLICT (address) DO UPDATE SET
@@ -613,6 +690,7 @@ export class Mailbox extends DurableObject<Env> {
 				at,
 			);
 		}
+		return sent ? this.judgeAddresses([...new Set(valid.map((p) => normalizeAddress(p.address)))], "trusted") : [];
 	}
 
 	private addAddress(messageId: string, address: string): void {
@@ -979,34 +1057,37 @@ export class Mailbox extends DurableObject<Env> {
 
 	async modifyThreads(input: { threadIds: string[]; add?: string[]; remove?: string[] }): Promise<void> {
 		const add = input.add ?? [];
-		// Trash and spam imply leaving the inbox.
-		const remove = [...(input.remove ?? []), ...(add.some((l) => l === "trash" || l === "spam") ? ["inbox"] : [])];
-		const corrected = this.ctx.storage.transactionSync(() => {
+		// Trash and spam imply leaving the inbox, and the Screener.
+		const remove = [...(input.remove ?? []), ...(add.some((l) => l === "trash" || l === "spam") ? ["inbox", "screener"] : [])];
+		const { corrected, released } = this.ctx.storage.transactionSync(() => {
 			const ids = this.messageIdsForThreads(input.threadIds);
-			// Spam and Not spam teach it about the senders, and say where it went wrong.
+			// Spam, Not spam, and letting someone in from the Screener teach it about the senders. Moving mail out of Spam
+			// also says where the filter went wrong; the Screener only asked.
 			const spam = this.labeled(ids, "spam");
 			let wrong: string[] = [];
+			let released: string[] = [];
 			if (add.includes("spam")) {
-				this.judgeSenders(this.reported(ids), "spam");
 				const already = new Set(spam);
 				wrong = ids.filter((id) => !already.has(id));
-			} else if (remove.includes("spam") && add.includes("inbox")) {
-				this.judgeSenders(spam, "trusted");
-				wrong = spam;
+				released = this.judgeSenders(this.reported(ids), "spam");
+			} else if (add.includes("inbox")) {
+				if (remove.includes("spam")) wrong = spam;
+				released = this.judgeSenders([...wrong, ...(remove.includes("screener") ? this.labeled(ids, "screener") : [])], "trusted");
 			}
-			const verdicts = this.verdictsOf(wrong);
+			const corrected = this.verdictsOf(wrong);
 			this.removeLabels(ids, remove);
 			this.addLabels(ids, add);
-			return verdicts;
+			return { corrected, released };
 		});
 		// What the filter decided for mail someone had to move, to tune it by. No content or addresses.
 		if (corrected.length > 0) console.log(JSON.stringify({ msg: "spam verdict corrected", to: add.includes("spam") ? "spam" : "inbox", verdicts: corrected }));
-		this.broadcast({ type: "threads.changed", threadIds: input.threadIds });
+		this.broadcast({ type: "threads.changed", threadIds: [...new Set([...input.threadIds, ...released])] });
 	}
 
 	/**
-	 * A banner's answer about one inbound message: Not spam (trusted) or Spam. It moves only that message and judges only
-	 * its sender, whoever else is in the thread. False if there's no such inbound message.
+	 * A banner's answer about one inbound message: Not spam or Let in (trusted), or Spam. It moves that message and judges
+	 * only its sender, whoever else is in the thread; their other mail waiting in the Screener follows. False if there's
+	 * no such inbound message.
 	 */
 	async judgeMessage(input: { messageId: string; verdict: "trusted" | "spam" }): Promise<boolean> {
 		const moved = this.ctx.storage.transactionSync(() => {
@@ -1017,15 +1098,15 @@ export class Mailbox extends DurableObject<Env> {
 			const ids = [input.messageId];
 			const wasSpam = this.labeled(ids, "spam").length > 0;
 			const corrected = wasSpam === (input.verdict === "spam") ? [] : this.verdictsOf(ids);
-			this.judgeSenders(ids, input.verdict);
+			const released = this.judgeSenders(ids, input.verdict);
 			// Out of Spam is into the inbox, not left in Trash too, as Move to inbox does.
-			this.removeLabels(ids, input.verdict === "spam" ? ["inbox"] : ["spam", "trash"]);
+			this.removeLabels(ids, input.verdict === "spam" ? ["inbox", "screener"] : ["spam", "trash", "screener"]);
 			this.addLabels(ids, [input.verdict === "spam" ? "spam" : "inbox"]);
-			return { threadId: row.thread_id, corrected };
+			return { threadIds: [...new Set([row.thread_id, ...released])], corrected };
 		});
 		if (moved === null) return false;
 		if (moved.corrected.length > 0) console.log(JSON.stringify({ msg: "spam verdict corrected", to: input.verdict === "spam" ? "spam" : "inbox", verdicts: moved.corrected }));
-		this.broadcast({ type: "threads.changed", threadIds: [moved.threadId] });
+		this.broadcast({ type: "threads.changed", threadIds: moved.threadIds });
 		return true;
 	}
 
@@ -1187,6 +1268,8 @@ export class Mailbox extends DurableObject<Env> {
 		// A forward's files are the original's (keepAttachments copies only composer sources). Asked with the insert,
 		// so either the original's cancel sees this message has them (emptyTrash) or this sees they're gone.
 		const forwarded = attachments.filter((a) => !needsAttachmentCopy(a)).map((a) => a.r2Key);
+		// Threads of held mail that writing to its senders lets in (recordContacts()).
+		let released: string[] = [];
 		const threadId = this.ctx.storage.transactionSync(() => {
 			// Another retry can commit while HTML is written. Check in the insert's transaction, after the await.
 			const existing = this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM messages WHERE id = ?1`, id).toArray()[0];
@@ -1219,7 +1302,7 @@ export class Mailbox extends DurableObject<Env> {
 			for (const a of attachments) this.insertAttachment(id, a);
 			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc, ...input.bcc], text);
 			this.touchThread(threadId, sendAt, snippet, [input.from, ...input.to, ...input.cc]);
-			this.recordContacts([...input.to, ...input.cc, ...input.bcc], true, now);
+			released = this.recordContacts([...input.to, ...input.cc, ...input.bcc], true, now);
 			this.sql.exec(`INSERT INTO outbox (message_id, send_at, payload) VALUES (?1, ?2, ?3)`, id, sendAt, JSON.stringify(payload));
 			return threadId;
 		});
@@ -1230,7 +1313,7 @@ export class Mailbox extends DurableObject<Env> {
 		}
 
 		await this.scheduleOutbox();
-		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
+		this.broadcast({ type: "threads.changed", threadIds: [...new Set([threadId, ...released])] });
 		return this.queuedSend(id);
 	}
 
@@ -1776,20 +1859,29 @@ function toMessageDetail(m: MessageRow, attachments: AttachmentRow[], undelivere
 		delivery: m.delivery_status ? { status: m.delivery_status, detail: m.delivery_detail, undelivered } : null,
 		auth: m.auth_json ? JSON.parse(m.auth_json) : null,
 		verdict: m.verdict_json ? JSON.parse(m.verdict_json) : null,
+		senderVerified: m.sender !== null,
 	};
 }
 
-/** Where a verdict puts inbound mail. Mail that couldn't be checked waits in Spam, saying so, rather than pass unseen. */
-function placeFor(verdict: Verdict): string {
+/**
+ * Where a verdict puts inbound mail. Mail that couldn't be checked waits in Spam, saying so, rather than pass unseen.
+ * With the Screener on, mail from first-time senders waits there instead of the inbox, apart from receipts, codes,
+ * and other account mail, which can't wait.
+ */
+function placeFor(verdict: Verdict, settings: MailSettings): string {
+	const firstTime = settings.screener ? "screener" : "inbox";
 	switch (verdict.kind) {
 		case "spoofed":
 		case "marked":
-		case "unchecked":
 			return "spam";
+		case "unchecked":
+			return settings.screener ? "screener" : "spam";
 		case "checked":
-			return verdict.category === "spam" || verdict.category === "phishing" ? "spam" : "inbox";
-		case "trusted":
+			if (verdict.category === "spam" || verdict.category === "phishing") return "spam";
+			return verdict.category === "transactional" ? "inbox" : firstTime;
 		case "unknown":
+			return firstTime;
+		case "trusted":
 			return "inbox";
 	}
 }

@@ -24,7 +24,7 @@ import {
 	withForward,
 } from "#shared";
 import { noteBody } from "#shared/markdown";
-import { ComposeSchema, JudgeSchema, MarkReadSchema, MAX_ATTACHMENTS, ModifyThreadsSchema, ShareLinkSchema, SignatureSchema } from "#shared/schemas";
+import { ComposeSchema, JudgeSchema, MarkReadSchema, MAX_ATTACHMENTS, MailSettingsSchema, ModifyThreadsSchema, ShareLinkSchema, SignatureSchema } from "#shared/schemas";
 import { isAPIError } from "better-auth/api";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
@@ -206,6 +206,10 @@ const mb = new Hono<AppEnv>()
 			? c.body(null, 204)
 			: c.json({ error: "Not found" }, 404),
 	)
+
+	.get("/settings", async (c) => c.json(await c.var.mailbox.settings()))
+
+	.patch("/settings", zValidator("json", MailSettingsSchema), async (c) => c.json(await c.var.mailbox.updateSettings(c.req.valid("json"))))
 
 	.post("/threads/read", zValidator("json", MarkReadSchema), async (c) => {
 		await c.var.mailbox.markRead(c.req.valid("json"));

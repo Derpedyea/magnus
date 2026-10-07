@@ -4,7 +4,7 @@ import type { MessageBody } from "./links";
 // ─── Labels ──────────────────────────────────────────────────────────────────
 // Gmail-style: labels live on messages; a thread shows up in a view if any of its
 // messages carries the label. "Archive" is simply "remove inbox".
-export const SYSTEM_LABELS = ["inbox", "sent", "outbox", "spam", "trash", "starred"] as const;
+export const SYSTEM_LABELS = ["inbox", "sent", "outbox", "spam", "trash", "starred", "screener"] as const;
 export type SystemLabel = (typeof SYSTEM_LABELS)[number];
 /** Pseudo-view: every thread not in trash/spam. */
 export const ALL_MAIL = "all";
@@ -95,6 +95,12 @@ export interface SenderCheck {
 	internal: boolean;
 	/** Failed its domain's authentication, so the From address is likely forged. */
 	spoofed: boolean;
+}
+
+/** How a mailbox filters mail from senders it doesn't know. Settings › Spam. */
+export interface MailSettings {
+	/** First-time senders' mail waits in the Screener until someone lets them in. */
+	screener: boolean;
 }
 
 /** What the checks sort mail from senders a mailbox doesn't know into (worker/mail/checks.ts). */
@@ -207,6 +213,8 @@ export interface MessageDetail {
 	auth: AuthResults | null;
 	/** Why inbound mail went where it did. Null for sent mail, and mail from before verdicts were kept. */
 	verdict: Verdict | null;
+	/** Its sender's domain vouched for the From address, so judging this message judges them (Mailbox.judgeMessage()). */
+	senderVerified: boolean;
 }
 
 /** A message as its thread shows it. */

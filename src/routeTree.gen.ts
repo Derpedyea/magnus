@@ -28,6 +28,7 @@ import { Route as AppSettingsSettingsAppearanceRouteImport } from './routes/_app
 import { Route as AppSettingsSettingsNotificationsRouteImport } from './routes/_app._settings.settings.notifications'
 import { Route as AppSettingsSettingsSignInRouteImport } from './routes/_app._settings.settings.sign-in'
 import { Route as AppSettingsSettingsSignaturesRouteImport } from './routes/_app._settings.settings.signatures'
+import { Route as AppSettingsSettingsSpamRouteImport } from './routes/_app._settings.settings.spam'
 import { Route as AppMailViewMailboxIdThreadIdRouteImport } from './routes/_app._mail.$view.$mailboxId.$threadId'
 
 const AppRoute = AppRouteImport.update({
@@ -129,6 +130,11 @@ const AppSettingsSettingsSignaturesRoute =
     path: '/settings/signatures',
     getParentRoute: () => AppSettingsRoute,
   } as any)
+const AppSettingsSettingsSpamRoute = AppSettingsSettingsSpamRouteImport.update({
+  id: '/settings/spam',
+  path: '/settings/spam',
+  getParentRoute: () => AppSettingsRoute,
+} as any)
 const AppMailViewMailboxIdThreadIdRoute =
   AppMailViewMailboxIdThreadIdRouteImport.update({
     id: '/$mailboxId/$threadId',
@@ -150,6 +156,7 @@ export interface FileRoutesByFullPath {
   '/settings/notifications': typeof AppSettingsSettingsNotificationsRoute
   '/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
+  '/settings/spam': typeof AppSettingsSettingsSpamRoute
   '/$view/': typeof AppMailViewIndexRoute
   '/admin/': typeof AppSettingsAdminIndexRoute
   '/settings/': typeof AppSettingsSettingsIndexRoute
@@ -167,6 +174,7 @@ export interface FileRoutesByTo {
   '/settings/notifications': typeof AppSettingsSettingsNotificationsRoute
   '/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
+  '/settings/spam': typeof AppSettingsSettingsSpamRoute
   '/$view': typeof AppMailViewIndexRoute
   '/admin': typeof AppSettingsAdminIndexRoute
   '/settings': typeof AppSettingsSettingsIndexRoute
@@ -190,6 +198,7 @@ export interface FileRoutesById {
   '/_app/_settings/settings/notifications': typeof AppSettingsSettingsNotificationsRoute
   '/_app/_settings/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/_app/_settings/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
+  '/_app/_settings/settings/spam': typeof AppSettingsSettingsSpamRoute
   '/_app/_mail/$view/': typeof AppMailViewIndexRoute
   '/_app/_settings/admin/': typeof AppSettingsAdminIndexRoute
   '/_app/_settings/settings/': typeof AppSettingsSettingsIndexRoute
@@ -211,6 +220,7 @@ export interface FileRouteTypes {
     | '/settings/notifications'
     | '/settings/sign-in'
     | '/settings/signatures'
+    | '/settings/spam'
     | '/$view/'
     | '/admin/'
     | '/settings/'
@@ -228,6 +238,7 @@ export interface FileRouteTypes {
     | '/settings/notifications'
     | '/settings/sign-in'
     | '/settings/signatures'
+    | '/settings/spam'
     | '/$view'
     | '/admin'
     | '/settings'
@@ -250,6 +261,7 @@ export interface FileRouteTypes {
     | '/_app/_settings/settings/notifications'
     | '/_app/_settings/settings/sign-in'
     | '/_app/_settings/settings/signatures'
+    | '/_app/_settings/settings/spam'
     | '/_app/_mail/$view/'
     | '/_app/_settings/admin/'
     | '/_app/_settings/settings/'
@@ -397,6 +409,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsSettingsSignaturesRouteImport
       parentRoute: typeof AppSettingsRoute
     }
+    '/_app/_settings/settings/spam': {
+      id: '/_app/_settings/settings/spam'
+      path: '/settings/spam'
+      fullPath: '/settings/spam'
+      preLoaderRoute: typeof AppSettingsSettingsSpamRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
     '/_app/_mail/$view/$mailboxId/$threadId': {
       id: '/_app/_mail/$view/$mailboxId/$threadId'
       path: '/$mailboxId/$threadId'
@@ -459,6 +478,7 @@ interface AppSettingsRouteChildren {
   AppSettingsSettingsNotificationsRoute: typeof AppSettingsSettingsNotificationsRoute
   AppSettingsSettingsSignInRoute: typeof AppSettingsSettingsSignInRoute
   AppSettingsSettingsSignaturesRoute: typeof AppSettingsSettingsSignaturesRoute
+  AppSettingsSettingsSpamRoute: typeof AppSettingsSettingsSpamRoute
   AppSettingsSettingsIndexRoute: typeof AppSettingsSettingsIndexRoute
 }
 
@@ -468,6 +488,7 @@ const AppSettingsRouteChildren: AppSettingsRouteChildren = {
   AppSettingsSettingsNotificationsRoute: AppSettingsSettingsNotificationsRoute,
   AppSettingsSettingsSignInRoute: AppSettingsSettingsSignInRoute,
   AppSettingsSettingsSignaturesRoute: AppSettingsSettingsSignaturesRoute,
+  AppSettingsSettingsSpamRoute: AppSettingsSettingsSpamRoute,
   AppSettingsSettingsIndexRoute: AppSettingsSettingsIndexRoute,
 }
 
