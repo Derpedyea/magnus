@@ -391,9 +391,12 @@ export class Mailbox extends DurableObject<Env> {
 				.toArray()[0];
 			if (twin && input.imported) {
 				// An import leaves mail already here as it is, and keeps none of what parsing its copy stored, original included.
+				// Its id is tombstoned like deleted mail's, so importing the same file once the mail here is deleted for good
+				// doesn't bring it back.
 				await this.ctx.storage.setAlarm(Date.now());
 				this.ctx.storage.transactionSync(() => {
 					for (const key of [input.rawKey, ...(input.htmlKey ? [input.htmlKey] : []), ...input.attachments.map((a) => a.r2Key)]) this.queueTrash(key);
+					this.sql.exec(`INSERT OR IGNORE INTO deleted_messages (id, raw_key, received_at) VALUES (?1, NULL, ?2)`, input.id, input.receivedAt);
 				});
 				this.clearFailed(input.id);
 				await this.emptyTrash();
@@ -458,12 +461,10 @@ export class Mailbox extends DurableObject<Env> {
 				.one();
 
 			this.addLabels([input.id], placed);
-			// Imported mail can name no address at all.
-			if (isValidAddress(input.envelopeTo)) this.addAddress(input.id, stripSubaddress(input.envelopeTo).base);
+			// Imported mail says which of the mailbox's addresses it belongs to, which can be none.
+			const filed = input.imported ? input.imported.addresses : [stripSubaddress(input.envelopeTo).base];
+			for (const address of filed) this.addAddress(input.id, address);
 			for (const a of input.attachments) this.insertAttachment(input.id, a);
-			// Its files are its own again, if a copy dropped as a duplicate before had them queued for deletion.
-			const keys = [input.rawKey, input.htmlKey ?? [], input.attachments.map((a) => a.r2Key)].flat();
-			this.sql.exec(`DELETE FROM trash WHERE r2_key IN (SELECT value FROM json_each(?1))`, JSON.stringify(keys));
 			if (input.messageIdHeader) this.registerRef(input.messageIdHeader, threadId);
 			// Imports come in any order, so the ids an imported message answers point here too, for those messages to join it
 			// when they come. Only for imports, and not spam: live mail naming an id would let anyone who writes in claim it.

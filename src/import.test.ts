@@ -52,6 +52,13 @@ describe("planImport", () => {
 			.rejects.toThrow("mail_z/ has no labels.json");
 	});
 
+	it("leaves other programs' .metadata.json files alone in a folder Proton didn't export", async () => {
+		const plan = await planImport(picked([
+			["Saved/a.eml", "From: a@b.test\r\n\r\nA"], ["Saved/a.metadata.json", '{"tags":["work"]}'], ["Saved/notes.metadata.json", "{}"],
+		]));
+		expect(plan).toMatchObject({ proton: false, unexported: 0, unreadable: [], items: [{ path: "Saved/a.eml", placement: { labels: [], read: true } }] });
+	});
+
 	it("leaves a labels.json alone in a folder Proton didn't export", async () => {
 		const plan = await planImport(picked([["Saved/labels.json", "[]"], ["Saved/a.eml", "From: a@b.test\r\n\r\nA"]]));
 		expect(plan).toMatchObject({ proton: false, items: [{ path: "Saved/a.eml" }] });

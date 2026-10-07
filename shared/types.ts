@@ -41,6 +41,8 @@ export interface Imported {
 	read: boolean;
 	/** Sent from the mailbox rather than received by it. */
 	sent: boolean;
+	/** The mailbox's addresses it's filed under, as message_addresses holds them. envelopeTo is the first. */
+	addresses: string[];
 }
 
 // ─── Queue: magnus-email-events (Email Sending event subscription) ──────────

@@ -122,7 +122,7 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		sender,
 		check,
 		labels: imported ? [...imported.labels] : job.subaddress ? [labelFromTag(job.subaddress)] : [],
-		imported: imported ? { read: imported.read, sent: imported.sent } : undefined,
+		imported: imported ? { read: imported.read, sent: imported.sent, addresses: imported.addresses } : undefined,
 	};
 
 	const delivered = await mailbox

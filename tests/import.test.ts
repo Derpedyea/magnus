@@ -185,21 +185,27 @@ describe("import", () => {
 		expect(await alice().listThreads({ label: "all", limit: 50 })).toMatchObject([{ messageCount: 1 }]);
 	});
 
-	it("keeps a message's files when it's imported again while the copy it replaced is still being cleaned up", async () => {
+	it("doesn't bring back a dropped duplicate once the mail it duplicated is deleted for good", async () => {
 		await alice().ingest({ ...inbound(ids.alice, "live-1"), messageIdHeader: "<hello@outside.test>" });
-		// R2 refuses to delete, so the dropped copy's files stay queued for deletion.
-		const res = await upload(eml());
-		const { id } = Accepted.parse(await res.json());
-		// Every try, until reset(): cleanup alarms also fire on their own here.
-		await f.control.failNext("delete", r2Keys.message(ids.alice, id), 100);
-		await f.control.parse((await f.control.state()).jobs[0]!);
+		await importNow(eml());
 		await alice().modifyThreads({ threadIds: (await alice().listThreads({ label: "inbox", limit: 50 })).map((t) => t.id), add: ["trash"] });
 		await alice().deleteTrash({});
-		await f.control.reset();
 		await importNow(eml());
-		await alice().drain();
-		expect(await f.env.MAIL.head(r2Keys.html(ids.alice, id))).not.toBeNull();
-		expect(await f.env.MAIL.head(r2Keys.imported(ids.alice, id))).not.toBeNull();
+		expect(await alice().listThreads({ label: "all", limit: 50 })).toEqual([]);
+		expect(await alice().listThreads({ label: "trash", limit: 50 })).toEqual([]);
+	});
+
+	it("files mail delivered to a disabled address under one the sidebar shows", async () => {
+		const { job: queued } = await importNow(eml().replace("Delivered-To: alice@example.com", "Delivered-To: disabled@example.com"));
+		expect(queued.envelopeTo).toBe("alice@example.com");
+		expect(await alice().listThreads({ label: "inbox", limit: 50, addresses: ["alice@example.com"] })).toHaveLength(1);
+	});
+
+	it("files mail one of the mailbox's addresses sent another under both", async () => {
+		const self = eml({ from: "Alice <alice@example.com>", to: "Alice <alice@receive.test>" }).replace("Delivered-To: alice@example.com", "Delivered-To: alice@receive.test");
+		await importNow(self, "labels=inbox,sent&read=0&sent=1");
+		expect(await alice().listThreads({ label: "inbox", limit: 50, addresses: ["alice@receive.test"] })).toHaveLength(1);
+		expect(await alice().listThreads({ label: "sent", limit: 50, addresses: ["alice@example.com"] })).toHaveLength(1);
 	});
 
 	it("keeps a date from the future out of when it was received, so deleting it cleans up now", async () => {
@@ -238,16 +244,16 @@ describe("import", () => {
 	});
 
 	it("retries failed mail with where its latest import put it", async () => {
-		const first = { ...job(ids.alice, "again-1"), imported: { labels: ["inbox"], read: false, sent: false } };
+		const first = { ...job(ids.alice, "again-1"), imported: { labels: ["inbox"], read: false, sent: false, addresses: [] } };
 		await alice().recordFailed(first, "Unreadable");
-		await alice().recordFailed({ ...first, imported: { labels: ["work"], read: true, sent: false } }, "Unreadable");
+		await alice().recordFailed({ ...first, imported: { labels: ["work"], read: true, sent: false, addresses: [] } }, "Unreadable");
 		await f.control.reset();
 		await alice().retryFailed("again-1");
 		expect((await f.control.state()).jobs).toMatchObject([{ imported: { labels: ["work"], read: true } }]);
 	});
 
 	it("lists imported mail that names no address of ours, or none at all, under Failed", async () => {
-		const input = { ...job(ids.alice, "nowhere-1"), envelopeTo: "", imported: { labels: [], read: true, sent: false } };
+		const input = { ...job(ids.alice, "nowhere-1"), envelopeTo: "", imported: { labels: [], read: true, sent: false, addresses: [] } };
 		await alice().recordFailed(input, "Unreadable");
 		expect(await alice().listFailed({})).toMatchObject([{ id: "nowhere-1", to: "" }]);
 	});

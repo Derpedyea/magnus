@@ -29,18 +29,23 @@ export async function importMessage(env: Env, mailboxId: string, raw: Uint8Array
 	)
 		.bind(mailboxId)
 		.all<{ address: string; enabled: number }>();
+	const base = (address: string) => stripSubaddress(address).base;
 	const ours = new Set(results.map((r) => r.address));
-	const isOurs = (address: string) => ours.has(stripSubaddress(address).base);
+	// Only these show in the sidebar and its views of an address, so only these file mail.
+	const enabled = results.filter((r) => r.enabled === 1).map((r) => r.address);
+	const shown = new Set(enabled);
 
 	const from = addresses(headers.from ? [headers.from] : undefined).find(isValidAddress) ?? null;
-	const sent = placement.sent ?? (from !== null && isOurs(from));
-	// Received mail belongs to the address it was delivered to; sent mail to the one it came from.
-	const candidates = sent
-		? [from ?? ""]
-		: [headers.deliveredTo ?? "", header(headers.headers, "x-original-to"), ...addresses(headers.to), ...addresses(headers.cc)];
-	// Mail that names none of the mailbox's addresses (to or from an old address at the provider it came from) goes under
-	// the mailbox's first, so views of an address show it: it was imported into this mailbox on purpose.
-	const envelopeTo = candidates.filter(isValidAddress).find(isOurs) ?? results.find((r) => r.enabled === 1)?.address ?? "";
+	const sent = placement.sent ?? (from !== null && ours.has(base(from)));
+	// The addresses it reached, and for sent mail the one it came from too: mail one of the mailbox's addresses sent
+	// another belongs to both, as it would had it been sent here.
+	const recipients = [headers.deliveredTo ?? "", header(headers.headers, "x-original-to"), ...addresses(headers.to), ...addresses(headers.cc)];
+	const named = [...(sent && from ? [from] : []), ...recipients].filter(isValidAddress).map(base);
+	const filed = [...new Set(named.filter((a) => shown.has(a)))];
+	// Mail that names none of them (to or from an old address at the provider it came from, or one disabled here) goes
+	// under the mailbox's first, so views of an address show it: it was imported into this mailbox on purpose.
+	if (filed.length === 0 && enabled[0]) filed.push(enabled[0]);
+	const envelopeTo = filed[0] ?? "";
 
 	// When the old provider received it (Proton stamps X-Pm-Date), else when it says it was written.
 	const date = parseDate(header(headers.headers, "x-pm-date")) ?? parseDate(headers.date);
@@ -48,7 +53,7 @@ export async function importMessage(env: Env, mailboxId: string, raw: Uint8Array
 	const rawKey = r2Keys.imported(mailboxId, id);
 	// With nothing to say where it was, mail from one of our addresses goes to Sent.
 	const labels = sent && placement.sent === undefined ? [...new Set([...placement.labels, "sent"])] : placement.labels;
-	const imported: Imported = { labels, read: placement.read, sent };
+	const imported: Imported = { labels, read: placement.read, sent, addresses: filed };
 
 	await env.MAIL.put(rawKey, raw, { httpMetadata: { contentType: "message/rfc822" }, customMetadata: { mailboxes: mailboxId } });
 	const job: InboundJob = {

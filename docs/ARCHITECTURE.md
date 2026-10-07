@@ -322,31 +322,36 @@ Code: `shared/import.ts`, `src/import.ts`, `worker/mail/import.ts`.
 
 1. **The browser reads the folder** and pairs each message with Proton's details: Inbox, Sent, Trash, Spam, and
    Starred become those labels, the person's own folders and labels become labels (`Work/Clients` →
-   `work-clients`), Archive and All mail need none, and Unread carries over. Drafts are left out, since drafts here
-   live in the directory (§3), and so is mail Proton couldn't export as a message. Only version 1 of Proton's files
-   is read; a message whose details are another version is listed as unreadable rather than guessed at. An export
-   whose `labels.json` is missing or unreadable is refused, since the person's own folders and labels would be lost.
-   Where a message was comes first among its labels, so one with more than 20 loses only some of its own. An `.eml` with no details is filed
-   as archived and read, or Sent when it's from one of the mailbox's addresses.
+   `work-clients`), Archive and All mail need none, and Unread carries over. Where a message was comes first among
+   its labels, so one with more than 20 loses only some of its own. Drafts are left out, since drafts here live in
+   the directory (§3), and so is mail Proton couldn't export as a message. A folder counts as Proton's export when
+   one of these files in it is shaped like Proton's (`{ "Version": …, "Payload": … }`); another program's
+   `labels.json` or `.metadata.json` anywhere else is left alone. In an export, only version 1 is read: a message
+   whose details can't be read is listed as unreadable rather than guessed at, and an export whose `labels.json` is
+   missing or unreadable is refused, since the person's own folders and labels would be lost. An `.eml` with no
+   details is filed as archived and read, or Sent when it's from one of the mailbox's addresses.
 2. **It sends each message on its own**, newest first and four at a time, to `POST /api/mailboxes/:id/import`, with
    where it goes in the query (one schema checks each label). Failures on the way are retried; being signed out or
    losing the mailbox stops the import. The page has to stay open, and says so.
 3. **The Worker reads only the headers** to refuse what isn't mail and to fill in the envelope the message never had:
-   the address of ours it was delivered to (Delivered-To, then the recipients) or sent from. Mail that names none of
-   them, to or from an old address at the provider it came from, goes under the mailbox's first address, so views of
-   an address show it. Its id is a ULID whose randomness is a digest of the mailbox and the bytes, so
-   the same file is the same message: importing a folder again adds nothing twice, and doesn't bring back mail
-   deleted for good. A date from the future counts as now, so a deleted original isn't kept until then. The original goes to R2 and an `InboundJob` with `imported` set to the
-   inbound queue, which parses it like new mail (§4.1). If the job can't be queued, the original stays for the
-   browser to retry; one never retried is overwritten by the next import of that file, or deleted with the mailbox.
-   It's never deleted on the spot: another upload of the same file can have queued it.
+   the mailbox's enabled addresses it reached (Delivered-To, then the recipients), and for sent mail the one it came
+   from too, so mail one of them sent another is filed under both. Mail that names none of them (to or from an old
+   address at the provider it came from, or one disabled here) goes under the mailbox's first address, so views of an
+   address show it. Its id is a ULID whose randomness is a digest of the mailbox and the bytes, so the same file is
+   the same message: importing a folder again adds nothing twice, and doesn't bring back mail deleted for good. A
+   date from the future counts as now, so a deleted original isn't kept until then. The original goes to R2 and an
+   `InboundJob` with `imported` set to the inbound queue, which parses it like new mail (§4.1). If the job can't be
+   queued, the original stays for the browser to retry; one never retried is overwritten by the next import of that
+   file, or deleted with the mailbox. It's never deleted on the spot: another upload of the same file can have
+   queued it.
 4. **`ingest()` places it as it was there**: its labels instead of a verdict (§5.6), its read state, and
    `direction = 'out'` for sent mail, which keeps its Bcc. Its recipients join the contacts, and are trusted unless
    this mailbox has judged them already, since the import is older than that judgment. The `Authentication-Results`
    in the file aren't kept, even one naming Cloudflare, since nobody here checked them; so imported mail has no
-   verified sender, and marking it as spam judges nobody. A message already here by Message-ID stays as it is, and
-   nothing of the imported copy is kept; if that copy's files are still queued for deletion when the same file comes back as a new message,
-   storing it takes them off the queue. Failed mail keeps `imported`, so retrying it from Failed still places it.
+   verified sender, and marking it as spam judges nobody. A message already here by Message-ID stays as it is:
+   nothing of the imported copy is kept, and its id is tombstoned like deleted mail's, so importing the file again
+   once the mail here is deleted for good doesn't bring it back. Failed mail keeps `imported`, so retrying it from
+   Failed still places it.
 
 Imports share the inbound queue, so a large one can hold up new mail by the minutes its backlog takes to drain. Every
 filed message is announced live, and the client refetches at most once a second, so a large import stays cheap for
