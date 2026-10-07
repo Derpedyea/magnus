@@ -78,6 +78,11 @@ describe("planImport", () => {
 		expect(plan).toMatchObject({ proton: false, items: [{ path: "Saved/a.eml" }] });
 	});
 
+	it("lists a message beside another message's Proton details as unreadable, not filed by them", async () => {
+		const plan = await planImport(picked([["mail_s/labels.json", LABELS], ["mail_s/a.eml", "x"], ["mail_s/a.metadata.json", metadata("b", 1, ["3"])]]));
+		expect(plan).toMatchObject({ items: [], unreadable: ["mail_s/a.eml"] });
+	});
+
 	it("lists a message whose Proton details say something other than read or unread as unreadable", async () => {
 		const odd = metadata("a", 1, ["0"]).replace('"Unread":1', '"Unread":2');
 		const plan = await planImport(picked([["mail_u/labels.json", LABELS], ["mail_u/a.eml", "x"], ["mail_u/a.metadata.json", odd]]));

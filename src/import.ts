@@ -86,7 +86,8 @@ export async function planImport(files: PickedFile[]): Promise<ImportPlan> {
 		else if (!exports.has(folderOf(path))) plan.items.push({ path, file, placement: { labels: [], read: true }, at: 0 });
 		else {
 			const parsed = ProtonMetadataSchema.safeParse(sidecar);
-			if (!parsed.success) {
+			// Proton names both files by the message's id, so details naming another message aren't this one's.
+			if (!parsed.success || parsed.data.Payload.ID !== file.name.replace(/\.eml$/i, "")) {
 				plan.unreadable.push(path);
 				continue;
 			}

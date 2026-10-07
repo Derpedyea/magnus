@@ -329,7 +329,7 @@ Code: `shared/import.ts`, `src/import.ts`, `worker/mail/import.ts`.
    the directory (§3), and so is mail Proton couldn't export as a message. A folder counts as Proton's export when
    one of these files in it is shaped like Proton's (`{ "Version": …, "Payload": … }`); another program's
    `labels.json` or `.metadata.json` anywhere else, or one over 1 MiB, is left alone. In an export, only version 1 is
-   read, with Unread 0 or 1: a message
+   read, with Unread 0 or 1 and the id its `.eml` is named by: a message
    whose details are missing or can't be read is listed as unreadable rather than guessed at, and an export whose `labels.json` is
    missing or unreadable is refused, since the person's own folders and labels would be lost. An `.eml` with no
    details is filed as archived and read, or Sent when it's from one of the mailbox's addresses.
