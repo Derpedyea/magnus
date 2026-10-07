@@ -15,17 +15,20 @@ describe("Screener", () => {
 	});
 
 	const box = () => f.env.MAILBOX.getByName(ids.alice);
-	/** `inReplyTo` threads it under that message; `stamped` replaces Email Routing's verdicts. */
-	async function deliver(from = "new@outside.test", attempts = 1, options: { inReplyTo?: string; stamped?: string } = {}) {
+	/**
+	 * `inReplyTo` threads it under that message; `stamped` replaces Email Routing's verdicts; `checkFailures` is how many
+	 * checks of it already failed.
+	 */
+	async function deliver(from = "new@outside.test", options: { inReplyTo?: string; stamped?: string; checkFailures?: number } = {}) {
 		const n = ++serial;
 		const raw = [
 			`Authentication-Results: mx.cloudflare.net; ${options.stamped ?? VERIFIED}`, "X-CF-SpamH-Score: 1",
 			`From: ${from}`, "To: alice@example.com", `Subject: Hello ${n}`, `Message-ID: <screen-${n}@outside.test>`,
 			...(options.inReplyTo ? [`In-Reply-To: ${options.inReplyTo}`] : []), "", "Hi", "",
 		].join("\r\n");
-		const input = job(ids.alice, `screen-${n}`);
+		const input = { ...job(ids.alice, `screen-${n}`), checkFailures: options.checkFailures };
 		await f.env.MAIL.put(input.rawKey, raw, { customMetadata: { mailboxes: ids.alice } });
-		await f.control.parse(input, attempts);
+		await f.control.parse(input);
 		const stored = await box().getMessage(input.ingestId);
 		if (!stored) throw new Error("Not delivered");
 		return stored.message;
@@ -39,7 +42,7 @@ describe("Screener", () => {
 		await f.control.setModels({ quick: 0.95 });
 		expect((await deliver()).labels).toEqual(["spam"]);
 		await f.control.setModels({ quick: "fail" });
-		expect(await deliver("new@outside.test", 3)).toMatchObject({ verdict: { kind: "unchecked" }, labels: ["screener"] });
+		expect(await deliver("new@outside.test", { checkFailures: 2 })).toMatchObject({ verdict: { kind: "unchecked" }, labels: ["screener"] });
 		await box().enqueueSend(sendInput(ids.alice, { to: [{ address: "friend@outside.test" }] }));
 		expect((await deliver("friend@outside.test")).labels).toEqual(["inbox"]);
 	});
@@ -64,7 +67,7 @@ describe("Screener", () => {
 	it.each(["trusted", "spam"] as const)("answers %s for one held message's sender only, not others in the thread", async (verdict) => {
 		await box().enqueueSend(sendInput(ids.alice, { to: [{ address: "bob@outside.test" }] }));
 		const bob = await deliver("bob@outside.test");
-		const carol = await deliver("carol@outside.test", 1, { inReplyTo: bob.messageIdHeader ?? "" });
+		const carol = await deliver("carol@outside.test", { inReplyTo: bob.messageIdHeader ?? "" });
 		const elsewhere = await deliver("carol@outside.test");
 		expect([bob.labels, carol.labels]).toEqual([["inbox"], ["screener"]]);
 		expect(carol.senderVerified).toBe(true);
@@ -76,11 +79,11 @@ describe("Screener", () => {
 
 	it("lets in only the message itself when its sender can't be verified", async () => {
 		const unverified = "dkim=none; dmarc=none; spf=pass smtp.mailfrom=bounce@bulk.test";
-		const held = await deliver("pal@nodkim.test", 1, { stamped: unverified });
+		const held = await deliver("pal@nodkim.test", { stamped: unverified });
 		expect(held).toMatchObject({ senderVerified: false, labels: ["screener"] });
 		await box().judgeMessage({ messageId: held.id, verdict: "trusted" });
 		expect(await labels(held.id)).toEqual(["inbox"]);
-		expect((await deliver("pal@nodkim.test", 1, { stamped: unverified })).labels).toEqual(["screener"]);
+		expect((await deliver("pal@nodkim.test", { stamped: unverified })).labels).toEqual(["screener"]);
 	});
 
 	it("lets someone in once this mailbox writes to them", async () => {
