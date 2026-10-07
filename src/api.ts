@@ -107,6 +107,10 @@ export const api = {
 	failed: (scope: string[]) => parseResponse(client.failed.$get({ query: { in: formatScope(scope) } })),
 	retryFailed: (mailboxId: string, failedId: string) => parseResponse(mailbox.failed[":failedId"].retry.$post({ param: { mailboxId, failedId } })),
 	deleteFailed: (mailboxId: string, failedId: string) => parseResponse(mailbox.failed[":failedId"].$delete({ param: { mailboxId, failedId } })),
+	/** The key browsers subscribe with, and the endpoint this session's notifications go to, if any. */
+	push: () => parseResponse(client.push.$get()),
+	enablePush: (json: Json<typeof client.push.$put>) => parseResponse(client.push.$put({ json })),
+	disablePush: () => parseResponse(client.push.$delete()),
 };
 
 /** First run: prove ownership with a Cloudflare token, then become the first admin (and get signed in). */

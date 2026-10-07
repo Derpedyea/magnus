@@ -2,11 +2,12 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { type AddressFilter, type InboundJob, type SendInput } from "#shared";
 import { z } from "zod";
 import { app } from "../../worker/api";
-import { signInWithoutCode } from "../../worker/auth";
+import { auth, signInWithoutCode } from "../../worker/auth";
 import { email, queue } from "../../worker/mail/inbound";
 import { ingest } from "../../worker/mail/ingest";
 import { Mailbox as ProductionMailbox } from "../../worker/mailbox/mailbox";
 import { cleanDraftFiles } from "../../worker/drafts";
+import { forgetExpiredDevices } from "../../worker/push";
 import { NOW } from "./clock";
 
 export { Vault } from "../../worker/vault";
@@ -23,6 +24,10 @@ let failures: Failure[] = [];
 // R2 deletes under these prefixes never finish, so a test can restart the Worker mid-delete as a crash would.
 let stalls: string[] = [];
 let hook: Hook | null = null;
+let pushes: { url: string; headers: Record<string, string>; body: Uint8Array }[] = [];
+let pushStatus = 201;
+// A push service answering with a body that never ends, as any endpoint someone registers could.
+let pushEndless = false;
 
 // Future alarms cannot fire on wall time; only drain() runs them. Restore the clock on every exit.
 async function atTestTime<T>(run: () => Promise<T>): Promise<T> {
@@ -32,6 +37,23 @@ async function atTestTime<T>(run: () => Promise<T>): Promise<T> {
 		return await run();
 	} finally {
 		Date.now = original;
+	}
+}
+
+// Every push service, as far as ingest can tell: requests are recorded and answered with pushStatus. Restored on every
+// exit.
+async function withPushService<T>(run: () => Promise<T>): Promise<T> {
+	const original = globalThis.fetch;
+	Reflect.set(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+		const request = new Request(input, init);
+		pushes.push({ url: request.url, headers: Object.fromEntries(request.headers), body: new Uint8Array(await request.arrayBuffer()) });
+		const endless = new ReadableStream({ start: (controller) => controller.enqueue(new TextEncoder().encode("x".repeat(1000))) });
+		return new Response(pushEndless ? endless : null, { status: pushStatus });
+	});
+	try {
+		return await run();
+	} finally {
+		Reflect.set(globalThis, "fetch", original);
 	}
 }
 
@@ -134,10 +156,18 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	override async fetch(request: Request) { return app.fetch(request, controlled(this.env), this.ctx); }
 	override async email(message: ForwardableEmailMessage) { await atTestTime(() => email(message, controlled(this.env))); }
 	login(address: string) { return signInWithoutCode(new Request("https://magnus.test/api/auth/sign-in/email-otp"), address); }
-	parse(job: InboundJob) { return ingest(controlled(this.env), job); }
+	/** A sign-in code, as if emailed, for signing in through the API. */
+	async code(address: string) {
+		const a = await auth(new Request("https://magnus.test/api/auth/sign-in/email-otp"));
+		return a.api.createVerificationOTP({ body: { email: address, type: "sign-in" } });
+	}
+	forgetExpiredDevices() { return forgetExpiredDevices(this.env.DIRECTORY, Date.now()); }
+	parse(job: InboundJob) { return withPushService(() => ingest(controlled(this.env), job)); }
 	cleanDrafts() { return cleanDraftFiles(controlled(this.env), now); }
 	setNow(value: number) { now = value; }
 	setSendErrors(codes: string[]) { sendErrors = codes; }
+	setPushStatus(status: number, endless = false) { pushStatus = status; pushEndless = endless; }
+	pushes() { return pushes; }
 	failNext(operation: Operation, prefix = "", count = 1) { failures.push({ operation, prefix, remaining: count }); }
 	stallDeletes(prefix: string) { stalls.push(prefix); }
 	afterIO(action: Hook) { hook = action; }
@@ -150,7 +180,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 			})),
 		})) };
 	}
-	reset() { now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; }
+	reset() { now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; }
 
 	async consume(bodies: unknown[], attempts = 1) {
 		const acks: string[] = [];

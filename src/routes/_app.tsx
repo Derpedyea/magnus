@@ -17,7 +17,7 @@ export const Route = createFileRoute("/_app")({
 		} catch (error) {
 			if (error instanceof ApiError && error.status === 401) {
 				// A session that ends mid-use lands here too (see main.tsx), with its mail still in memory.
-				endSession(context.queryClient);
+				void endSession(context.queryClient);
 				throw redirect({ to: "/login", search: { redirect: location.href } });
 			}
 			throw error;

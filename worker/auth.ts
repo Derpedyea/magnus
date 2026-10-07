@@ -169,6 +169,32 @@ export async function currentUser(request: Request): Promise<{ user: User; cooki
 	return user ? { user, cookies: await signInWithoutCode(request, user.email) } : null;
 }
 
+/** The request's session id, for what belongs to the session rather than the person. Null if it has none. */
+export async function currentSessionId(request: Request): Promise<string | null> {
+	const session = await (await auth(request)).api.getSession({ headers: request.headers });
+	return session?.session.id ?? null;
+}
+
+/**
+ * Signing in over another session (the sign-in page while still signed in, or Back to it) replaces that session's
+ * cookie but leaves the session, and the push subscription it holds for this browser (worker/push-api.ts), behind:
+ * the previous person's mail would keep showing here. This ends it, unless the new cookie is the same session renewed.
+ * Deleted directly, since Better Auth's sign-out logs a failed delete and carries on; a failure here fails the sign-in.
+ */
+export async function endReplacedSession(request: Request, response: Response): Promise<void> {
+	// Impersonating someone swaps the admin's cookie too, but Better Auth keeps their session to return to.
+	if (new URL(request.url).pathname.endsWith("/admin/impersonate-user")) return;
+	const sent = sessionToken(request.headers.get("Cookie"));
+	// The last one counts, as in a browser: some endpoints clear the cookie before setting it. Signing out leaves it empty.
+	const set = response.headers.getSetCookie().map(sessionToken).findLast((token) => token !== null);
+	if (!sent || !set || sent === set) return;
+	const previous = await (await auth(request)).api.getSession({ headers: request.headers, query: { disableCookieCache: true } });
+	if (previous) await env.DIRECTORY.prepare(`DELETE FROM auth_sessions WHERE id = ?1`).bind(previous.session.id).run();
+}
+
+/** The session cookie's value in a Cookie or Set-Cookie header. Better Auth prefixes its name with __Secure- on https. */
+const sessionToken = (header: string | null) => (header && /(?:^|;\s*)(?:__Secure-)?better-auth\.session_token=([^;]*)/.exec(header)?.[1]) ?? null;
+
 /**
  * Whether the request's session is an admin's right now. Asks D1 instead of the session cookie's 5-minute cache,
  * so a suspended or demoted admin can't use those minutes to add another admin.

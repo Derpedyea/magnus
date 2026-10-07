@@ -102,6 +102,7 @@ addresses(address, domain, display_name, enabled)            ← normalized, no 
 address_routes(address, mailbox_id, can_send)                ← >1 row = group alias (e.g. family@)
 sender_blocks(pattern)                                       ← 'x@y.com' or '*@y.com', matched against the envelope sender and From header at SMTP time
 signatures(user_id, address, text, markdown)                 ← per person and address they send as; the composer adds it. markdown = 0: plain text from before, escaped on read
+push_subscriptions(endpoint, session_id, p256dh, auth, origin) ← a browser to notify, one per session, gone with it (§4.6)
 ```
 
 ### Mailbox DO schema (`worker/mailbox/schema.ts`)
@@ -278,6 +279,37 @@ work. Code: `shared/links.ts`, `worker/links.ts`.
 6. **Stop sharing:** links don't expire, because an attachment stays readable in the recipient's archive forever
    and a link should too. Instead the sender can stop sharing a file from its Sent message (`link_stopped`),
    which turns the link into a 410 page naming the sender, and share it again, which revives the same link.
+
+### 4.6 Push notifications
+
+Web Push with VAPID, on WebCrypto alone. Code: `worker/push.ts`, `worker/push-api.ts`, `src/push.ts`, `public/sw.js`.
+
+1. **Subscribe:** Settings › Notifications asks for permission, registers `public/sw.js`, and subscribes with the
+   install's VAPID key, which is made on first use and kept in `settings` like the session secret. It's never
+   replaced: a push service only takes pushes signed with the key a subscription was made with.
+2. **One per session:** `PUT /api/push` stores the subscription against the session, not the person. A session is one
+   browser, so it has one subscription, and `ON DELETE CASCADE` ends it with the session: signing out, suspension, or
+   removal. The insert lands only while the session is live and isn't an admin impersonating someone, checked in the
+   same write, since the session cookie stays cached for minutes after revocation. Signing in over someone's session
+   ends it (`endReplacedSession()`), so a shared browser stops showing their mail. Impersonation is the exception:
+   Better Auth keeps the admin's session to return to. When a session ends in the app, or notifications are turned
+   off, the browser also drops its subscription (`src/push.ts`), since a push service holds pushes for a device that's
+   offline and one could otherwise reach whoever signs in next. Signing in waits for that before showing the new
+   account (its passkey offer included), and Google sign-in, which leaves the page, does it first. The hourly cron
+   forgets subscriptions whose session expired unused, which Better Auth never deletes.
+3. **Notify:** once `ingest()` stores new mail its verdict puts in the inbox, the queue consumer pushes to every
+   member of the mailbox with a live session: the sender, subject, and snippet, encrypted to the browser (RFC 8291) so
+   the push service can't read it, at `Urgency: high` so a dozing phone gets it at once. The tag is the ingest id, so
+   mail fanned out to two of your mailboxes shows once. Spam doesn't notify, even sent to a `+inbox` tag, and neither
+   do copies of mail already there or mail the outbox delivers locally (§4.2). A VAPID token is reused until an hour
+   before it expires, since Apple refuses ones refreshed more than hourly; it's kept in `settings`, as a Worker runs in
+   many isolates.
+4. **Failures:** a push service answering 404 or 410 has dropped the subscription, so it's deleted. Anything else is
+   logged, with the start of its answer (never read whole: an endpoint can be any https URL), and not retried. The mail
+   is in the inbox either way, and a retried job would find it delivered.
+5. **Click:** the service worker tells an open window (not a message body's frame) to route to the thread, so a draft in
+   progress survives, or opens one. Every push shows a notification, even one it can't read, since Safari stops
+   delivering to sites whose pushes show nothing.
 
 ## 5. Cross-cutting design
 
@@ -493,8 +525,9 @@ The web app is the only client, so it has to be good on phones and good enough t
 1. **Mobile layout + installable app (PWA)**: implemented. The list and a thread take turns on small screens, and
    a manifest installs it to the home screen on iOS and Android, or as a desktop app. There's no offline mode:
    signed-in responses are `no-store`, so nothing of an account outlives its sign-out.
-2. **Push notifications** (Web Push, VAPID): the Mailbox DO already knows the moment mail lands. iOS only
-   delivers web push to home-screen apps, which item 1 covers.
+2. **Push notifications** (Web Push, VAPID): implemented (§4.6). iOS only delivers web push to home-screen apps,
+   which item 1 covers. Not yet: clearing a notification once its mail is read elsewhere, and following a browser that
+   replaces its subscription (`pushsubscriptionchange`, Firefox) instead of waiting for it to be turned on again.
 3. **Drafts**: implemented with private, account-scoped D1 storage, version checks, and a device-local recovery
    journal. Attachments live outside the temporary upload prefix; hourly cleanup keeps referenced files.
 4. **Keyboard shortcuts** (j/k, e archive, r reply, c compose, / search), **bulk select**.

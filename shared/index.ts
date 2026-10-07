@@ -1,4 +1,5 @@
 export * from "./address";
+export * from "./base64url";
 export * from "./cloudflare";
 export * from "./contacts";
 export * from "./directory";

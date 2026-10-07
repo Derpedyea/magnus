@@ -336,7 +336,8 @@ export class Mailbox extends DurableObject<Env> {
 
 	// ─── Inbound ────────────────────────────────────────────────────────────
 
-	async ingest(input: IngestInput): Promise<{ threadId: string; duplicate: boolean } | { deleted: true }> {
+	/** `inbox`: this delivery put new mail in the inbox, rather than in Spam or onto a copy already here. */
+	async ingest(input: IngestInput): Promise<{ threadId: string; duplicate: boolean; inbox: boolean } | { deleted: true }> {
 		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) return { deleted: true };
 		if (this.sql.exec(`SELECT 1 FROM deleted_messages WHERE id = ?1`, input.id).toArray().length > 0) {
 			// The parser may already have rewritten these objects before it reached the tombstone.
@@ -354,11 +355,12 @@ export class Mailbox extends DurableObject<Env> {
 		const existing = this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM messages WHERE id = ?1`, input.id).toArray()[0];
 		if (existing) {
 			this.clearFailed(input.id);
-			return { threadId: existing.thread_id, duplicate: true };
+			return { threadId: existing.thread_id, duplicate: true, inbox: false };
 		}
 
 		const verdict = this.judge(input.sender);
-		const labels = [placeFor(verdict), ...input.labels];
+		const place = placeFor(verdict);
+		const labels = [place, ...input.labels];
 
 		// Same message delivered twice to this mailbox (e.g. sent to two of our addresses,
 		// or our own outbound copy coming back): keep one copy, merge labels.
@@ -376,7 +378,7 @@ export class Mailbox extends DurableObject<Env> {
 				this.addAddress(twin.id, stripSubaddress(input.envelopeTo).base);
 				this.clearFailed(input.id);
 				this.broadcast({ type: "threads.changed", threadIds: [twin.thread_id] });
-				return { threadId: twin.thread_id, duplicate: true };
+				return { threadId: twin.thread_id, duplicate: true, inbox: false };
 			}
 		}
 
@@ -429,7 +431,8 @@ export class Mailbox extends DurableObject<Env> {
 		});
 
 		this.broadcast({ type: "threads.changed", threadIds: [threadId] });
-		return { threadId, duplicate: false };
+		// From the verdict, not the labels: a `+inbox` subaddress adds that label to mail the verdict sent to Spam.
+		return { threadId, duplicate: false, inbox: place === "inbox" };
 	}
 
 	/**
