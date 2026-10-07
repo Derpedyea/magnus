@@ -45,7 +45,9 @@ export function ThreadView() {
 	// Replies must be sent from the thread's own mailbox.
 	const account = useAccount();
 	const identities = account.identities.filter((i) => i.mailboxId === mailboxId);
-	const ours = account.mailboxes.find((m) => m.id === mailboxId)?.addresses.map((a) => a.address) ?? [];
+	// Disabled ones too: mail one of them sent is still the mailbox's own.
+	const mailbox = account.mailboxes.find((m) => m.id === mailboxId);
+	const ours = mailbox ? [...mailbox.addresses.map((a) => a.address), ...mailbox.disabled] : [];
 	const qc = useQueryClient();
 	const { data } = useSuspenseQuery(threadQuery(mailboxId, threadId));
 	const close = useCloseThread();

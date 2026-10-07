@@ -32,6 +32,8 @@ export interface MailboxMembership {
 	role: "owner" | "member";
 	/** Every enabled address routed here, in the order they were added (primary first). */
 	addresses: MailboxAddress[];
+	/** Addresses still routed here but turned off: out of its views and sending, but its own, so mail from one is its. */
+	disabled: string[];
 }
 
 /** GET /api/me */

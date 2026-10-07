@@ -232,8 +232,14 @@ async function pool<T, R>(items: T[], size: number, task: (item: T) => Promise<R
 /** For RunOptions.sleep. */
 export function wait(ms: number, signal: AbortSignal): Promise<void> {
 	return new Promise((resolve) => {
-		const timer = setTimeout(resolve, ms);
-		signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+		// Whichever comes first undoes the other, so a long import's retries don't leave listeners on the stop signal.
+		const done = () => {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", done);
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		signal.addEventListener("abort", done, { once: true });
 	});
 }
 

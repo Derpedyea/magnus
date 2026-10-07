@@ -133,6 +133,18 @@ describe("import", () => {
 		expect(await db.exec("SELECT address, verdict FROM senders")).toEqual([{ address: "pal@outside.test", verdict: "spam" }]);
 	});
 
+	it("doesn't send imported mail to the models, which would sort it again", async () => {
+		await f.control.setModels({ quick: 0.99, deep: "spam" });
+		const { id } = await importNow(eml({ from: "Stranger <stranger@unknown.test>" }), "labels=inbox&read=0&sent=0");
+		expect((await f.control.state()).modelCalls).toEqual([]);
+		expect((await alice().getMessage(id))?.message.labels).toEqual(["inbox"]);
+		// The same models do see a stranger's mail that just arrived.
+		const live = job(ids.alice, "live-check");
+		await f.env.MAIL.put(live.rawKey, MIME.replace("<receipt@outside.test>", "<live-check@outside.test>"));
+		await f.control.parse(live);
+		expect((await f.control.state()).modelCalls.length).toBeGreaterThan(0);
+	});
+
 	it("doesn't notify about mail imported into the inbox, as it does about mail that just arrived", async () => {
 		const pair = await keyPair({ name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
 		const subscription = { endpoint: "https://push.example.net/alice", keys: { p256dh: toBase64Url(await rawKey(pair.publicKey)), auth: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) } };

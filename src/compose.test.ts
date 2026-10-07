@@ -60,10 +60,18 @@ describe("answerFrom", () => {
 		delivered: [], outgoing: true, inView: () => true,
 	};
 	it("answers sent mail from the address it went out from", () => {
-		expect(answerFrom({ from: { address: "Me@Example.com" }, to: [{ address: "pal@outside.test" }], cc: [] }, ctx)).toBe("me@example.com");
+		expect(answerFrom({ from: { address: "Me@Example.com" }, to: [{ address: "pal@outside.test" }], cc: [], bcc: [] }, ctx)).toBe("me@example.com");
 	});
 	it("answers sent mail imported from an old address from one this mailbox can send as", () => {
-		expect(answerFrom({ from: { address: "me@proton.test" }, to: [{ address: "pal@outside.test" }], cc: [] }, ctx)).toBe("me@example.com");
+		expect(answerFrom({ from: { address: "me@proton.test" }, to: [{ address: "pal@outside.test" }], cc: [], bcc: [] }, ctx)).toBe("me@example.com");
+	});
+});
+
+describe("answerFrom with Bcc", () => {
+	it("answers from the address in view that sent mail reached only by Bcc", () => {
+		const identities = ["a@example.com", "b@example.com"].map((address) => ({ mailboxId: "mbx", address, displayName: null, signature: null }));
+		const ctx = { mailboxId: "mbx", identities, delivered: ["a@example.com", "b@example.com"], outgoing: false, inView: (address: string) => address === "b@example.com" };
+		expect(answerFrom({ from: { address: "a@example.com" }, to: [{ address: "pal@outside.test" }], cc: [], bcc: [{ address: "b@example.com" }] }, ctx)).toBe("b@example.com");
 	});
 });
 

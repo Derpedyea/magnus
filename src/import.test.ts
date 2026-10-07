@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
-import { type ImportItem, planImport, runImport, RETRY_DELAYS } from "./import";
+import { type ImportItem, planImport, runImport, RETRY_DELAYS, wait } from "./import";
 
 const file = (name: string, content = "From: a@b.test\r\n\r\nHi") => new File([content], name);
 const metadata = (ID: string, Time: number, LabelIDs: string[], Flags = 1) =>
@@ -184,5 +184,21 @@ describe("runImport", () => {
 		});
 		expect(outcome).toMatchObject({ done: 2, failed: [], stopped: true, fatal: null });
 		expect(h.calls).toEqual(["0.eml", "1.eml", "2.eml"]);
+	});
+});
+
+describe("wait", () => {
+	it("lets go of the stop signal once it's done waiting, so retries don't pile up listeners", async () => {
+		vi.useFakeTimers();
+		try {
+			const signal = new AbortController().signal;
+			const removed = vi.spyOn(signal, "removeEventListener");
+			const waiting = wait(1000, signal);
+			await vi.advanceTimersByTimeAsync(1000);
+			await waiting;
+			expect(removed).toHaveBeenCalledWith("abort", expect.any(Function));
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

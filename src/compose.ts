@@ -86,11 +86,12 @@ export function replyRecipients(m: Pick<MessageDetail, "from" | "replyTo" | "to"
 }
 
 /** Which of our addresses answers or forwards a message: the one being viewed when it reached several of ours. */
-export function answerFrom(m: Pick<MessageDetail, "from" | "to" | "cc">, ctx: AnswerContext): string {
+export function answerFrom(m: Pick<MessageDetail, "from" | "to" | "cc" | "bcc">, ctx: AnswerContext): string {
 	const ours = new Set(ctx.identities.map((i) => i.address.toLowerCase()));
 	// Sent mail imported from another provider can be from an address this one can't send as.
 	if (ctx.outgoing && ours.has(m.from.address.toLowerCase())) return m.from.address.toLowerCase();
-	const recipients = [...m.to, ...m.cc].filter((a) => ours.has(a.address.toLowerCase()));
+	// Bcc too: only mail one of ours sent names it, and another of ours it reached that way answers it.
+	const recipients = [...m.to, ...m.cc, ...m.bcc].filter((a) => ours.has(a.address.toLowerCase()));
 	const from =
 		recipients.find((a) => ctx.inView(a.address))?.address ??
 		recipients[0]?.address ??
