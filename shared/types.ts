@@ -306,9 +306,9 @@ export interface IngestInput {
 	attachments: StoredAttachment[];
 	auth: AuthResults | null;
 	sender: SenderCheck;
-	/** Set when the mailbox didn't know the sender (Mailbox.needsCheck()). */
+	/** Set when the mailbox didn't know the sender (Mailbox.needsCheck()). Never for imported mail. */
 	check: MailCheck | null;
-	/** Labels besides where its verdict puts it: its +tag's. */
+	/** Labels besides where its verdict puts it: its +tag's. Imported mail isn't judged; these are all of its labels. */
 	labels: string[];
 	/** Read and sent as it was at the provider it came from. Its labels are already in `labels`. */
 	imported?: Omit<Imported, "labels">;

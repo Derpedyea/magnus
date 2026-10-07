@@ -412,6 +412,8 @@ export class Mailbox extends DurableObject<Env> {
 		}
 
 		const snippet = makeSnippet(input.text);
+		// Threads of held mail that imported sent mail lets in, writing to its senders (recordContacts()).
+		let released: string[] = [];
 		const delivered = this.ctx.storage.transactionSync(() => {
 			const threadId =
 				this.findThread(input) ?? this.createThread(input.subject, input.date);
@@ -482,7 +484,7 @@ export class Mailbox extends DurableObject<Env> {
 					input.date,
 				);
 			}
-			if (input.imported?.sent) this.recordContacts([...input.to, ...input.cc, ...bcc], true, input.date);
+			if (input.imported?.sent) released = this.recordContacts([...input.to, ...input.cc, ...bcc], true, input.date, true);
 			else if (!labels.includes("spam")) this.recordContacts([input.from], false, input.date);
 			// Delivered by a retry.
 			this.sql.exec(`DELETE FROM failed WHERE id = ?1`, input.id);
@@ -490,7 +492,7 @@ export class Mailbox extends DurableObject<Env> {
 			return { threadId, inbox: placed[0] === "inbox" };
 		});
 
-		this.broadcast({ type: "threads.changed", threadIds: [delivered.threadId] });
+		this.broadcast({ type: "threads.changed", threadIds: [...new Set([delivered.threadId, ...released])] });
 		return { threadId: delivered.threadId, duplicate: false, inbox: delivered.inbox };
 	}
 
@@ -724,9 +726,10 @@ export class Mailbox extends DurableObject<Env> {
 	/**
 	 * Remembers who this mailbox writes to (`sent`) and hears from, for recipient suggestions. Writing to someone also
 	 * trusts their mail, even if it was marked as spam before, and lets them in from the Screener; returns the threads
-	 * that moved. An undone send still counts: the address was typed on purpose.
+	 * that moved. An undone send still counts: the address was typed on purpose. Sent mail imported from elsewhere
+	 * (`imported`) does so only for people not judged here yet: it's older than whatever this mailbox has said of them.
 	 */
-	private recordContacts(people: Address[], sent: boolean, at: number): string[] {
+	private recordContacts(people: Address[], sent: boolean, at: number, imported = false): string[] {
 		const valid = people.filter((p) => isValidAddress(p.address));
 		for (const p of valid) {
 			this.sql.exec(
@@ -741,7 +744,15 @@ export class Mailbox extends DurableObject<Env> {
 				at,
 			);
 		}
-		return sent ? this.judgeAddresses([...new Set(valid.map((p) => normalizeAddress(p.address)))], "trusted") : [];
+		if (!sent) return [];
+		const addresses = [...new Set(valid.map((p) => normalizeAddress(p.address)))];
+		const judging = imported
+			? this.sql
+					.exec<{ value: string }>(`SELECT value FROM json_each(?1) WHERE value NOT IN (SELECT address FROM senders)`, JSON.stringify(addresses))
+					.toArray()
+					.map((r) => r.value)
+			: addresses;
+		return this.judgeAddresses(judging, "trusted");
 	}
 
 	private addAddress(messageId: string, address: string): void {

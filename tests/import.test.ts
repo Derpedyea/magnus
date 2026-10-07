@@ -114,6 +114,22 @@ describe("import", () => {
 		expect(await alice().listThreads({ label: "inbox", limit: 50, addresses: ["alice@example.com"] })).toHaveLength(1);
 	});
 
+	it("doesn't let a file's own Cloudflare stamp vouch for its sender or judge where it goes", async () => {
+		const stamped = eml({ from: "Bank <alerts@bank.test>" }).replace("Delivered-To:", "Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=bank.test; dkim=pass header.d=bank.test\r\nX-CF-SpamH-Score: 1\r\nDelivered-To:");
+		const { id } = await importNow(stamped, "labels=inbox&read=0&sent=0");
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		expect(await db.exec("SELECT sender, verdict_json, auth_json FROM messages")).toEqual([{ sender: null, verdict_json: null, auth_json: null }]);
+		expect((await alice().getMessage(id))?.message).toMatchObject({ labels: ["inbox"], verdict: null });
+	});
+
+	it("doesn't trust again someone marked as spam here because old sent mail wrote to them", async () => {
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		await alice().contacts(1);
+		await db.exec("INSERT INTO senders (address, verdict) VALUES ('pal@outside.test', 'spam')");
+		await importNow(eml({ from: "Alice <alice@example.com>", to: "Pal <pal@outside.test>" }), "read=1");
+		expect(await db.exec("SELECT address, verdict FROM senders")).toEqual([{ address: "pal@outside.test", verdict: "spam" }]);
+	});
+
 	it("is the same message when the same file is imported again", async () => {
 		const first = await importNow(eml());
 		const objects = (await f.env.MAIL.list()).objects.map((o) => o.key).sort();

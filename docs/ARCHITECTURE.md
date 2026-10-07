@@ -340,10 +340,12 @@ Code: `shared/import.ts`, `src/import.ts`, `worker/mail/import.ts`.
    inbound queue, which parses it like new mail (§4.1). If the job can't be queued, the original stays for the
    browser to retry; one never retried is overwritten by the next import of that file, or deleted with the mailbox.
    It's never deleted on the spot: another upload of the same file can have queued it.
-4. **`ingest()` places it as it was there**: its labels instead of triage, its read state, and `direction = 'out'`
-   for sent mail, which keeps its Bcc and whose recipients join the contacts. The `Authentication-Results` in the file aren't kept, since
-   nobody here checked them. A message already here by Message-ID stays as it is, and nothing of the imported copy
-   is kept; if that copy's files are still queued for deletion when the same file comes back as a new message,
+4. **`ingest()` places it as it was there**: its labels instead of a verdict (§5.6), its read state, and
+   `direction = 'out'` for sent mail, which keeps its Bcc. Its recipients join the contacts, and are trusted unless
+   this mailbox has judged them already, since the import is older than that judgment. The `Authentication-Results`
+   in the file aren't kept, even one naming Cloudflare, since nobody here checked them; so imported mail has no
+   verified sender, and marking it as spam judges nobody. A message already here by Message-ID stays as it is, and
+   nothing of the imported copy is kept; if that copy's files are still queued for deletion when the same file comes back as a new message,
    storing it takes them off the queue. Failed mail keeps `imported`, so retrying it from Failed still places it.
 
 Imports share the inbound queue, so a large one can hold up new mail by the minutes its backlog takes to drain. Every
