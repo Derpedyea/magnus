@@ -1077,6 +1077,7 @@ export class Mailbox extends DurableObject<Env> {
 				released = this.judgeSenders([...wrong, ...(remove.includes("screener") ? this.labeled(ids, "screener") : [])], "trusted");
 			}
 			const corrected = this.verdictsOf(wrong);
+			if (add.includes("spam") || remove.includes("spam")) this.forgetSetting(ids);
 			this.removeLabels(ids, remove);
 			this.addLabels(ids, add);
 			return { corrected, released };
@@ -1100,6 +1101,7 @@ export class Mailbox extends DurableObject<Env> {
 			const ids = [input.messageId];
 			const wasSpam = this.labeled(ids, "spam").length > 0;
 			const corrected = wasSpam === (input.verdict === "spam") ? [] : this.verdictsOf(ids);
+			this.forgetSetting(ids);
 			const released = this.judgeSenders(ids, input.verdict);
 			// Out of Spam is into the inbox, not left in Trash too, as Move to inbox does.
 			this.removeLabels(ids, input.verdict === "spam" ? ["inbox", "screener"] : ["spam", "trash", "screener"]);
@@ -1152,6 +1154,18 @@ export class Mailbox extends DurableObject<Env> {
 		const people = new Map<string, Set<string>>();
 		for (const r of rows) people.set(r.thread_id, (people.get(r.thread_id) ?? new Set()).add(r.sender ?? `unverified:${r.from_address}`));
 		return rows.filter((r) => r.sender !== null && ((people.get(r.thread_id)?.size ?? 0) <= 1 || !r.trusted)).map((r) => r.id);
+	}
+
+	/**
+	 * Someone moved these messages into or out of Spam themselves, so a setting no longer explains where they are: their
+	 * banner stops naming it (Verdict `bySetting`).
+	 */
+	private forgetSetting(messageIds: string[]): void {
+		this.sql.exec(
+			`UPDATE messages SET verdict_json = json_remove(verdict_json, '$.bySetting')
+			 WHERE id IN (SELECT value FROM json_each(?1)) AND json_extract(verdict_json, '$.bySetting') IS NOT NULL`,
+			JSON.stringify(messageIds),
+		);
 	}
 
 	private verdictsOf(messageIds: string[]): Verdict[] {

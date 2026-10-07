@@ -47,6 +47,16 @@ describe("cold outreach", () => {
 		expect(moved?.verdict).not.toHaveProperty("bySetting");
 	});
 
+	it("stops naming the setting once someone moves the mail out of Spam and back themselves", async () => {
+		const placed = await deliver();
+		expect(placed?.verdict).toMatchObject({ bySetting: true });
+		await box().judgeMessage({ messageId: placed?.id ?? "", verdict: "trusted" });
+		await box().modifyThreads({ threadIds: [placed?.threadId ?? ""], add: ["spam"] });
+		const moved = (await box().getMessage(placed?.id ?? ""))?.message;
+		expect(moved?.labels).toEqual(["spam"]);
+		expect(moved?.verdict).toEqual({ kind: "checked", category: "outreach", spam: 0.5, model: DEEP_MODEL });
+	});
+
 	it("asks Luna when Clef is sure mail is unsolicited but not that it's only outreach", async () => {
 		await box().updateSettings({ outreachToSpam: false });
 		await f.control.setModels({ quick: { personal: 0.05, transactional: 0, newsletter: 0, outreach: 0.5, spam: 0, phishing: 0.45 }, deep: "phishing" });
