@@ -29,17 +29,21 @@ describe("planImport", () => {
 		expect(plan.bytes).toBe(plan.items.reduce((n, i) => n + i.file.size, 0));
 	});
 
-	it("files plain .eml as archived and read, and lists what it can't send", async () => {
+	it("files plain .eml as archived and read, and lists what's too big to send", async () => {
 		const plan = await planImport([
 			...picked([["Saved/a.eml", "From: a@b.test\r\n\r\nA"], ["Saved/b.eml", "From: a@b.test\r\n\r\nB"], ["Saved/notes.txt", "x"]]),
 			{ path: "Saved/huge.eml", file: new File([new Uint8Array(25 * 1024 * 1024 + 1)], "huge.eml") },
-			...picked([["Saved/labels.json", LABELS], ["Saved/odd.eml", "x"], ["Saved/odd.metadata.json", "{not json"]]),
 		]);
-		expect(plan).toMatchObject({ proton: true, tooBig: ["Saved/huge.eml"], unreadable: ["Saved/odd.eml"] });
+		expect(plan).toMatchObject({ proton: false, tooBig: ["Saved/huge.eml"], unreadable: [] });
 		expect(plan.items.map((i) => [i.file.name, i.placement])).toEqual([
 			["a.eml", { labels: [], read: true }],
 			["b.eml", { labels: [], read: true }],
 		]);
+	});
+
+	it("lists a message whose details in a Proton export can't be read as unreadable", async () => {
+		const plan = await planImport(picked([["mail_p/labels.json", LABELS], ["mail_p/odd.eml", "x"], ["mail_p/odd.metadata.json", "{not json"]]));
+		expect(plan).toMatchObject({ proton: true, items: [], unreadable: ["mail_p/odd.eml"] });
 	});
 
 	it("refuses an export whose folders and labels it can't read, rather than dropping them", async () => {
@@ -50,6 +54,12 @@ describe("planImport", () => {
 	it("refuses a Proton export missing its labels.json, rather than dropping every folder and label", async () => {
 		await expect(planImport(picked([["mail_z/a.eml", "x"], ["mail_z/a.metadata.json", metadata("a", 1, ["0", "w=="])]])))
 			.rejects.toThrow("mail_z/ has no labels.json");
+	});
+
+	it("lists a message that lost its details in a Proton export as unreadable, not as plain mail", async () => {
+		const plan = await planImport(picked([["mail_q/labels.json", LABELS], ["mail_q/a.eml", "x"], ["mail_q/a.metadata.json", metadata("a", 1, ["0"])], ["mail_q/b.eml", "x"]]));
+		expect(plan.items.map((i) => i.path)).toEqual(["mail_q/a.eml"]);
+		expect(plan.unreadable).toEqual(["mail_q/b.eml"]);
 	});
 
 	it("leaves other programs' .metadata.json files alone in a folder Proton didn't export", async () => {

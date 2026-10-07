@@ -327,15 +327,16 @@ Code: `shared/import.ts`, `src/import.ts`, `worker/mail/import.ts`.
    the directory (§3), and so is mail Proton couldn't export as a message. A folder counts as Proton's export when
    one of these files in it is shaped like Proton's (`{ "Version": …, "Payload": … }`); another program's
    `labels.json` or `.metadata.json` anywhere else is left alone. In an export, only version 1 is read: a message
-   whose details can't be read is listed as unreadable rather than guessed at, and an export whose `labels.json` is
+   whose details are missing or can't be read is listed as unreadable rather than guessed at, and an export whose `labels.json` is
    missing or unreadable is refused, since the person's own folders and labels would be lost. An `.eml` with no
    details is filed as archived and read, or Sent when it's from one of the mailbox's addresses.
 2. **It sends each message on its own**, newest first and four at a time, to `POST /api/mailboxes/:id/import`, with
    where it goes in the query (one schema checks each label). Failures on the way are retried; being signed out or
    losing the mailbox stops the import. The page has to stay open, and says so.
 3. **The Worker reads only the headers** to refuse what isn't mail and to fill in the envelope the message never had:
-   the mailbox's enabled addresses it reached (Delivered-To, then the recipients), and for sent mail the one it came
-   from too, so mail one of them sent another is filed under both. Mail that names none of them (to or from an old
+   the mailbox's enabled addresses it reached (Delivered-To, then the recipients, and Bcc for sent mail), and for
+   sent mail the one it came from too, so mail one of them sent another is filed under both. Failed lists it under
+   each of them too. Mail that names none of them (to or from an old
    address at the provider it came from, or one disabled here) goes under the mailbox's first address, so views of an
    address show it. Its id is a ULID whose randomness is a digest of the mailbox and the bytes, so the same file is
    the same message: importing a folder again adds nothing twice, and doesn't bring back mail deleted for good. A
@@ -487,8 +488,10 @@ Threading is RFC 5322 first, heuristic second:
 1. Every known Message-ID (inbound headers and Cloudflare-assigned outbound IDs) maps to a thread in
    `thread_refs`. An incoming message joins the first thread matched by `In-Reply-To`, then by `References`,
    newest first. Imported mail (§4.7) comes in any order, so it also maps up to 64 of the ids it answers (unless
-   it's spam) and is matched by its own Message-ID, which lets a message join the replies that came before it. Live
-   mail does neither: anyone who writes in could claim an id that way.
+   it's spam) and is matched by its own Message-ID, which lets a message join the replies that came before it. When
+   it matches several threads, its earlier messages started apart (two replies before what they both answer), so
+   they become one. Live mail and imported spam do none of this: anyone who writes in could claim an id, or join two
+   conversations, that way.
 2. If a message *claims* to be a reply but nothing matches, it falls back to the normalized subject
    (`Re:`/`Fwd:`/`AW:`… stripped) where the sender is already a participant, within 30 days. This covers
    replies whose parent Message-ID we never saw. Imported mail skips it: imports come in any order, so the

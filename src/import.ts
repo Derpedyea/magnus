@@ -38,7 +38,7 @@ const READERS = 16;
 
 /**
  * Pairs each .eml with what Proton's Export Tool wrote beside it: `<id>.metadata.json`, and the folder's `labels.json`.
- * An .eml with neither is filed as archived and read, since nothing says otherwise.
+ * An .eml outside a Proton export is filed as archived and read, since nothing says otherwise.
  *
  * A folder is Proton's export when one of those files in it is shaped like Proton's (`{ Version, Payload }`). There,
  * one that can't be read stops the import or lists its message as unreadable, rather than misfiling mail. Anywhere
@@ -66,7 +66,7 @@ export async function planImport(files: PickedFile[]): Promise<ImportPlan> {
 		if (!parsed.success) throw new Error(`Couldn't read ${m.path}, the folders and labels in Proton's export`);
 		labelsByFolder.set(folderOf(m.path), new Map(parsed.data.Payload.map((l) => [l.ID, l])));
 	}
-	// Proton always writes one. Without it every folder and label of the person's own would be dropped, and importing
+	// Proton always writes one, as it writes every message's details. Without it every folder and label of the person's own would be dropped, and importing
 	// the full export again couldn't add them: the messages would already be here.
 	for (const folder of exports) if (!labelsByFolder.has(folder)) throw new Error(`${folder} has no labels.json, which lists the folders and labels in Proton's export`);
 
@@ -77,7 +77,7 @@ export async function planImport(files: PickedFile[]): Promise<ImportPlan> {
 	for (const { path, file } of emls) {
 		const sidecar = sidecars.get(path);
 		if (file.size > MAX_IMPORT_BYTES) plan.tooBig.push(path);
-		else if (!exports.has(folderOf(path)) || sidecar === NONE) plan.items.push({ path, file, placement: { labels: [], read: true }, at: 0 });
+		else if (!exports.has(folderOf(path))) plan.items.push({ path, file, placement: { labels: [], read: true }, at: 0 });
 		else {
 			const parsed = ProtonMetadataSchema.safeParse(sidecar);
 			if (!parsed.success) {
@@ -95,7 +95,7 @@ export async function planImport(files: PickedFile[]): Promise<ImportPlan> {
 	return plan;
 }
 
-/** Sidecar states besides its JSON: no file beside the message, or one too big to be Proton's. */
+/** Sidecar states besides its JSON: no file beside the message, or one too big to be Proton's. In an export, both are unreadable. */
 const NONE = Symbol("none");
 const TOO_BIG = Symbol("too big");
 

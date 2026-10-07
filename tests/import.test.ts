@@ -158,6 +158,35 @@ describe("import", () => {
 		expect((await alice().getMessage(original.id))?.message.threadId).toBe((await alice().getMessage(reply.id))?.message.threadId);
 	});
 
+	it("joins reply branches that started apart once the message they both answer comes", async () => {
+		const at = (n: number) => `Mon, 0${n} May 2021 09:00:00 +0000`;
+		const msg = (id: string, n: number, parent?: string) => eml({ id: `<${id}@outside.test>`, subject: parent ? "Re: Plans" : "Plans", date: at(n), inReplyTo: parent && `<${parent}@outside.test>`, internal: `${id}==` });
+		// Newest first, and each reply names only what it answers, so the branches can't meet until their parents come.
+		for (const [id, n, parent] of [["a1", 5, "a"], ["b1", 4, "b"], ["a", 3, "root"], ["b", 2, "root"], ["root", 1]] as const) await importNow(msg(id, n, parent));
+		expect(await alice().listThreads({ label: "inbox", limit: 50 })).toMatchObject([{ messageCount: 5, subject: "Plans" }]);
+	});
+
+	it("doesn't let imported spam join threads together", async () => {
+		await importNow(eml({ id: "<one@outside.test>", subject: "One", internal: "one==" }));
+		await importNow(eml({ id: "<two@outside.test>", subject: "Two", inReplyTo: "<elsewhere@outside.test>", internal: "two==" }));
+		const bait = eml({ id: "<bait@outside.test>", subject: "Bait", inReplyTo: "<one@outside.test> <elsewhere@outside.test>", internal: "bait==" });
+		await importNow(bait.replace("In-Reply-To: <one@outside.test> <elsewhere@outside.test>", "In-Reply-To: <one@outside.test>"), "labels=spam&read=1&sent=0");
+		expect(await alice().listThreads({ label: "all", limit: 50 })).toHaveLength(2);
+	});
+
+	it("files sent mail under an address of the mailbox it only Bcc'd", async () => {
+		const sent = eml({ from: "Old Me <old@proton.test>", to: "Pal <pal@outside.test>" }).replace("Delivered-To: alice@example.com\r\n", "").replace("Subject:", "Bcc: alice@receive.test\r\nSubject:");
+		const { job: queued } = await importNow(sent, "labels=sent&read=1&sent=1");
+		expect(queued.imported?.addresses).toEqual(["alice@receive.test"]);
+	});
+
+	it("lists failed imports under every address they'd be filed under", async () => {
+		const failed = { ...job(ids.alice, "both-1"), envelopeTo: "alice@example.com", imported: { labels: ["inbox"], read: false, sent: true, addresses: ["alice@example.com", "alice@receive.test"] } };
+		await alice().recordFailed(failed, "Unreadable");
+		expect(await alice().listFailed({ addresses: ["alice@receive.test"] })).toMatchObject([{ id: "both-1" }]);
+		expect((await alice().counts({ addresses: ["alice@receive.test"] })).failed).toBe(1);
+	});
+
 	it("doesn't guess a reply's conversation from its subject, since what it answers can still be on its way", async () => {
 		// An earlier "Plans" conversation the same sender is in.
 		await importNow(eml({ id: "<plans-1@outside.test>", subject: "Plans", date: "Sat, 01 May 2021 09:00:00 +0000", internal: "p1==" }));

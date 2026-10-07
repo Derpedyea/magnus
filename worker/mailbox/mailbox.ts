@@ -196,7 +196,9 @@ const IN_ADDRESSES = (param: string) =>
 		WHERE a.message_id = m.id AND a.address IN (SELECT value FROM json_each(${param}))))`;
 const addressParam = (filter: AddressFilter) => (filter.addresses ? JSON.stringify(filter.addresses) : null);
 /** IN_ADDRESSES for the failed table, whose rows carry the one address they were delivered to. */
-const FAILED_IN_ADDRESSES = (param: string) => `(${param} IS NULL OR address IN (SELECT value FROM json_each(${param})))`;
+const FAILED_IN_ADDRESSES = (param: string) =>
+	`(${param} IS NULL OR address IN (SELECT value FROM json_each(${param}))
+		OR EXISTS (SELECT 1 FROM json_each(imported, '$.addresses') i WHERE i.value IN (SELECT value FROM json_each(${param}))))`;
 
 /** Ids an imported message answers that ingest() points at its thread, so a huge References header stays cheap. */
 const MAX_NAMED_IDS = 64;
@@ -623,12 +625,22 @@ export class Mailbox extends DurableObject<Env> {
 	 * + sender already being a participant, within a recent window. Not for imported mail: it comes in any order, so what
 	 * a reply answers can still be on its way, and the subject would put it with an older conversation instead.
 	 */
-	private findThread(input: Pick<IngestInput, "messageIdHeader" | "inReplyTo" | "references" | "subject" | "from" | "date" | "imported">): string | null {
+	private findThread(input: Pick<IngestInput, "messageIdHeader" | "inReplyTo" | "references" | "subject" | "from" | "date" | "imported" | "labels">): string | null {
 		const candidates = [...new Set([...input.inReplyTo, ...input.references.toReversed()])];
 		const own = input.imported && input.messageIdHeader ? [input.messageIdHeader] : [];
-		for (const id of [...candidates, ...own]) {
-			const hit = this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM thread_refs WHERE message_id_header = ?1`, id).toArray()[0];
-			if (hit) return hit.thread_id;
+		const lookup = (id: string) => this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM thread_refs WHERE message_id_header = ?1`, id).toArray()[0]?.thread_id;
+		if (!input.imported || input.labels.includes("spam")) {
+			for (const id of [...candidates, ...own]) {
+				const hit = lookup(id);
+				if (hit) return hit;
+			}
+		} else {
+			// An import can connect threads its earlier messages started apart: two replies imported before what they both
+			// answer each began one. They become one, the first it matches. Not for live mail or spam, which could join any
+			// two conversations by naming them.
+			const [thread, ...others] = [...new Set([...candidates, ...own].flatMap((id) => lookup(id) ?? []))];
+			for (const other of others) this.mergeThread(other, thread!);
+			if (thread) return thread;
 		}
 		if (candidates.length === 0 || input.imported) return null;
 
@@ -646,6 +658,16 @@ export class Mailbox extends DurableObject<Env> {
 			)
 			.toArray()[0];
 		return hit?.id ?? null;
+	}
+
+	/** Moves a thread's messages and ids into another, which keeps the subject of its oldest message, and drops it. */
+	private mergeThread(from: string, into: string): void {
+		this.sql.exec(`UPDATE messages SET thread_id = ?2 WHERE thread_id = ?1`, from, into);
+		this.sql.exec(`UPDATE thread_refs SET thread_id = ?2 WHERE thread_id = ?1`, from, into);
+		this.sql.exec(`DELETE FROM threads WHERE id = ?1`, from);
+		const oldest = this.sql.exec<{ subject: string }>(`SELECT subject FROM messages WHERE thread_id = ?1 ORDER BY date, id LIMIT 1`, into).one();
+		this.sql.exec(`UPDATE threads SET subject = ?2, subject_key = ?3 WHERE id = ?1`, into, oldest.subject, normalizeSubject(oldest.subject));
+		this.rebuildThread(into);
 	}
 
 	private createThread(subject: string, at: number): string {

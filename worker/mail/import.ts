@@ -39,7 +39,14 @@ export async function importMessage(env: Env, mailboxId: string, raw: Uint8Array
 	const sent = placement.sent ?? (from !== null && ours.has(base(from)));
 	// The addresses it reached, and for sent mail the one it came from too: mail one of the mailbox's addresses sent
 	// another belongs to both, as it would had it been sent here.
-	const recipients = [headers.deliveredTo ?? "", header(headers.headers, "x-original-to"), ...addresses(headers.to), ...addresses(headers.cc)];
+	const recipients = [
+		headers.deliveredTo ?? "",
+		header(headers.headers, "x-original-to"),
+		...addresses(headers.to),
+		...addresses(headers.cc),
+		// Only sent mail names its Bcc.
+		...(sent ? addresses(headers.bcc) : []),
+	];
 	const named = [...(sent && from ? [from] : []), ...recipients].filter(isValidAddress).map(base);
 	const filed = [...new Set(named.filter((a) => shown.has(a)))];
 	// Mail that names none of them (to or from an old address at the provider it came from, or one disabled here) goes
