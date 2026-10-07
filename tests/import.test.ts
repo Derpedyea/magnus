@@ -98,6 +98,22 @@ describe("import", () => {
 		expect(await alice().contacts(10)).toEqual([expect.objectContaining({ address: "pal@outside.test", sent: 1 })]);
 	});
 
+	it("keeps who sent mail was Bcc'd to, and learns them as people written to", async () => {
+		const sent = eml({ from: "Alice <alice@example.com>", to: "Pal <pal@outside.test>" }).replace("Subject:", "Bcc: Quiet <quiet@outside.test>\r\nSubject:");
+		await importNow(sent, "read=1");
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		expect(await db.exec("SELECT bcc_json FROM messages")).toEqual([{ bcc_json: '[{"address":"quiet@outside.test","name":"Quiet"}]' }]);
+		expect(await alice().contacts(10)).toEqual(expect.arrayContaining([expect.objectContaining({ address: "quiet@outside.test", sent: 1 })]));
+		expect(await alice().search({ query: "quiet", limit: 50 })).toHaveLength(1);
+	});
+
+	it("files mail that names none of the mailbox's addresses under its first one, so address views show it", async () => {
+		const old = eml({ to: "Old Me <old@proton.test>" }).replace("Delivered-To: alice@example.com", "Delivered-To: old@proton.test");
+		const { job: queued } = await importNow(old);
+		expect(queued.envelopeTo).toBe("alice@example.com");
+		expect(await alice().listThreads({ label: "inbox", limit: 50, addresses: ["alice@example.com"] })).toHaveLength(1);
+	});
+
 	it("is the same message when the same file is imported again", async () => {
 		const first = await importNow(eml());
 		const objects = (await f.env.MAIL.list()).objects.map((o) => o.key).sort();

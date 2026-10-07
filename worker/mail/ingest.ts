@@ -111,6 +111,7 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		from,
 		to: flatten(email.to),
 		cc: flatten(email.cc),
+		bcc: imported?.sent ? flatten(email.bcc) : undefined,
 		replyTo,
 		subject,
 		date: parseDate(email.date) ?? job.receivedAt,

@@ -425,8 +425,8 @@ export class Mailbox extends DurableObject<Env> {
 				.exec<{ rowid: number }>(
 					`INSERT INTO messages (id, thread_id, direction, message_id_header, in_reply_to, refs,
 						envelope_from, envelope_to, from_json, to_json, cc_json, reply_to_json, subject, snippet,
-						date, received_at, text_body, html_key, raw_key, is_read, auth_json, verdict_json, sender)
-					 VALUES (?1, ?2, ?22, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?23, ?19, ?20, ?21)
+						date, received_at, text_body, html_key, raw_key, is_read, auth_json, verdict_json, sender, bcc_json)
+					 VALUES (?1, ?2, ?22, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?23, ?19, ?20, ?21, ?24)
 					 RETURNING rowid`,
 					input.id,
 					threadId,
@@ -451,6 +451,7 @@ export class Mailbox extends DurableObject<Env> {
 					input.sender.verified,
 					input.imported?.sent ? "out" : "in",
 					input.imported?.read ? 1 : 0,
+					JSON.stringify(input.bcc ?? []),
 				)
 				.one();
 
@@ -465,7 +466,8 @@ export class Mailbox extends DurableObject<Env> {
 			// Imports come in any order, so the ids an imported message answers point here too, for those messages to join it
 			// when they come. Only for imports, and not spam: live mail naming an id would let anyone who writes in claim it.
 			if (input.imported && !input.labels.includes("spam")) for (const id of namedIds(input)) this.registerRef(id, threadId);
-			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc], input.text);
+			const bcc = input.bcc ?? [];
+			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc, ...bcc], input.text);
 			this.touchThread(threadId, input.date, snippet, [input.from, ...input.to, ...input.cc]);
 			// Titled by the message that started it, which an import can bring after its replies. Not for live mail, whose
 			// Date anyone can set.
@@ -480,7 +482,7 @@ export class Mailbox extends DurableObject<Env> {
 					input.date,
 				);
 			}
-			if (input.imported?.sent) this.recordContacts([...input.to, ...input.cc], true, input.date);
+			if (input.imported?.sent) this.recordContacts([...input.to, ...input.cc, ...bcc], true, input.date);
 			else if (!labels.includes("spam")) this.recordContacts([input.from], false, input.date);
 			// Delivered by a retry.
 			this.sql.exec(`DELETE FROM failed WHERE id = ?1`, input.id);

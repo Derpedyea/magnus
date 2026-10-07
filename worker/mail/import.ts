@@ -22,7 +22,13 @@ export async function importMessage(env: Env, mailboxId: string, raw: Uint8Array
 	const headers = block ? await PostalMime.parse(block) : null;
 	if (!headers || !(headers.from || headers.messageId || headers.date)) return { refused: "This file isn't an email message" };
 
-	const { results } = await env.DIRECTORY.prepare(`SELECT address FROM address_routes WHERE mailbox_id = ?1`).bind(mailboxId).all<{ address: string }>();
+	// In the order the sidebar lists them.
+	const { results } = await env.DIRECTORY.prepare(
+		`SELECT r.address, a.enabled FROM address_routes r JOIN addresses a ON a.address = r.address
+		 WHERE r.mailbox_id = ?1 ORDER BY a.created_at, a.rowid`,
+	)
+		.bind(mailboxId)
+		.all<{ address: string; enabled: number }>();
 	const ours = new Set(results.map((r) => r.address));
 	const isOurs = (address: string) => ours.has(stripSubaddress(address).base);
 
@@ -32,8 +38,9 @@ export async function importMessage(env: Env, mailboxId: string, raw: Uint8Array
 	const candidates = sent
 		? [from ?? ""]
 		: [headers.deliveredTo ?? "", header(headers.headers, "x-original-to"), ...addresses(headers.to), ...addresses(headers.cc)];
-	const valid = candidates.filter(isValidAddress);
-	const envelopeTo = valid.find(isOurs) ?? valid[0] ?? "";
+	// Mail that names none of the mailbox's addresses (to or from an old address at the provider it came from) goes under
+	// the mailbox's first, so views of an address show it: it was imported into this mailbox on purpose.
+	const envelopeTo = candidates.filter(isValidAddress).find(isOurs) ?? results.find((r) => r.enabled === 1)?.address ?? "";
 
 	// When the old provider received it (Proton stamps X-Pm-Date), else when it says it was written.
 	const date = parseDate(header(headers.headers, "x-pm-date")) ?? parseDate(headers.date);

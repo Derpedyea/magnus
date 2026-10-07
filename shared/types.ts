@@ -295,6 +295,8 @@ export interface IngestInput {
 	from: Address;
 	to: Address[];
 	cc: Address[];
+	/** Only for sent mail, which is the only kind that names its Bcc. */
+	bcc?: Address[];
 	replyTo: Address[];
 	subject: string;
 	date: number;

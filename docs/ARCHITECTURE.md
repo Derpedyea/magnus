@@ -332,15 +332,16 @@ Code: `shared/import.ts`, `src/import.ts`, `worker/mail/import.ts`.
    where it goes in the query (one schema checks each label). Failures on the way are retried; being signed out or
    losing the mailbox stops the import. The page has to stay open, and says so.
 3. **The Worker reads only the headers** to refuse what isn't mail and to fill in the envelope the message never had:
-   the address of ours it was delivered to (Delivered-To, then the recipients) or sent from, else the first it
-   names, usually the old provider's. Its id is a ULID whose randomness is a digest of the mailbox and the bytes, so
+   the address of ours it was delivered to (Delivered-To, then the recipients) or sent from. Mail that names none of
+   them, to or from an old address at the provider it came from, goes under the mailbox's first address, so views of
+   an address show it. Its id is a ULID whose randomness is a digest of the mailbox and the bytes, so
    the same file is the same message: importing a folder again adds nothing twice, and doesn't bring back mail
    deleted for good. A date from the future counts as now, so a deleted original isn't kept until then. The original goes to R2 and an `InboundJob` with `imported` set to the
    inbound queue, which parses it like new mail (§4.1). If the job can't be queued, the original stays for the
    browser to retry; one never retried is overwritten by the next import of that file, or deleted with the mailbox.
    It's never deleted on the spot: another upload of the same file can have queued it.
 4. **`ingest()` places it as it was there**: its labels instead of triage, its read state, and `direction = 'out'`
-   for sent mail, whose recipients join the contacts. The `Authentication-Results` in the file aren't kept, since
+   for sent mail, which keeps its Bcc and whose recipients join the contacts. The `Authentication-Results` in the file aren't kept, since
    nobody here checked them. A message already here by Message-ID stays as it is, and nothing of the imported copy
    is kept; if that copy's files are still queued for deletion when the same file comes back as a new message,
    storing it takes them off the queue. Failed mail keeps `imported`, so retrying it from Failed still places it.
