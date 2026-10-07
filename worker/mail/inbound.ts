@@ -1,4 +1,4 @@
-import { type EmailSendingEvent, type InboundJob, r2Keys, ulid } from "#shared";
+import { byteBudget, type EmailSendingEvent, type InboundJob, r2Keys, ulid } from "#shared";
 import { addressParser } from "postal-mime";
 import { resolveRecipient } from "../directory";
 import { handleDeliveryEvent } from "./events";
@@ -59,10 +59,19 @@ const isInboundJob = (body: unknown): body is InboundJob => typeof body === "obj
 const isSendingEvent = (body: unknown): body is EmailSendingEvent =>
 	typeof body === "object" && body !== null && "type" in body && typeof body.type === "string" && body.type.startsWith("cf.email.sending.");
 
+/**
+ * Parsing holds a message several times over (its bytes, its parts), and a batch shares one isolate's 128 MB. Messages
+ * are parsed together up to this much; a bigger one waits to go alone. Inbound caps a message at 25 MiB.
+ */
+const PARSE_BUDGET = 25 * 1024 * 1024;
+
 /** Parses queued inbound mail, and applies Email Sending delivery events. Messages are independent: each acks or retries alone. */
 export async function queue(batch: MessageBatch, env: Env, models: Models = env.AI): Promise<void> {
+	const budget = byteBudget(PARSE_BUDGET);
 	await Promise.all(
 		batch.messages.map(async (msg) => {
+			const bytes = isInboundJob(msg.body) ? msg.body.rawSize : 0;
+			await budget.take(bytes);
 			try {
 				if (isInboundJob(msg.body)) await inbound(env, msg.body, msg.attempts, models);
 				else if (isSendingEvent(msg.body)) await handleDeliveryEvent(env, msg.body);
@@ -73,6 +82,8 @@ export async function queue(batch: MessageBatch, env: Env, models: Models = env.
 				// R2: re-send its job to replay it.
 				console.error(JSON.stringify({ msg: "queue message failed", queue: batch.queue, attempts: msg.attempts, body: msg.body, error: String(err) }));
 				msg.retry({ delaySeconds: Math.min(30 * 2 ** (msg.attempts - 1), 3600) });
+			} finally {
+				budget.give(bytes);
 			}
 		}),
 	);

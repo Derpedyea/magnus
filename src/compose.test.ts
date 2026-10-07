@@ -68,14 +68,18 @@ describe("answerFrom", () => {
 });
 
 describe("isOutgoing", () => {
-	const identities = [{ mailboxId: "mbx", address: "me@example.com", displayName: null, signature: null }, { mailboxId: "mbx", address: "me@example.net", displayName: null, signature: null }];
+	// The mailbox's addresses, receive-only ones included.
+	const ours = ["me@example.com", "me@example.net", "inbox-only@example.com"];
 	const inView = (address: string) => address === "me@example.net";
 	it("reads mail one of our addresses sent another as received, when only the recipient is in view", () => {
-		expect(isOutgoing({ direction: "out", from: { address: "me@example.com" } }, identities, inView)).toBe(false);
-		expect(isOutgoing({ direction: "out", from: { address: "me@example.net" } }, identities, inView)).toBe(true);
+		expect(isOutgoing({ direction: "out", from: { address: "me@example.com" } }, ours, inView)).toBe(false);
+		expect(isOutgoing({ direction: "out", from: { address: "me@example.net" } }, ours, inView)).toBe(true);
+	});
+	it("counts an address that can only receive as ours", () => {
+		expect(isOutgoing({ direction: "out", from: { address: "Inbox-Only@example.com" } }, ours, inView)).toBe(false);
 	});
 	it("keeps sent mail imported from an old address sent, whatever is in view", () => {
-		expect(isOutgoing({ direction: "out", from: { address: "me@proton.test" } }, identities, inView)).toBe(true);
-		expect(isOutgoing({ direction: "in", from: { address: "me@proton.test" } }, identities, inView)).toBe(false);
+		expect(isOutgoing({ direction: "out", from: { address: "me@proton.test" } }, ours, inView)).toBe(true);
+		expect(isOutgoing({ direction: "in", from: { address: "me@proton.test" } }, ours, inView)).toBe(false);
 	});
 });

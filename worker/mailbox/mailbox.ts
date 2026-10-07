@@ -638,7 +638,8 @@ export class Mailbox extends DurableObject<Env> {
 			// An import can connect threads its earlier messages started apart: two replies imported before what they both
 			// answer each began one. They become one, the first it matches. Not for live mail or spam, which could join any
 			// two conversations by naming them.
-			const [thread, ...others] = [...new Set([...candidates, ...own].flatMap((id) => lookup(id) ?? []))];
+			// Bounded like the ids it registers, so thousands of References stay cheap.
+			const [thread, ...others] = [...new Set([...namedIds(input), ...own].flatMap((id) => lookup(id) ?? []))];
 			for (const other of others) this.mergeThread(other, thread!);
 			if (thread) return thread;
 		}

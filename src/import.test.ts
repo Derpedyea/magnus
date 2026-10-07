@@ -130,6 +130,25 @@ describe("runImport", () => {
 		expect(h.calls).toEqual(["0.eml"]);
 	});
 
+	it("sends big messages one at a time, so the Worker taking them stays within its memory", async () => {
+		const big = (i: number): ImportItem => ({ path: `big-${i}.eml`, file: new File([new Uint8Array(20 * 1024 * 1024)], `big-${i}.eml`), placement: { labels: [], read: true }, at: 0 });
+		let held = 0;
+		let most = 0;
+		const outcome = await runImport([big(0), big(1), big(2), ...items(3)], {
+			signal: new AbortController().signal,
+			sleep: async () => {},
+			onProgress: () => {},
+			upload: async (item) => {
+				held += item.file.size;
+				most = Math.max(most, held);
+				await new Promise((resolve) => setTimeout(resolve, 1));
+				held -= item.file.size;
+			},
+		});
+		expect(outcome.done).toBe(6);
+		expect(most).toBeLessThanOrEqual(25 * 1024 * 1024);
+	});
+
 	it("stops when asked, sending nothing more and not counting what was cut off", async () => {
 		const h = harness({});
 		const outcome = await runImport(items(10), {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { byteBudget } from "#shared";
 import { type ImportPlacement, MAX_IMPORT_BYTES, type ProtonLabel, ProtonLabelsSchema, ProtonMetadataSchema, protonPlacement } from "#shared/import";
 import { ApiError } from "./api";
 
@@ -153,12 +154,23 @@ const CONCURRENCY = 4;
  */
 export async function runImport(items: ImportItem[], options: RunOptions): Promise<ImportOutcome> {
 	const progress: ImportProgress = { done: 0, failed: [], bytesDone: 0 };
+	// The Worker reads each body whole, and requests to it can share an isolate's 128 MB: big messages go alone.
+	const budget = byteBudget(MAX_IMPORT_BYTES);
 	const halt = new AbortController();
 	const signal = AbortSignal.any([options.signal, halt.signal]);
 	let fatal: string | null = null;
 	let next = 0;
 
 	const send = async (item: ImportItem): Promise<void> => {
+		await budget.take(item.file.size);
+		try {
+			await sendOnce(item);
+		} finally {
+			budget.give(item.file.size);
+		}
+	};
+
+	const sendOnce = async (item: ImportItem): Promise<void> => {
 		for (let attempt = 0; ; attempt++) {
 			try {
 				await options.upload(item, signal);

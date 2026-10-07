@@ -43,7 +43,9 @@ const route = getRouteApi("/_app/_mail/$view/$mailboxId/$threadId");
 export function ThreadView() {
 	const { view, mailboxId, threadId } = route.useParams();
 	// Replies must be sent from the thread's own mailbox.
-	const identities = useAccount().identities.filter((i) => i.mailboxId === mailboxId);
+	const account = useAccount();
+	const identities = account.identities.filter((i) => i.mailboxId === mailboxId);
+	const ours = account.mailboxes.find((m) => m.id === mailboxId)?.addresses.map((a) => a.address) ?? [];
 	const qc = useQueryClient();
 	const { data } = useSuspenseQuery(threadQuery(mailboxId, threadId));
 	const close = useCloseThread();
@@ -123,7 +125,7 @@ export function ThreadView() {
 								mailboxId,
 								identities,
 								delivered: summary.addresses,
-								outgoing: isOutgoing(m, identities, inView),
+								outgoing: isOutgoing(m, ours, inView),
 								inView,
 							};
 							return (

@@ -166,6 +166,14 @@ describe("import", () => {
 		expect(await alice().listThreads({ label: "inbox", limit: 50 })).toMatchObject([{ messageCount: 5, subject: "Plans" }]);
 	});
 
+	it("looks up only the ids an imported message answers that it points at its thread, however many it names", async () => {
+		await importNow(eml({ id: "<early@outside.test>", subject: "Early", internal: "early==" }));
+		// The one id it shares sits deep in the middle of thousands, past the first and the newest 63.
+		const refs = Array.from({ length: 2000 }, (_, i) => (i === 1000 ? "<early@outside.test>" : `<ref-${i}@outside.test>`)).join(" ");
+		await importNow(eml({ id: "<late@outside.test>", subject: "Late", inReplyTo: refs, internal: "late==" }));
+		expect(await alice().listThreads({ label: "inbox", limit: 50 })).toHaveLength(2);
+	});
+
 	it("doesn't let imported spam join threads together", async () => {
 		await importNow(eml({ id: "<one@outside.test>", subject: "One", internal: "one==" }));
 		await importNow(eml({ id: "<two@outside.test>", subject: "Two", inReplyTo: "<elsewhere@outside.test>", internal: "two==" }));

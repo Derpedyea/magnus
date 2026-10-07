@@ -174,7 +174,9 @@ whole mailbox is the one exception. Code that writes or drops `m/` objects keeps
    verdicts, works out who the sender verifiably is (§5.6), and calls `Mailbox.ingest()`. Only the verdicts
    Email Routing stamped count: its `mx.cloudflare.net` header above its `X-CF-SpamH-Score`, since everything
    below that came from the sender. SPF is the envelope sender's result, not the HELO name's. If the mailbox was
-   deleted while that ran, it's cleared again (`destroy()`), in case its deletion got there first.
+   deleted while that ran, it's cleared again (`destroy()`), in case its deletion got there first. A batch parses
+   its messages together up to 25 MiB of them; a bigger one waits to go alone, since parsing holds a message several
+   times over and a batch shares one isolate's 128 MB.
 5. `ingest()` is idempotent. It dedupes on `ingestId` and on `Message-ID`, so the same mail arriving via two
    of our addresses, or our own outbound copy coming back, is stored once with merged labels. It decides between
    Inbox and Spam (§5.6), threads the message (§5.5), indexes it for search, and broadcasts `threads.changed`
@@ -330,8 +332,8 @@ Code: `shared/import.ts`, `src/import.ts`, `worker/mail/import.ts`.
    whose details are missing or can't be read is listed as unreadable rather than guessed at, and an export whose `labels.json` is
    missing or unreadable is refused, since the person's own folders and labels would be lost. An `.eml` with no
    details is filed as archived and read, or Sent when it's from one of the mailbox's addresses.
-2. **It sends each message on its own**, newest first and four at a time, to `POST /api/mailboxes/:id/import`, with
-   where it goes in the query (one schema checks each label). Failures on the way are retried; being signed out or
+2. **It sends each message on its own**, newest first and four at a time (big ones alone, since the Worker reads
+   each whole), to `POST /api/mailboxes/:id/import`, with where it goes in the query (one schema checks each label). Failures on the way are retried; being signed out or
    losing the mailbox stops the import. The page has to stay open, and says so.
 3. **The Worker reads only the headers** to refuse what isn't mail and to fill in the envelope the message never had:
    the mailbox's enabled addresses it reached (Delivered-To, then the recipients, and Bcc for sent mail), and for

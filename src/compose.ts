@@ -67,11 +67,12 @@ export interface AnswerContext {
 /**
  * Whether a message reads as sent: replies go to whom it was sent to. Mail one of our addresses sent another reads as
  * received when only the recipient is in view. Sent mail imported from an address that isn't ours is always sent.
+ * `ours` is every address of the mailbox, those that can only receive too.
  */
-export function isOutgoing(m: Pick<MessageDetail, "direction" | "from">, identities: Identity[], inView: (address: string) => boolean): boolean {
+export function isOutgoing(m: Pick<MessageDetail, "direction" | "from">, ours: string[], inView: (address: string) => boolean): boolean {
 	if (m.direction !== "out") return false;
 	const from = m.from.address.toLowerCase();
-	return inView(from) || !identities.some((i) => i.address.toLowerCase() === from);
+	return inView(from) || !ours.some((a) => a.toLowerCase() === from);
 }
 
 /** Which of our addresses answers or forwards a message: the one being viewed when it reached several of ours. */
