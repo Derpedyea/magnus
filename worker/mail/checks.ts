@@ -78,16 +78,24 @@ const QuickReply = z.object({
 const DeepReply = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string().nullable() }) })) });
 const DeepVerdict = z.object({ category: z.enum(MAIL_CATEGORIES) });
 
+/**
+ * A check that failed in a way this code names. Its message never quotes a model's answer, which can echo the mail, so
+ * it's safe to log and keep.
+ */
+export class CheckError extends Error {}
+
 /** Throws when a model can't be reached or answers off-schema; the queue retries it. */
 export async function checkMail(models: Models, facts: MailFacts): Promise<MailCheck> {
 	const state = describe(facts);
-	const quick = QuickReply.parse(
+	const quickReply = QuickReply.safeParse(
 		await models.run(QUICK_MODEL, {
 			model: "clef",
 			state,
 			questions: { category: { type: "choice", instructions: "Which kind of email is this, for the person who received it?", criteria: CATEGORIES } },
 		}),
-	).answers.category.probabilities;
+	);
+	if (!quickReply.success) throw new CheckError(`${QUICK_MODEL} answered off-schema`);
+	const quick = quickReply.data.answers.category.probabilities;
 	const spam = quick.spam + quick.phishing;
 	if (spam >= SURE_SPAM || spam < SURE_CLEAN) return { kind: "checked", category: likeliest(quick), spam, model: QUICK_MODEL };
 
@@ -119,10 +127,22 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 			},
 		},
 	);
-	if (!response.ok) throw new Error(`${DEEP_MODEL} answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
-	const text = DeepReply.parse(await response.json()).choices[0]?.message.content;
-	if (!text) throw new Error(`${DEEP_MODEL} gave no answer`);
-	return { kind: "checked", category: DeepVerdict.parse(JSON.parse(text)).category, spam, model: DEEP_MODEL };
+	// Status alone: a provider's error body can quote the request.
+	if (!response.ok) throw new CheckError(`${DEEP_MODEL} answered ${response.status}`);
+	const text = DeepReply.safeParse(await response.json().catch(() => null)).data?.choices[0]?.message.content;
+	if (!text) throw new CheckError(`${DEEP_MODEL} gave no answer`);
+	const verdict = DeepVerdict.safeParse(parsedJson(text));
+	if (!verdict.success) throw new CheckError(`${DEEP_MODEL} answered off-schema`);
+	return { kind: "checked", category: verdict.data.category, spam, model: DEEP_MODEL };
+}
+
+/** JSON.parse's errors quote the text, which here is a model's answer: so no error, just nothing. */
+function parsedJson(text: string): unknown {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return null;
+	}
 }
 
 /** Elements whose content isn't shown: what a browser doesn't render as text, and what the app's sanitizer removes. */
@@ -157,7 +177,12 @@ export async function readHtml(html: string): Promise<Page> {
 	};
 	const text = new Collector();
 	const links = new Set<string>();
-	await new HTMLRewriter()
+	// Hosts of the open, shown anchors: one counts once something in it shows, so empty links can't fill the list.
+	const anchors: string[] = [];
+	const rendered = () => {
+		for (const host of anchors) if (links.size < MAX_LINKS) links.add(host);
+	};
+	const output = new HTMLRewriter()
 		.on("*", {
 			element(el) {
 				const tag = el.tagName;
@@ -173,21 +198,30 @@ export async function readHtml(html: string): Promise<Page> {
 				const display = d.get("display");
 				const closes =
 					UNSHOWN.has(tag) || display === "none" || isZero(d.get("opacity")) || (el.hasAttribute("hidden") && (display === undefined || display === "none"));
-				if (closed === 0 && !closes && !own.invisible && !own.tiny) {
+				const visible = closed === 0 && !closes && !own.invisible && !own.tiny;
+				const href = visible && tag === "a" ? el.getAttribute("href") : null;
+				const host = href === null ? null : linkHost(decodeEntities(href));
+				if (visible) {
 					// Elements break words, as blocks and <br> do on screen.
 					text.separate();
-					const href = tag === "a" || tag === "area" ? el.getAttribute("href") : null;
-					const host = href === null ? null : linkHost(decodeEntities(href));
-					if (host && links.size < MAX_LINKS) links.add(host);
+					// An image map's area is clickable on the image; an image shows (or, blocked, shows its alt text).
+					const area = tag === "area" ? linkHost(decodeEntities(el.getAttribute("href") ?? "")) : null;
+					if (area && links.size < MAX_LINKS) links.add(area);
+					if (tag === "img") {
+						text.add(el.getAttribute("alt") ?? "");
+						rendered();
+					}
 					// A form control shows its value.
-					if (tag === "input" && el.getAttribute("type")?.toLowerCase() !== "hidden") text.add(el.getAttribute("value") ?? el.getAttribute("placeholder") ?? "");
+					if (tag === "input" && el.getAttribute("type")?.toLowerCase() !== "hidden" && text.add(el.getAttribute("value") ?? el.getAttribute("placeholder") ?? "")) rendered();
 				}
 				try {
 					el.onEndTag(() => {
 						if (closes) closed--;
+						if (host) anchors.pop();
 						inherited.pop();
 					});
 					if (closes) closed++;
+					if (host) anchors.push(host);
 					inherited.push(own);
 				} catch {
 					// A void element (an <img>, say) has no end tag, and no content to hide or style.
@@ -196,11 +230,12 @@ export async function readHtml(html: string): Promise<Page> {
 		})
 		.onDocument({
 			text(chunk) {
-				if (shown()) text.add(chunk.text);
+				if (shown() && text.add(chunk.text)) rendered();
 			},
 		})
-		.transform(new Response(html))
-		.arrayBuffer();
+		.transform(new Response(html));
+	// Drained, not kept: only the handlers matter, and a big message's output would be a second copy of it.
+	await output.body?.pipeTo(new WritableStream());
 	return { text: text.value(), links: [...links] };
 }
 
@@ -214,15 +249,18 @@ class Collector {
 		this.gap = true;
 	}
 
-	add(raw: string): void {
-		if (this.out.length >= MAX_COLLECTED) return;
+	/** Whether any of it shows: whitespace and formatting characters alone don't. */
+	add(raw: string): boolean {
 		const t = decodeEntities(raw).replaceAll(/\p{Cf}/gu, "").replaceAll(/\s+/g, " ");
 		const core = t.trim();
 		if (t.startsWith(" ")) this.gap = true;
-		if (!core) return;
-		if (this.gap && this.out) this.out += " ";
-		this.out += core.slice(0, MAX_COLLECTED - this.out.length);
+		if (!core) return false;
+		if (this.out.length < MAX_COLLECTED) {
+			if (this.gap && this.out) this.out += " ";
+			this.out += core.slice(0, MAX_COLLECTED - this.out.length);
+		}
 		this.gap = t.endsWith(" ");
+		return true;
 	}
 
 	value(): string {

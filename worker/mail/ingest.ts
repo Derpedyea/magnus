@@ -17,7 +17,7 @@ import {
 import PostalMime, { type Address as ParsedAddress, type Email } from "postal-mime";
 import { isOwnAddress, mailboxExists } from "../directory";
 import { notifyNewMail } from "../push";
-import { checkMail, type MailFacts, type Models, readHtml, readText } from "./checks";
+import { CheckError, checkMail, type MailFacts, type Models, readHtml, readText } from "./checks";
 
 /**
  * Tries at checking mail from an unknown sender, about a minute and a half apart in all, before it's delivered unchecked
@@ -145,13 +145,21 @@ async function checkOrGiveUp(env: Env, models: Models, facts: MailFacts, job: In
 	} catch (error) {
 		const failures = (job.checkFailures ?? 0) + 1;
 		if (failures < CHECK_ATTEMPTS) {
-			console.error(JSON.stringify({ msg: "mail check failed", ingestId: job.ingestId, mailboxId: job.mailboxId, failures, error: String(error) }));
+			console.error(JSON.stringify({ msg: "mail check failed", ingestId: job.ingestId, mailboxId: job.mailboxId, failures, error: checkErrorOf(error) }));
 			await env.INBOUND.send({ ...job, checkFailures: failures }, { delaySeconds: 30 * 2 ** (failures - 1) });
 			return "requeued";
 		}
-		console.error(JSON.stringify({ msg: "mail unchecked", ingestId: job.ingestId, mailboxId: job.mailboxId, error: String(error) }));
-		return { kind: "unchecked", error: String(error).slice(0, MAX_CHECK_ERROR) };
+		console.error(JSON.stringify({ msg: "mail unchecked", ingestId: job.ingestId, mailboxId: job.mailboxId, error: checkErrorOf(error) }));
+		return { kind: "unchecked", error: checkErrorOf(error) };
 	}
+}
+
+/**
+ * What a failed check says, safe to log and keep: this code's own messages, or the platform's (the AI binding, the
+ * gateway), bounded. Never a model's answer, which can echo the mail (CheckError).
+ */
+function checkErrorOf(error: unknown): string {
+	return (error instanceof CheckError ? error.message : String(error)).slice(0, MAX_CHECK_ERROR);
 }
 
 /**

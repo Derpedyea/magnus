@@ -115,6 +115,7 @@ describe("checks by Workers AI", () => {
 		["visibility set again inside a hidden parent", '<div style="visibility:hidden">gone <span style="visibility:visible">Wire the payment today.</span></div>'],
 		["a font size set again inside a zero-size parent", '<div style="font-size:0">gone<span style="font-size:14px">Wire the payment today.</span><span style="font-size:2em">gone</span></div>'],
 		["the text being a form control's value", '<input style="width:400px" value="Wire the payment today."><input type="hidden" value="gone">'],
+		["the text being an image's fallback", '<img width="600" src="https://img.example/x.png" alt="Wire the payment today."><img style="display:none" alt="gone">'],
 	])("reads visible text despite %s", async (_, html) => {
 		await f.control.setModels({ quick: 0.5 });
 		await deliver(VERIFIED, "Lunch?", { html });
@@ -132,6 +133,22 @@ describe("checks by Workers AI", () => {
 			+ '<a hidden href="https://hidden.example/">h</a><a style="visibility:hidden" href="https://hidden2.example/">h</a><a href="#top">top</a>' });
 		const [quick] = (await calls()).map((c) => JSON.parse(c.inputs));
 		expect(quick.state.linkDomains).toEqual(["phish.example", "phish2.example", "phish3.example", "phish4.example"]);
+	});
+
+	it("doesn't let links with nothing showing fill the list", async () => {
+		await f.control.setModels({ quick: 0.5 });
+		const empty = Array.from({ length: 45 }, (_, i) => `<a href="https://pad${i}.example/"><span style="display:none">x</span></a><a href="https://none${i}.example/"></a>`).join("");
+		await deliver(VERIFIED, "See below", { html: `${empty}<a href="https://phish.example/">Click</a><a href="https://banner.example/"><img src="cid:b"></a>` });
+		const [quick] = (await calls()).map((c) => JSON.parse(c.inputs));
+		expect(quick.state.linkDomains).toEqual(["phish.example", "banner.example"]);
+	});
+
+	it("keeps a model's off-schema answer, which can echo the mail, out of what it stores", async () => {
+		await f.control.setModels({ quick: 0.5, deep: "echo" });
+		const input = { ...(await store(VERIFIED, "Secret plan 42")), checkFailures: 2 };
+		await f.control.parse(input);
+		const verdict = (await box().getMessage(input.ingestId))?.message.verdict;
+		expect(verdict).toEqual({ kind: "unchecked", error: `${DEEP_MODEL} answered off-schema` });
 	});
 
 	it("doesn't show a deleted mailbox's mail to the models", async () => {

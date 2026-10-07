@@ -31,7 +31,7 @@ let pushStatus = 201;
 let pushEndless = false;
 
 /** What the stand-in models answer: Clef's probability of spam, and Luna's category. "fail" throws; "garbage" is off-schema. */
-type ModelAnswers = { quick: number | "fail" | "garbage"; deep: MailCategory | "fail" };
+type ModelAnswers = { quick: number | "fail" | "garbage"; deep: MailCategory | "fail" | "echo" };
 let answers: ModelAnswers = { quick: 0, deep: "personal" };
 /** Each model call, its inputs as JSON. */
 let modelCalls: { model: string; inputs: string }[] = [];
@@ -52,6 +52,8 @@ const models: Models = {
 		async run(request) {
 			modelCalls.push({ model: DEEP_MODEL, inputs: JSON.stringify({ id, request }) });
 			if (answers.deep === "fail") return new Response("Injected model failure", { status: 502 });
+			// A model answering off-schema by repeating the mail back.
+			if (answers.deep === "echo") return Response.json({ choices: [{ message: { role: "assistant", content: `Sure: ${JSON.stringify(request.query)}` } }] });
 			return Response.json({ choices: [{ message: { role: "assistant", content: JSON.stringify({ category: answers.deep }) } }] });
 		},
 	}),
