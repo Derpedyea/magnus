@@ -73,21 +73,22 @@ export async function getUserMailboxes(db: D1Database, userId: string): Promise<
 			.all<Omit<MailboxMembership, "addresses">>(),
 		db
 			.prepare(
-				`SELECT r.mailbox_id, a.address, a.display_name, r.can_send AND d.sending AS can_send, s.text AS signature, s.markdown
+				`SELECT r.mailbox_id, a.address, a.display_name, a.enabled, r.can_send AND d.sending AS can_send, s.text AS signature, s.markdown
 				 FROM mailbox_members mm
 				 JOIN address_routes r ON r.mailbox_id = mm.mailbox_id
 				 JOIN addresses a ON a.address = r.address
 				 JOIN domains d ON d.name = a.domain
 				 LEFT JOIN signatures s ON s.user_id = mm.user_id AND s.address = a.address
-				 WHERE mm.user_id = ?1 AND a.enabled = 1 ORDER BY a.created_at, a.rowid`,
+				 WHERE mm.user_id = ?1 ORDER BY a.created_at, a.rowid`,
 			)
 			.bind(userId)
-			.all<{ mailbox_id: string; address: string; display_name: string | null; can_send: number; signature: string | null; markdown: number | null }>(),
+			.all<{ mailbox_id: string; address: string; display_name: string | null; enabled: number; can_send: number; signature: string | null; markdown: number | null }>(),
 	]);
 	return mailboxes.results.map((m) => ({
 		...m,
+		disabled: addresses.results.filter((a) => a.mailbox_id === m.id && a.enabled !== 1).map((a) => a.address),
 		addresses: addresses.results
-			.filter((a) => a.mailbox_id === m.id)
+			.filter((a) => a.mailbox_id === m.id && a.enabled === 1)
 			.map((a) => ({
 				address: a.address,
 				displayName: a.display_name,

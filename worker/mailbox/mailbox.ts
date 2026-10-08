@@ -109,6 +109,7 @@ interface MessageRow extends Row {
 	from_json: string;
 	to_json: string;
 	cc_json: string;
+	bcc_json: string;
 	reply_to_json: string;
 	subject: string;
 	date: number;
@@ -137,6 +138,7 @@ interface FailedRow extends Row {
 	error: string | null;
 	failed_at: number;
 	retried_at: number | null;
+	imported: string | null;
 }
 
 interface RetryRow extends Row {
@@ -195,7 +197,18 @@ const IN_ADDRESSES = (param: string) =>
 		WHERE a.message_id = m.id AND a.address IN (SELECT value FROM json_each(${param}))))`;
 const addressParam = (filter: AddressFilter) => (filter.addresses ? JSON.stringify(filter.addresses) : null);
 /** IN_ADDRESSES for the failed table, whose rows carry the one address they were delivered to. */
-const FAILED_IN_ADDRESSES = (param: string) => `(${param} IS NULL OR address IN (SELECT value FROM json_each(${param})))`;
+const FAILED_IN_ADDRESSES = (param: string) =>
+	`(${param} IS NULL OR address IN (SELECT value FROM json_each(${param}))
+		OR EXISTS (SELECT 1 FROM json_each(imported, '$.addresses') i WHERE i.value IN (SELECT value FROM json_each(${param}))))`;
+
+/** Ids an imported message answers that ingest() points at its thread, so a huge References header stays cheap. */
+const MAX_NAMED_IDS = 64;
+
+/** What a message answers, each once: the first it names (its In-Reply-To) and the newest, at most MAX_NAMED_IDS. */
+function namedIds(input: Pick<IngestInput, "inReplyTo" | "references">): string[] {
+	const ids = [...new Set([...input.inReplyTo, ...input.references])];
+	return ids.length <= MAX_NAMED_IDS ? ids : [...ids.slice(0, 1), ...ids.slice(1 - MAX_NAMED_IDS)];
+}
 
 /** Predicate on deliveries alias `d`: the recipient's server refused the message, so a retry sends to them. */
 const REFUSED = `d.status IN (${[...RETRYABLE].map((s) => `'${s}'`).join(", ")})`;
@@ -363,11 +376,12 @@ export class Mailbox extends DurableObject<Env> {
 			return { threadId: existing.thread_id, duplicate: true, inbox: false };
 		}
 
-		const judged = this.judge(input.sender, input.check);
-		const place = placeFor(judged, this.mailSettings());
-		const labels = [place, ...input.labels];
+		// Imported mail goes where it was at the provider it came from, and isn't judged here.
+		const judged = input.imported ? null : this.judge(input.sender, input.check);
+		const place = judged ? placeFor(judged, this.mailSettings()) : null;
+		const labels = place ? [place, ...input.labels] : input.labels;
 		// Its banner names the setting only when the setting is why it's in Spam, not after someone moves it there.
-		const verdict = judged.kind === "checked" && judged.category === "outreach" && place === "spam" ? { ...judged, bySetting: true as const } : judged;
+		const verdict = judged?.kind === "checked" && judged.category === "outreach" && place === "spam" ? { ...judged, bySetting: true as const } : judged;
 
 		// Same message delivered twice to this mailbox (e.g. sent to two of our addresses,
 		// or our own outbound copy coming back): keep one copy, merge labels.
@@ -378,6 +392,20 @@ export class Mailbox extends DurableObject<Env> {
 					input.messageIdHeader,
 				)
 				.toArray()[0];
+			if (twin && input.imported) {
+				// An import leaves mail already here as it is, and keeps none of what parsing its copy stored, original included.
+				// Its id is tombstoned like deleted mail's, so importing the same file once the mail here is deleted for good
+				// doesn't bring it back.
+				await this.ctx.storage.setAlarm(Date.now());
+				this.ctx.storage.transactionSync(() => {
+					for (const key of [input.rawKey, ...(input.htmlKey ? [input.htmlKey] : []), ...input.attachments.map((a) => a.r2Key)]) this.queueTrash(key);
+					this.sql.exec(`INSERT OR IGNORE INTO deleted_messages (id, raw_key, received_at) VALUES (?1, NULL, ?2)`, input.id, input.receivedAt);
+				});
+				this.clearFailed(input.id);
+				await this.emptyTrash();
+				await this.scheduleOutbox();
+				return { threadId: twin.thread_id, duplicate: true, inbox: false };
+			}
 			if (twin) {
 				// Our own mail came back because it was sent to us too: it arrives like local delivery would leave it. A copy
 				// that came in before keeps where its verdict put it, since this one's could disagree.
@@ -390,6 +418,8 @@ export class Mailbox extends DurableObject<Env> {
 		}
 
 		const snippet = makeSnippet(input.text);
+		// Threads of held mail that imported sent mail lets in, writing to its senders (recordContacts()).
+		let released: string[] = [];
 		const delivered = this.ctx.storage.transactionSync(() => {
 			const threadId =
 				this.findThread(input) ?? this.createThread(input.subject, input.date);
@@ -403,8 +433,8 @@ export class Mailbox extends DurableObject<Env> {
 				.exec<{ rowid: number }>(
 					`INSERT INTO messages (id, thread_id, direction, message_id_header, in_reply_to, refs,
 						envelope_from, envelope_to, from_json, to_json, cc_json, reply_to_json, subject, snippet,
-						date, received_at, text_body, html_key, raw_key, is_read, auth_json, verdict_json, sender)
-					 VALUES (?1, ?2, 'in', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, 0, ?19, ?20, ?21)
+						date, received_at, text_body, html_key, raw_key, is_read, auth_json, verdict_json, sender, bcc_json)
+					 VALUES (?1, ?2, ?22, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?23, ?19, ?20, ?21, ?24)
 					 RETURNING rowid`,
 					input.id,
 					threadId,
@@ -425,25 +455,49 @@ export class Mailbox extends DurableObject<Env> {
 					input.htmlKey,
 					input.rawKey,
 					input.auth ? JSON.stringify(input.auth) : null,
-					JSON.stringify(verdict),
+					verdict ? JSON.stringify(verdict) : null,
 					input.sender.verified,
+					input.imported?.sent ? "out" : "in",
+					input.imported?.read ? 1 : 0,
+					JSON.stringify(input.bcc ?? []),
 				)
 				.one();
 
 			this.addLabels([input.id], placed);
-			this.addAddress(input.id, stripSubaddress(input.envelopeTo).base);
+			// Imported mail says which of the mailbox's addresses it belongs to, which can be none.
+			const filed = input.imported ? input.imported.addresses : [stripSubaddress(input.envelopeTo).base];
+			for (const address of filed) this.addAddress(input.id, address);
 			for (const a of input.attachments) this.insertAttachment(input.id, a);
 			if (input.messageIdHeader) this.registerRef(input.messageIdHeader, threadId);
-			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc], input.text);
+			// Imports come in any order, so the ids an imported message answers point here too, for those messages to join it
+			// when they come. Only for imports, and not spam: live mail naming an id would let anyone who writes in claim it.
+			if (input.imported && !input.labels.includes("spam")) for (const id of namedIds(input)) this.registerRef(id, threadId);
+			const bcc = input.bcc ?? [];
+			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc, ...bcc], input.text);
 			this.touchThread(threadId, input.date, snippet, [input.from, ...input.to, ...input.cc]);
-			if (!labels.includes("spam")) this.recordContacts([input.from], false, input.date);
+			// Titled by the message that started it, which an import can bring after its replies. Not for live mail, whose
+			// Date anyone can set.
+			if (input.imported) {
+				this.sql.exec(
+					`UPDATE threads SET subject = ?2, subject_key = ?3 WHERE id = ?1
+					 AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ?1 AND id != ?4 AND date <= ?5)`,
+					threadId,
+					input.subject,
+					normalizeSubject(input.subject),
+					input.id,
+					input.date,
+				);
+			}
+			if (input.imported?.sent) released = this.recordContacts([...input.to, ...input.cc, ...bcc], true, input.date, true);
+			else if (!labels.includes("spam")) this.recordContacts([input.from], false, input.date);
 			// Delivered by a retry.
 			this.sql.exec(`DELETE FROM failed WHERE id = ?1`, input.id);
 			// Where it was placed, not every label it has; a +tag can't add `inbox` (labelFromTag()).
-			return { threadId, inbox: placed[0] === "inbox" };
+			// Imported mail is old: it never notifies (push.ts), wherever it goes.
+			return { threadId, inbox: !input.imported && placed[0] === "inbox" };
 		});
 
-		this.broadcast({ type: "threads.changed", threadIds: [delivered.threadId] });
+		this.broadcast({ type: "threads.changed", threadIds: [...new Set([delivered.threadId, ...released])] });
 		return { threadId: delivered.threadId, duplicate: false, inbox: delivered.inbox };
 	}
 
@@ -567,18 +621,32 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	/**
-	 * RFC 5322 threading: match In-Reply-To/References against known Message-IDs.
-	 * If the message claims to be a reply but nothing matches (e.g. a reply to an outbound
-	 * message whose final Message-ID we never saw), fall back to normalized subject + sender
-	 * already being a participant, within a recent window.
+	 * RFC 5322 threading: match In-Reply-To/References against known Message-IDs, and for imported mail, its own
+	 * Message-ID against those imported replies named (ingest()). If the message claims to be a reply but nothing
+	 * matches (e.g. a reply to an outbound message whose final Message-ID we never saw), fall back to normalized subject
+	 * + sender already being a participant, within a recent window. Not for imported mail: it comes in any order, so what
+	 * a reply answers can still be on its way, and the subject would put it with an older conversation instead.
 	 */
-	private findThread(input: Pick<IngestInput, "inReplyTo" | "references" | "subject" | "from" | "date">): string | null {
+	private findThread(input: Pick<IngestInput, "messageIdHeader" | "inReplyTo" | "references" | "subject" | "from" | "date" | "imported" | "labels">): string | null {
 		const candidates = [...new Set([...input.inReplyTo, ...input.references.toReversed()])];
-		for (const id of candidates) {
-			const hit = this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM thread_refs WHERE message_id_header = ?1`, id).toArray()[0];
-			if (hit) return hit.thread_id;
+		const own = input.imported && input.messageIdHeader ? [input.messageIdHeader] : [];
+		const lookup = (id: string) => this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM thread_refs WHERE message_id_header = ?1`, id).toArray()[0]?.thread_id;
+		// An import's lookups are bounded like the ids it registers, so thousands of References stay cheap.
+		const ids = input.imported ? [...namedIds(input), ...own] : candidates;
+		if (!input.imported || input.labels.includes("spam")) {
+			for (const id of ids) {
+				const hit = lookup(id);
+				if (hit) return hit;
+			}
+		} else {
+			// An import can connect threads its earlier messages started apart: two replies imported before what they both
+			// answer each began one. They become one, the first it matches. Not for live mail or spam, which could join any
+			// two conversations by naming them.
+			const [thread, ...others] = [...new Set(ids.flatMap((id) => lookup(id) ?? []))];
+			for (const other of others) this.mergeThread(other, thread!);
+			if (thread) return thread;
 		}
-		if (candidates.length === 0) return null;
+		if (candidates.length === 0 || input.imported) return null;
 
 		const key = normalizeSubject(input.subject);
 		if (!key) return null;
@@ -594,6 +662,16 @@ export class Mailbox extends DurableObject<Env> {
 			)
 			.toArray()[0];
 		return hit?.id ?? null;
+	}
+
+	/** Moves a thread's messages and ids into another, which keeps the subject of its oldest message, and drops it. */
+	private mergeThread(from: string, into: string): void {
+		this.sql.exec(`UPDATE messages SET thread_id = ?2 WHERE thread_id = ?1`, from, into);
+		this.sql.exec(`UPDATE thread_refs SET thread_id = ?2 WHERE thread_id = ?1`, from, into);
+		this.sql.exec(`DELETE FROM threads WHERE id = ?1`, from);
+		const oldest = this.sql.exec<{ subject: string }>(`SELECT subject FROM messages WHERE thread_id = ?1 ORDER BY date, id LIMIT 1`, into).one();
+		this.sql.exec(`UPDATE threads SET subject = ?2, subject_key = ?3 WHERE id = ?1`, into, oldest.subject, normalizeSubject(oldest.subject));
+		this.rebuildThread(into);
 	}
 
 	private createThread(subject: string, at: number): string {
@@ -675,9 +753,10 @@ export class Mailbox extends DurableObject<Env> {
 	/**
 	 * Remembers who this mailbox writes to (`sent`) and hears from, for recipient suggestions. Writing to someone also
 	 * trusts their mail, even if it was marked as spam before, and lets them in from the Screener; returns the threads
-	 * that moved. An undone send still counts: the address was typed on purpose.
+	 * that moved. An undone send still counts: the address was typed on purpose. Sent mail imported from elsewhere
+	 * (`imported`) does so only for people not judged here yet: it's older than whatever this mailbox has said of them.
 	 */
-	private recordContacts(people: Address[], sent: boolean, at: number): string[] {
+	private recordContacts(people: Address[], sent: boolean, at: number, imported = false): string[] {
 		const valid = people.filter((p) => isValidAddress(p.address));
 		for (const p of valid) {
 			this.sql.exec(
@@ -692,7 +771,15 @@ export class Mailbox extends DurableObject<Env> {
 				at,
 			);
 		}
-		return sent ? this.judgeAddresses([...new Set(valid.map((p) => normalizeAddress(p.address)))], "trusted") : [];
+		if (!sent) return [];
+		const addresses = [...new Set(valid.map((p) => normalizeAddress(p.address)))];
+		const judging = imported
+			? this.sql
+					.exec<{ value: string }>(`SELECT value FROM json_each(?1) WHERE value NOT IN (SELECT address FROM senders)`, JSON.stringify(addresses))
+					.toArray()
+					.map((r) => r.value)
+			: addresses;
+		return this.judgeAddresses(judging, "trusted");
 	}
 
 	private addAddress(messageId: string, address: string): void {
@@ -894,19 +981,22 @@ export class Mailbox extends DurableObject<Env> {
 		const known = this.sql.exec(`SELECT 1 FROM messages WHERE id = ?1 UNION ALL SELECT 1 FROM deleted_messages WHERE id = ?1`, job.ingestId);
 		if (known.toArray().length > 0) return;
 		this.sql.exec(
-			`INSERT INTO failed (id, raw_key, envelope_from, envelope_to, address, subaddress, raw_size, received_at, error, failed_at)
-			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-			 ON CONFLICT (id) DO UPDATE SET error = coalesce(excluded.error, failed.error), failed_at = excluded.failed_at`,
+			`INSERT INTO failed (id, raw_key, envelope_from, envelope_to, address, subaddress, raw_size, received_at, error, failed_at, imported)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+			 ON CONFLICT (id) DO UPDATE SET error = coalesce(excluded.error, failed.error), failed_at = excluded.failed_at,
+				imported = excluded.imported`,
 			job.ingestId,
 			job.rawKey,
 			job.envelopeFrom,
 			job.envelopeTo,
-			stripSubaddress(job.envelopeTo).base,
+			// Imported mail can name no address at all.
+			isValidAddress(job.envelopeTo) ? stripSubaddress(job.envelopeTo).base : "",
 			job.subaddress,
 			job.rawSize,
 			job.receivedAt,
 			error,
 			Date.now(),
+			job.imported ? JSON.stringify(job.imported) : null,
 		);
 		this.broadcast({ type: "failed.changed" });
 	}
@@ -948,6 +1038,7 @@ export class Mailbox extends DurableObject<Env> {
 			subaddress: row.subaddress,
 			receivedAt: row.received_at,
 		};
+		if (row.imported) job.imported = JSON.parse(row.imported);
 		await this.env.INBOUND.send(job);
 		// Changes nothing if the retry delivered it, or someone deleted it, while it was being queued.
 		this.sql.exec(`UPDATE failed SET retried_at = ?2 WHERE id = ?1`, id, Date.now());
@@ -1864,6 +1955,7 @@ function toMessageDetail(m: MessageRow, attachments: AttachmentRow[], undelivere
 		from: JSON.parse(m.from_json),
 		to: JSON.parse(m.to_json),
 		cc: JSON.parse(m.cc_json),
+		bcc: JSON.parse(m.bcc_json),
 		replyTo: JSON.parse(m.reply_to_json),
 		subject: m.subject,
 		date: m.date,

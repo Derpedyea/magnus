@@ -47,6 +47,9 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
 - **Live updates** over hibernatable WebSockets, so idle tabs cost nothing.
 - **Trash you can empty.** Permanently delete trashed messages in a conversation or empty Trash for the addresses
   in view, with confirmation. Files still used by other mail stay; failed storage cleanup retries automatically.
+- **Bring your old mail.** Drop the folder Proton's Export Tool saves on Settings › Import mail, and your mail
+  arrives with its folders, labels, stars, read state, and Sent, threaded like new mail. Any folder of `.eml` files
+  works too. Importing the same folder again adds nothing twice.
 - **Hostile HTML stays contained**: streaming sanitizer, strict CSP, sandboxed iframe, and remote images
   blocked until you ask.
 - **Sign in with a passkey or an emailed code**, or Google if you add it. There's no sign-up; only people you add can get in.
@@ -132,7 +135,7 @@ Nothing is really sent locally. Outbound mail, sign-in codes included, is writte
 Drafts autosave to your account and are available from Drafts on any signed-in device. Close keeps a draft;
 the trash button discards it. Conflicting edits from two devices can be kept as a separate copy.
 
-Next up: forwarding and importing mail from other providers. The full list is in
+Next up: forwarding. The full list is in
 [the roadmap](docs/ARCHITECTURE.md#8-roadmap).
 
 ## License

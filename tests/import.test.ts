@@ -1,0 +1,339 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { fixture, type Fixture, inbound, job, type Mailboxes, MIME } from "./runtime/fixture";
+import { keyPair, rawKey } from "../worker/push";
+import { r2Keys, toBase64Url } from "#shared";
+import { z } from "zod";
+
+const RECEIVED = Date.UTC(2021, 4, 2, 9, 30);
+const Accepted = z.object({ id: z.string() });
+
+/** A message as Proton's Export Tool writes it: its internal id in X-Pm-Internal-Id and appended to References. */
+function eml(overrides: { id?: string; from?: string; to?: string; subject?: string; date?: string; inReplyTo?: string; internal?: string; auth?: string } = {}) {
+	const { id = "<hello@outside.test>", from = "Sender <sender@outside.test>", to = "Old Me <old@proton.test>", subject = "Hello", internal = "AbC123==" } = overrides;
+	return [
+		`From: ${from}`, `To: ${to}`, "Delivered-To: alice@example.com", `Subject: ${subject}`, `Date: ${overrides.date ?? "Sun, 02 May 2021 09:00:00 +0000"}`,
+		`X-Pm-Date: ${new Date(RECEIVED).toUTCString()}`, `Message-ID: ${id}`, `X-Pm-Internal-Id: ${internal}`,
+		...(overrides.inReplyTo ? [`In-Reply-To: ${overrides.inReplyTo}`] : []),
+		`References: ${overrides.inReplyTo ? `${overrides.inReplyTo} ` : ""}<${internal}@protonmail.internalid>`,
+		`Authentication-Results: mx.proton.test; ${overrides.auth ?? "spf=pass; dkim=pass; dmarc=pass"}`,
+		'Content-Type: multipart/mixed; boundary="parts"', "", "--parts", "Content-Type: text/html; charset=utf-8", "", "<p>Hi there</p>",
+		"--parts", 'Content-Type: application/pdf; name="a.pdf"', 'Content-Disposition: attachment; filename="a.pdf"', "Content-Transfer-Encoding: base64", "", "JVBERg==",
+		"--parts--", "",
+	].join("\r\n");
+}
+
+describe("import", () => {
+	let f: Fixture;
+	let ids: Mailboxes;
+	let cookie: string;
+	beforeAll(async () => { f = await fixture(); }, 30_000);
+	afterAll(async () => { await f?.server.close(); });
+	beforeEach(async () => {
+		ids = await f.seed();
+		cookie = await f.login("alice");
+	});
+
+	function upload(body: string, query = "labels=inbox,work&read=1&sent=0", mailboxId = ids.alice, session = cookie) {
+		return f.worker.fetch(`https://magnus.test/api/mailboxes/${mailboxId}/import?${query}`, {
+			method: "POST", headers: { Cookie: session, "Content-Type": "message/rfc822" }, body,
+		});
+	}
+	/** Uploads and parses what it queued, as the inbound queue would. */
+	async function importNow(body: string, query?: string) {
+		const res = await upload(body, query);
+		expect(res.status).toBe(202);
+		const { id } = Accepted.parse(await res.json());
+		const queued = (await f.control.state()).jobs.find((j) => j.ingestId === id);
+		if (!queued) throw new Error("Nothing queued");
+		await f.control.parse(queued);
+		return { id, job: queued };
+	}
+	const alice = () => f.env.MAILBOX.getByName(ids.alice);
+
+	it("refuses people outside the mailbox", async () => {
+		expect((await upload(eml(), undefined, ids.alice, "")).status).toBe(401);
+		expect((await upload(eml(), undefined, ids.bob)).status).toBe(404);
+		expect((await upload(eml(), undefined, "guessed")).status).toBe(404);
+		expect((await f.control.state()).jobs).toEqual([]);
+	});
+
+	it.each([
+		["a file that isn't mail", "\u0089PNG\r\n\u001a\n\u0000\u0000binary", undefined, 422],
+		["the outbox", eml(), "labels=outbox&read=1", 400],
+		["a view's name", eml(), "labels=all&read=1", 400],
+		["a label with a comma inside", eml(), "labels=a%2Cb%20c&read=1", 400],
+		["no read state", eml(), "labels=inbox", 400],
+	])("refuses %s without storing anything", async (_, body, query, status) => {
+		expect((await upload(body, query)).status).toBe(status);
+		expect((await f.control.state()).jobs).toEqual([]);
+		expect((await f.env.MAIL.list()).objects).toEqual([]);
+	});
+
+	it("refuses a message over the inbound limit before reading it", async () => {
+		const res = await upload("x".repeat(25 * 1024 * 1024 + 1));
+		expect(res.status).toBe(413);
+		expect((await f.env.MAIL.list()).objects).toEqual([]);
+	});
+
+	it("queues the original with its placement and the envelope its headers give, then files it as it was there", async () => {
+		const { id, job: queued } = await importNow(eml({ auth: "spf=fail; dkim=fail; dmarc=fail" }));
+		expect(queued).toMatchObject({
+			rawKey: r2Keys.imported(ids.alice, id), mailboxId: ids.alice, envelopeFrom: "sender@outside.test", envelopeTo: "alice@example.com",
+			subaddress: null, receivedAt: RECEIVED, imported: { labels: ["inbox", "work"], read: true, sent: false },
+		});
+		expect(await f.env.MAIL.head(queued.rawKey)).toMatchObject({ customMetadata: { mailboxes: ids.alice } });
+
+		const stored = await alice().getMessage(id);
+		// Verdicts in the file aren't ours to show or triage by.
+		expect(stored?.message).toMatchObject({ direction: "in", isRead: true, auth: null, labels: expect.arrayContaining(["inbox", "work"]) });
+		expect(stored?.message.labels).toHaveLength(2);
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		expect(await db.exec("SELECT refs FROM messages")).toEqual([{ refs: "[]" }]);
+		expect(await alice().listThreads({ label: "inbox", limit: 50, addresses: ["alice@example.com"] })).toMatchObject([{ subject: "Hello", unreadCount: 0 }]);
+	});
+
+	it("files mail from one of the mailbox's addresses as sent when the export doesn't say, and learns who it went to", async () => {
+		const { id, job: queued } = await importNow(eml({ from: "Alice <alice@example.com>", to: "Pal <pal@outside.test>" }), "read=1");
+		expect(queued).toMatchObject({ envelopeTo: "alice@example.com", imported: { labels: ["sent"], sent: true } });
+		expect((await alice().getMessage(id))?.message).toMatchObject({ direction: "out", labels: ["sent"] });
+		expect(await alice().contacts(10)).toEqual([expect.objectContaining({ address: "pal@outside.test", sent: 1 })]);
+	});
+
+	it("keeps who sent mail was Bcc'd to, and learns them as people written to", async () => {
+		const sent = eml({ from: "Alice <alice@example.com>", to: "Pal <pal@outside.test>" }).replace("Subject:", "Bcc: Quiet <quiet@outside.test>\r\nSubject:");
+		await importNow(sent, "read=1");
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		expect(await db.exec("SELECT bcc_json FROM messages")).toEqual([{ bcc_json: '[{"address":"quiet@outside.test","name":"Quiet"}]' }]);
+		expect(await alice().contacts(10)).toEqual(expect.arrayContaining([expect.objectContaining({ address: "quiet@outside.test", sent: 1 })]));
+		expect(await alice().search({ query: "quiet", limit: 50 })).toHaveLength(1);
+		const [thread] = await alice().listThreads({ label: "sent", limit: 50 });
+		expect((await alice().getThread(thread!.id))?.messages[0]?.bcc).toEqual([{ address: "quiet@outside.test", name: "Quiet" }]);
+	});
+
+	it("files mail that names none of the mailbox's addresses under its first one, so address views show it", async () => {
+		const old = eml({ to: "Old Me <old@proton.test>" }).replace("Delivered-To: alice@example.com", "Delivered-To: old@proton.test");
+		const { job: queued } = await importNow(old);
+		expect(queued.envelopeTo).toBe("alice@example.com");
+		expect(await alice().listThreads({ label: "inbox", limit: 50, addresses: ["alice@example.com"] })).toHaveLength(1);
+	});
+
+	it("doesn't let a file's own Cloudflare stamp vouch for its sender or judge where it goes", async () => {
+		const stamped = eml({ from: "Bank <alerts@bank.test>" }).replace("Delivered-To:", "Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=bank.test; dkim=pass header.d=bank.test\r\nX-CF-SpamH-Score: 1\r\nDelivered-To:");
+		const { id } = await importNow(stamped, "labels=inbox&read=0&sent=0");
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		expect(await db.exec("SELECT sender, verdict_json, auth_json FROM messages")).toEqual([{ sender: null, verdict_json: null, auth_json: null }]);
+		expect((await alice().getMessage(id))?.message).toMatchObject({ labels: ["inbox"], verdict: null });
+	});
+
+	it("doesn't trust again someone marked as spam here because old sent mail wrote to them", async () => {
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		await alice().contacts(1);
+		await db.exec("INSERT INTO senders (address, verdict) VALUES ('pal@outside.test', 'spam')");
+		await importNow(eml({ from: "Alice <alice@example.com>", to: "Pal <pal@outside.test>" }), "read=1");
+		expect(await db.exec("SELECT address, verdict FROM senders")).toEqual([{ address: "pal@outside.test", verdict: "spam" }]);
+	});
+
+	it("doesn't hold imported mail in the Screener, which asks about new senders", async () => {
+		await alice().updateSettings({ screener: true });
+		const { id } = await importNow(eml({ from: "Stranger <stranger@unknown.test>" }), "labels=inbox&read=0&sent=0");
+		expect((await alice().getMessage(id))?.message.labels).toEqual(["inbox"]);
+		expect((await upload(eml({ id: "<held@outside.test>" }), "labels=screener&read=0&sent=0")).status).toBe(400);
+	});
+
+	it("doesn't send imported mail to the models, which would sort it again", async () => {
+		await f.control.setModels({ quick: 0.99, deep: "spam" });
+		const { id } = await importNow(eml({ from: "Stranger <stranger@unknown.test>" }), "labels=inbox&read=0&sent=0");
+		expect((await f.control.state()).modelCalls).toEqual([]);
+		expect((await alice().getMessage(id))?.message.labels).toEqual(["inbox"]);
+		// The same models do see a stranger's mail that just arrived.
+		const live = job(ids.alice, "live-check");
+		await f.env.MAIL.put(live.rawKey, MIME.replace("<receipt@outside.test>", "<live-check@outside.test>"));
+		await f.control.parse(live);
+		expect((await f.control.state()).modelCalls.length).toBeGreaterThan(0);
+	});
+
+	it("doesn't notify about mail imported into the inbox, as it does about mail that just arrived", async () => {
+		const pair = await keyPair({ name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
+		const subscription = { endpoint: "https://push.example.net/alice", keys: { p256dh: toBase64Url(await rawKey(pair.publicKey)), auth: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) } };
+		await f.worker.fetch("https://magnus.test/api/push", { method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify(subscription) });
+		await importNow(eml(), "labels=inbox&read=0&sent=0");
+		expect(await f.control.pushes()).toEqual([]);
+		// Mail that just arrived does notify that browser.
+		const live = job(ids.alice, "live-push");
+		await f.env.MAIL.put(live.rawKey, MIME.replace("<receipt@outside.test>", "<live-push@outside.test>"));
+		await f.control.parse(live);
+		expect(await f.control.pushes()).toHaveLength(1);
+	});
+
+	it("is the same message when the same file is imported again", async () => {
+		const first = await importNow(eml());
+		const objects = (await f.env.MAIL.list()).objects.map((o) => o.key).sort();
+		const again = await importNow(eml());
+		expect(again.id).toBe(first.id);
+		expect(await alice().listThreads({ label: "all", limit: 50 })).toMatchObject([{ messageCount: 1 }]);
+		expect((await f.env.MAIL.list()).objects.map((o) => o.key).sort()).toEqual(objects);
+	});
+
+	it("leaves mail already here as it is, and keeps nothing of the imported copy", async () => {
+		const here = inbound(ids.alice, "live-1");
+		await alice().ingest({ ...here, messageIdHeader: "<hello@outside.test>", labels: ["inbox"] });
+		await alice().modifyThreads({ threadIds: (await alice().listThreads({ label: "inbox", limit: 50 })).map((t) => t.id), remove: ["inbox"] });
+		await importNow(eml(), "labels=trash&read=0");
+		expect((await alice().getMessage("live-1"))?.message).toMatchObject({ labels: [], isRead: false });
+		expect(await alice().listThreads({ label: "all", limit: 50 })).toMatchObject([{ messageCount: 1 }]);
+		expect((await f.env.MAIL.list()).objects).toEqual([]);
+	});
+
+	it("threads a reply imported before the message it answers", async () => {
+		const reply = await importNow(eml({ id: "<reply@outside.test>", subject: "Re: Plans", date: "Mon, 03 May 2021 09:00:00 +0000", inReplyTo: "<plans@outside.test>", internal: "reply==" }));
+		const original = await importNow(eml({ id: "<plans@outside.test>", subject: "Plans", internal: "plans==" }));
+		const threads = await alice().listThreads({ label: "inbox", limit: 50 });
+		// Titled by the message that started it, as if they'd come in order.
+		expect(threads).toMatchObject([{ messageCount: 2, subject: "Plans" }]);
+		expect((await alice().getMessage(original.id))?.message.threadId).toBe((await alice().getMessage(reply.id))?.message.threadId);
+	});
+
+	it("joins reply branches that started apart once the message they both answer comes", async () => {
+		const at = (n: number) => `Mon, 0${n} May 2021 09:00:00 +0000`;
+		const msg = (id: string, n: number, parent?: string) => eml({ id: `<${id}@outside.test>`, subject: parent ? "Re: Plans" : "Plans", date: at(n), inReplyTo: parent && `<${parent}@outside.test>`, internal: `${id}==` });
+		// Newest first, and each reply names only what it answers, so the branches can't meet until their parents come.
+		for (const [id, n, parent] of [["a1", 5, "a"], ["b1", 4, "b"], ["a", 3, "root"], ["b", 2, "root"], ["root", 1]] as const) await importNow(msg(id, n, parent));
+		expect(await alice().listThreads({ label: "inbox", limit: 50 })).toMatchObject([{ messageCount: 5, subject: "Plans" }]);
+	});
+
+	it("looks up only the ids an imported message answers that it points at its thread, however many it names", async () => {
+		await importNow(eml({ id: "<early@outside.test>", subject: "Early", internal: "early==" }));
+		// The one id it shares sits deep in the middle of thousands, past the first and the newest 63.
+		const refs = Array.from({ length: 2000 }, (_, i) => (i === 1000 ? "<early@outside.test>" : `<ref-${i}@outside.test>`)).join(" ");
+		await importNow(eml({ id: "<late@outside.test>", subject: "Late", inReplyTo: refs, internal: "late==" }));
+		expect(await alice().listThreads({ label: "inbox", limit: 50 })).toHaveLength(2);
+	});
+
+	it("bounds the ids imported spam looks up too", async () => {
+		await importNow(eml({ id: "<early@outside.test>", subject: "Early", internal: "early==" }));
+		const refs = Array.from({ length: 2000 }, (_, i) => (i === 1000 ? "<early@outside.test>" : `<ref-${i}@outside.test>`)).join(" ");
+		await importNow(eml({ id: "<junk@outside.test>", subject: "Junk", inReplyTo: refs, internal: "junk==" }), "labels=spam&read=1&sent=0");
+		expect(await alice().listThreads({ label: "spam", limit: 50 })).toMatchObject([{ messageCount: 1, subject: "Junk" }]);
+	});
+
+	it("doesn't let imported spam join threads together", async () => {
+		await importNow(eml({ id: "<one@outside.test>", subject: "One", internal: "one==" }));
+		await importNow(eml({ id: "<two@outside.test>", subject: "Two", inReplyTo: "<elsewhere@outside.test>", internal: "two==" }));
+		const bait = eml({ id: "<bait@outside.test>", subject: "Bait", inReplyTo: "<one@outside.test> <elsewhere@outside.test>", internal: "bait==" });
+		await importNow(bait.replace("In-Reply-To: <one@outside.test> <elsewhere@outside.test>", "In-Reply-To: <one@outside.test>"), "labels=spam&read=1&sent=0");
+		expect(await alice().listThreads({ label: "all", limit: 50 })).toHaveLength(2);
+	});
+
+	it("files sent mail under an address of the mailbox it only Bcc'd", async () => {
+		const sent = eml({ from: "Old Me <old@proton.test>", to: "Pal <pal@outside.test>" }).replace("Delivered-To: alice@example.com\r\n", "").replace("Subject:", "Bcc: alice@receive.test\r\nSubject:");
+		const { job: queued } = await importNow(sent, "labels=sent&read=1&sent=1");
+		expect(queued.imported?.addresses).toEqual(["alice@receive.test"]);
+	});
+
+	it("lists failed imports under every address they'd be filed under", async () => {
+		const failed = { ...job(ids.alice, "both-1"), envelopeTo: "alice@example.com", imported: { labels: ["inbox"], read: false, sent: true, addresses: ["alice@example.com", "alice@receive.test"] } };
+		await alice().recordFailed(failed, "Unreadable");
+		expect(await alice().listFailed({ addresses: ["alice@receive.test"] })).toMatchObject([{ id: "both-1" }]);
+		expect((await alice().counts({ addresses: ["alice@receive.test"] })).failed).toBe(1);
+	});
+
+	it("doesn't guess a reply's conversation from its subject, since what it answers can still be on its way", async () => {
+		// An earlier "Plans" conversation the same sender is in.
+		await importNow(eml({ id: "<plans-1@outside.test>", subject: "Plans", date: "Sat, 01 May 2021 09:00:00 +0000", internal: "p1==" }));
+		const reply = await importNow(eml({ id: "<reply-2@outside.test>", subject: "Re: Plans", inReplyTo: "<plans-2@outside.test>", internal: "r2==" }));
+		const original = await importNow(eml({ id: "<plans-2@outside.test>", subject: "Plans", internal: "p2==" }));
+		expect(await alice().listThreads({ label: "inbox", limit: 50 })).toMatchObject([{ messageCount: 2 }, { messageCount: 1 }]);
+		expect((await alice().getMessage(reply.id))?.message.threadId).toBe((await alice().getMessage(original.id))?.message.threadId);
+	});
+
+	it("doesn't let live mail claim a Message-ID it names, or rename a thread by its date", async () => {
+		const live = (id: string, subject: string, date: number, refs: string[] = []) =>
+			alice().ingest({ ...inbound(ids.alice, id), messageIdHeader: `<${id}@outside.test>`, subject, date, inReplyTo: refs, references: refs });
+		// A stranger names a GitHub thread's id before GitHub's own mail for it arrives.
+		await live("bait", "Click here", RECEIVED, ["<pull-9@outside.test>"]);
+		await live("pull-9", "Fix the build", RECEIVED + 1000);
+		expect(await alice().listThreads({ label: "inbox", limit: 50 })).toMatchObject([{ messageCount: 1 }, { messageCount: 1 }]);
+		// A reply dated before the thread it answers.
+		await live("reply", "URGENT: wire transfer", RECEIVED - 1000, ["<pull-9@outside.test>"]);
+		expect(await alice().listThreads({ label: "inbox", limit: 50 })).toMatchObject([{ subject: "Fix the build", messageCount: 2 }, { subject: "Click here" }]);
+	});
+
+	it("doesn't let imported spam claim the Message-IDs it names", async () => {
+		await importNow(eml({ id: "<bait@outside.test>", subject: "Click here", inReplyTo: "<plans@outside.test>", internal: "bait==" }), "labels=spam&read=1&sent=0");
+		await importNow(eml({ id: "<plans@outside.test>", subject: "Plans", internal: "plans==" }));
+		expect(await alice().listThreads({ label: "all", limit: 50 })).toMatchObject([{ messageCount: 1 }]);
+	});
+
+	it("doesn't bring back a dropped duplicate once the mail it duplicated is deleted for good", async () => {
+		await alice().ingest({ ...inbound(ids.alice, "live-1"), messageIdHeader: "<hello@outside.test>" });
+		await importNow(eml());
+		await alice().modifyThreads({ threadIds: (await alice().listThreads({ label: "inbox", limit: 50 })).map((t) => t.id), add: ["trash"] });
+		await alice().deleteTrash({});
+		await importNow(eml());
+		expect(await alice().listThreads({ label: "all", limit: 50 })).toEqual([]);
+		expect(await alice().listThreads({ label: "trash", limit: 50 })).toEqual([]);
+	});
+
+	it("files mail delivered to a disabled address under one the sidebar shows", async () => {
+		const { job: queued } = await importNow(eml().replace("Delivered-To: alice@example.com", "Delivered-To: disabled@example.com"));
+		expect(queued.envelopeTo).toBe("alice@example.com");
+		expect(await alice().listThreads({ label: "inbox", limit: 50, addresses: ["alice@example.com"] })).toHaveLength(1);
+	});
+
+	it("files mail one of the mailbox's addresses sent another under both", async () => {
+		const self = eml({ from: "Alice <alice@example.com>", to: "Alice <alice@receive.test>" }).replace("Delivered-To: alice@example.com", "Delivered-To: alice@receive.test");
+		await importNow(self, "labels=inbox,sent&read=0&sent=1");
+		expect(await alice().listThreads({ label: "inbox", limit: 50, addresses: ["alice@receive.test"] })).toHaveLength(1);
+		expect(await alice().listThreads({ label: "sent", limit: 50, addresses: ["alice@example.com"] })).toHaveLength(1);
+	});
+
+	it("keeps a date from the future out of when it was received, so deleting it cleans up now", async () => {
+		const { job: queued } = await importNow(eml().replace(/Date: .*\r\n/, "Date: Thu, 01 Jan 2099 00:00:00 +0000\r\n").replace(/X-Pm-Date: .*\r\n/, ""));
+		expect(queued.receivedAt).toBeLessThanOrEqual(Date.now());
+	});
+
+	it("keeps how many ids an imported message can claim in bounds", async () => {
+		const refs = Array.from({ length: 2000 }, (_, i) => `<ref-${i}@outside.test>`).join(" ");
+		await importNow(eml({ inReplyTo: `${refs} ${refs}` }));
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		const [row] = await db.exec("SELECT count(*) AS n FROM thread_refs");
+		expect(Number(row?.n)).toBeLessThanOrEqual(65);
+	});
+
+	it("doesn't take the reference Proton adds to each message for a reply", async () => {
+		// Same sender and subject: a reply with nothing to match would fall back to joining the other.
+		await importNow(eml({ id: "<digest-1@outside.test>", subject: "Weekly digest", internal: "one==" }));
+		await importNow(eml({ id: "<digest-2@outside.test>", subject: "Weekly digest", internal: "two==" }));
+		expect(await alice().listThreads({ label: "inbox", limit: 50 })).toMatchObject([{ messageCount: 1 }, { messageCount: 1 }]);
+	});
+
+	it("keeps an import's placement when it's retried from Failed", async () => {
+		const res = await upload(eml(), "labels=work&read=1&sent=0");
+		const { id } = Accepted.parse(await res.json());
+		const [queued] = (await f.control.state()).jobs;
+		await f.control.failNext("get", queued!.rawKey);
+		await f.control.consume([queued], 10);
+		expect(await alice().listFailed({})).toMatchObject([{ id, to: "alice@example.com" }]);
+		await f.control.reset();
+		await alice().retryFailed(id);
+		const [retried] = (await f.control.state()).jobs;
+		expect(retried).toEqual(queued);
+		await f.control.parse(retried!);
+		expect((await alice().getMessage(id))?.message).toMatchObject({ labels: ["work"], isRead: true });
+	});
+
+	it("retries failed mail with where its latest import put it", async () => {
+		const first = { ...job(ids.alice, "again-1"), imported: { labels: ["inbox"], read: false, sent: false, addresses: [] } };
+		await alice().recordFailed(first, "Unreadable");
+		await alice().recordFailed({ ...first, imported: { labels: ["work"], read: true, sent: false, addresses: [] } }, "Unreadable");
+		await f.control.reset();
+		await alice().retryFailed("again-1");
+		expect((await f.control.state()).jobs).toMatchObject([{ imported: { labels: ["work"], read: true } }]);
+	});
+
+	it("lists imported mail that names no address of ours, or none at all, under Failed", async () => {
+		const input = { ...job(ids.alice, "nowhere-1"), envelopeTo: "", imported: { labels: [], read: true, sent: false, addresses: [] } };
+		await alice().recordFailed(input, "Unreadable");
+		expect(await alice().listFailed({})).toMatchObject([{ id: "nowhere-1", to: "" }]);
+	});
+});

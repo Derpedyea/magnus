@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { LIVE_RECHECK, type Me, parseScope } from "#shared";
 import type { Identity } from "./api";
 import { countsQuery, meQuery } from "./queries";
+import { throttle } from "./throttle";
 
 /** The signed-in user, plus what the UI derives from their mailboxes. The root route loads it, so it never suspends. */
 export function useAccount() {
@@ -53,6 +54,12 @@ export function useUnreadTitle(scope: string[]) {
 	}, [unread]);
 }
 
+/**
+ * How often changes refetch mail at most. One change refetches at once; a burst (an import announces every message it
+ * files) refetches once more when it's over, instead of once per message.
+ */
+const REFRESH_MS = 1000;
+
 /** Subscribes to each mailbox's Durable Object and refetches mail whenever any of them changes. */
 export function useLive(mailboxIds: string[]): boolean {
 	const qc = useQueryClient();
@@ -61,10 +68,11 @@ export function useLive(mailboxIds: string[]): boolean {
 
 	useEffect(() => {
 		if (!key) return;
+		const refresh = throttle(() => void qc.invalidateQueries({ queryKey: ["mail"] }), REFRESH_MS);
 		const stops = key.split(",").map((id) =>
 			subscribe(
 				id,
-				() => void qc.invalidateQueries({ queryKey: ["mail"] }),
+				refresh.call,
 				(up) =>
 					setOpen((prev) => {
 						const next = new Set(prev);
@@ -75,6 +83,7 @@ export function useLive(mailboxIds: string[]): boolean {
 			),
 		);
 		return () => {
+			refresh.cancel();
 			for (const stop of stops) stop();
 		};
 	}, [key, qc]);

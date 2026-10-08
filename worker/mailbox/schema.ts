@@ -219,4 +219,8 @@ export const MIGRATIONS: string[] = [
 	-- the same way. Tags named after a system label can't be: mail tagged +spam and mail marked as spam both say "spam".
 	UPDATE OR REPLACE message_labels SET label = label || '-tag' WHERE label IN ('all', 'drafts', 'failed', 'search');
 	`,
+	`
+	-- Where mail imported from another provider goes (InboundJob.imported, JSON), so retrying it from Failed still does.
+	ALTER TABLE failed ADD COLUMN imported TEXT;
+	`,
 ];

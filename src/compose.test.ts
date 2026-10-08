@@ -1,7 +1,7 @@
 import { noteBody } from "#shared/markdown";
 import { describe, expect, it } from "vitest";
 import type { Draft } from "./components/Composer";
-import { closeDraft, compose, openDraft, quote, withSignature } from "./compose";
+import { answerFrom, closeDraft, compose, isOutgoing, openDraft, quote, replyRecipients, withSignature } from "./compose";
 import { normalizeMarkdown as normalize } from "./markdown";
 
 describe("openDraft", () => {
@@ -51,5 +51,62 @@ describe("quote", () => {
 	it("quotes the message as it was received, not as markdown, through the editor too", () => {
 		const draft = quote({ date: 0, from: { address: "ann@example.com", name: "Ann_Lee" }, text: "Please *do not alter*\n- or this" });
 		expect(noteBody(normalize(draft)).text).toMatch(/Ann_Lee wrote:\n\n> Please \*do not alter\*\n> - or this$/);
+	});
+});
+
+describe("answerFrom", () => {
+	const ctx = {
+		mailboxId: "mbx", identities: [{ mailboxId: "mbx", address: "me@example.com", displayName: null, signature: null }],
+		delivered: [], outgoing: true, inView: () => true,
+	};
+	it("answers sent mail from the address it went out from", () => {
+		expect(answerFrom({ from: { address: "Me@Example.com" }, to: [{ address: "pal@outside.test" }], cc: [], bcc: [] }, ctx)).toBe("me@example.com");
+	});
+	it("answers sent mail imported from an old address from one this mailbox can send as", () => {
+		expect(answerFrom({ from: { address: "me@proton.test" }, to: [{ address: "pal@outside.test" }], cc: [], bcc: [] }, ctx)).toBe("me@example.com");
+	});
+});
+
+describe("answerFrom with Bcc", () => {
+	it("answers from the address in view that sent mail reached only by Bcc", () => {
+		const identities = ["a@example.com", "b@example.com"].map((address) => ({ mailboxId: "mbx", address, displayName: null, signature: null }));
+		const ctx = { mailboxId: "mbx", identities, delivered: ["a@example.com", "b@example.com"], outgoing: false, inView: (address: string) => address === "b@example.com" };
+		expect(answerFrom({ from: { address: "a@example.com" }, to: [{ address: "pal@outside.test" }], cc: [], bcc: [{ address: "b@example.com" }] }, ctx)).toBe("b@example.com");
+	});
+});
+
+describe("isOutgoing", () => {
+	// The mailbox's addresses, receive-only ones included.
+	const ours = ["me@example.com", "me@example.net", "inbox-only@example.com"];
+	const inView = (address: string) => address === "me@example.net";
+	const sent = (from: string, to: string[]) => ({ direction: "out" as const, from: { address: from }, to: to.map((address) => ({ address })), cc: [], bcc: [] });
+	it("reads mail one of our addresses sent another as received, when only the recipient is in view", () => {
+		expect(isOutgoing(sent("me@example.com", ["me@example.net"]), ours, inView)).toBe(false);
+		expect(isOutgoing(sent("me@example.net", ["me@example.com"]), ours, inView)).toBe(true);
+	});
+	it("counts an address that can only receive as ours", () => {
+		expect(isOutgoing(sent("Inbox-Only@example.com", ["me@example.net"]), ours, inView)).toBe(false);
+	});
+	it("keeps our mail to other people sent, though it's filed under an address in view it never went to", () => {
+		expect(isOutgoing(sent("me@example.com", ["pal@outside.test"]), ours, inView)).toBe(true);
+	});
+	it("keeps sent mail imported from an old address sent, whatever is in view", () => {
+		expect(isOutgoing(sent("me@proton.test", ["pal@outside.test"]), ours, inView)).toBe(true);
+		expect(isOutgoing({ ...sent("me@proton.test", []), direction: "in" }, ours, inView)).toBe(false);
+	});
+});
+
+describe("replyRecipients", () => {
+	const pal = { address: "pal@outside.test" };
+	const quiet = { address: "quiet@outside.test" };
+	const message = { from: { address: "me@example.com" }, replyTo: [], to: [], cc: [], bcc: [] };
+	it("answers received mail to its sender, or where it asks", () => {
+		expect(replyRecipients({ ...message, from: pal }, false)).toEqual({ to: [pal], bcc: [] });
+		expect(replyRecipients({ ...message, from: pal, replyTo: [quiet] }, false)).toEqual({ to: [quiet], bcc: [] });
+	});
+	it("answers sent mail to whom it went to, keeping Bcc'd people hidden", () => {
+		expect(replyRecipients({ ...message, to: [pal], bcc: [quiet] }, true)).toEqual({ to: [pal], bcc: [] });
+		expect(replyRecipients({ ...message, cc: [pal] }, true)).toEqual({ to: [pal], bcc: [] });
+		expect(replyRecipients({ ...message, bcc: [pal, quiet] }, true)).toEqual({ to: [], bcc: [pal, quiet] });
 	});
 });

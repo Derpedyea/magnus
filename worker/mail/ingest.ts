@@ -44,13 +44,16 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 	const mailbox = env.MAILBOX.getByName(job.mailboxId);
 
 	const from = firstAddress(email.from) ?? { address: job.envelopeFrom };
-	const results = stampedResults(email);
+	// Imported mail's verdicts were stamped by its old provider, or by whoever wrote the file: they can't be shown as ours
+	// or vouch for its sender, and it goes where it was there rather than where a verdict or a model would put it.
+	const { imported } = job;
+	const results = imported ? null : stampedResults(email);
 	const sender = await checkSender(env, from.address, results);
 	const text = email.text ?? (email.html ? htmlToText(email.html) : null);
 	const replyTo = flatten(email.replyTo);
 	const subject = email.subject ?? "(no subject)";
 	const messageIdHeader = email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null;
-	const needed = await mailbox.needsCheck(sender, messageIdHeader, messageId);
+	const needed = !imported && (await mailbox.needsCheck(sender, messageIdHeader, messageId));
 	// Read for the models only when they're asked: parsing a big body costs CPU that known senders' mail needn't.
 	const read = async (): Promise<MailFacts> => ({
 		to: job.envelopeTo,
@@ -104,10 +107,11 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		receivedAt: job.receivedAt,
 		messageIdHeader,
 		inReplyTo: parseMessageIds(email.inReplyTo),
-		references: parseMessageIds(email.references),
+		references: withoutOwnReference(email),
 		from,
 		to: flatten(email.to),
 		cc: flatten(email.cc),
+		bcc: imported?.sent ? flatten(email.bcc) : undefined,
 		replyTo,
 		subject,
 		date: parseDate(email.date) ?? job.receivedAt,
@@ -117,7 +121,8 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		auth: results && authResults(results),
 		sender,
 		check,
-		labels: job.subaddress ? [labelFromTag(job.subaddress)] : [],
+		labels: imported ? [...imported.labels] : job.subaddress ? [labelFromTag(job.subaddress)] : [],
+		imported: imported ? { read: imported.read, sent: imported.sent, addresses: imported.addresses } : undefined,
 	};
 
 	const delivered = await mailbox
@@ -300,6 +305,16 @@ function resultsOf(value: string): { method: string; result: string; props: Map<
 			}));
 			return [{ method: verdict[1].toLowerCase(), result: verdict[2].toLowerCase(), props }];
 		});
+}
+
+/**
+ * References, less the one Proton adds naming the message itself (its Export Tool and Bridge build mail with
+ * AddMessageIDReference). It names nothing else, and left in, every message it exported would look like a reply.
+ */
+function withoutOwnReference(email: Email): string[] {
+	const internalId = email.headers.find((h) => h.key === "x-pm-internal-id")?.value.trim();
+	const own = internalId ? `<${internalId}@protonmail.internalid>` : null;
+	return parseMessageIds(email.references).filter((id) => id !== own);
 }
 
 /** me+Receipts@… → label "receipts". */

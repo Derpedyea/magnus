@@ -24,8 +24,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast-manager";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api, errorMessage, formatList, type Identity, messageUrl } from "../api";
-import { openDraft, quote, withSignature } from "../compose";
+import { api, errorMessage, formatList, messageUrl } from "../api";
+import { type AnswerContext, answerFrom, isOutgoing, openDraft, quote, replyRecipients, withSignature } from "../compose";
 import { formatDate } from "../dates";
 import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
@@ -43,7 +43,11 @@ const route = getRouteApi("/_app/_mail/$view/$mailboxId/$threadId");
 export function ThreadView() {
 	const { view, mailboxId, threadId } = route.useParams();
 	// Replies must be sent from the thread's own mailbox.
-	const identities = useAccount().identities.filter((i) => i.mailboxId === mailboxId);
+	const account = useAccount();
+	const identities = account.identities.filter((i) => i.mailboxId === mailboxId);
+	// Disabled ones too: mail one of them sent is still the mailbox's own.
+	const mailbox = account.mailboxes.find((m) => m.id === mailboxId);
+	const ours = mailbox ? [...mailbox.addresses.map((a) => a.address), ...mailbox.disabled] : [];
 	const qc = useQueryClient();
 	const { data } = useSuspenseQuery(threadQuery(mailboxId, threadId));
 	const close = useCloseThread();
@@ -123,7 +127,7 @@ export function ThreadView() {
 								mailboxId,
 								identities,
 								delivered: summary.addresses,
-								outgoing: m.direction === "out" && inView(m.from.address),
+								outgoing: isOutgoing(m, ours, inView),
 								inView,
 							};
 							return (
@@ -272,8 +276,7 @@ function Message(props: {
 			</CardHeader>
 			<CollapsibleContent render={<CardContent />}>
 				<p className="pb-2 text-xs text-muted-foreground">
-						to {formatList(m.to)}
-						{m.cc.length ? ` · cc ${formatList(m.cc)}` : ""}
+						{recipientsLine(m)}
 						{m.auth ? ` · spf ${m.auth.spf ?? "?"} · dkim ${m.auth.dkim ?? "?"} · dmarc ${m.auth.dmarc ?? "?"}` : ""}
 				</p>
 				{props.outgoing ? <Undelivered mailboxId={props.mailboxId} message={m} /> : null}
@@ -717,27 +720,13 @@ function DeliveryBadge({ message }: { message: MessageDetail }) {
 	);
 }
 
-interface AnswerContext {
-	mailboxId: string;
-	identities: Identity[];
-	/** The thread's own addresses, which catch mail that reached us via Bcc or a list. */
-	delivered: string[];
-	outgoing: boolean;
-	inView: (address: string) => boolean;
-}
-
-/** Which of our addresses answers or forwards a message: the one being viewed when it reached several of ours. */
-function answerFrom(m: MessageDetail, ctx: AnswerContext): string {
-	if (ctx.outgoing) return m.from.address.toLowerCase();
-	const ours = new Set(ctx.identities.map((i) => i.address.toLowerCase()));
-	const recipients = [...m.to, ...m.cc].filter((a) => ours.has(a.address.toLowerCase()));
-	const from =
-		recipients.find((a) => ctx.inView(a.address))?.address ??
-		recipients[0]?.address ??
-		ctx.delivered.find((a) => ours.has(a)) ??
-		ctx.identities[0]?.address ??
-		"";
-	return from.toLowerCase();
+/** "to Ann · cc Bo · bcc Cy", naming only the fields it has. Received mail never says who was Bcc'd. */
+function recipientsLine(m: MessageDetail): string {
+	const fields = [["to", m.to], ["cc", m.cc], ["bcc", m.bcc]] as const;
+	return fields
+		.filter(([, list]) => list.length > 0)
+		.map(([field, list]) => `${field} ${formatList(list)}`)
+		.join(" · ");
 }
 
 const signatureOf = (from: string, ctx: AnswerContext) => ctx.identities.find((i) => i.address === from)?.signature ?? null;
@@ -747,7 +736,7 @@ function replyDraft(m: MessageDetail, all: boolean, ctx: AnswerContext): Draft {
 	const isOurs = (a: Address) => ours.has(a.address.toLowerCase());
 	const recipients = [...m.to, ...m.cc];
 	const from = answerFrom(m, ctx);
-	const primary = ctx.outgoing ? m.to : m.replyTo.length ? m.replyTo : [m.from];
+	const { to: primary, bcc } = replyRecipients(m, ctx.outgoing);
 	const extra = all ? recipients.filter((a) => !isOurs(a) && !primary.some((p) => p.address === a.address)) : [];
 	const signature = signatureOf(from, ctx);
 	return {
@@ -755,7 +744,7 @@ function replyDraft(m: MessageDetail, all: boolean, ctx: AnswerContext): Draft {
 		from,
 		to: primary,
 		cc: extra,
-		bcc: [],
+		bcc,
 		subject: /^re:/i.test(m.subject) ? m.subject : `Re: ${m.subject}`,
 		text: withSignature(quote(m), null, signature),
 		attachments: [],

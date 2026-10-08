@@ -104,6 +104,12 @@ describe("API permissions", () => {
 		expect(await (await request("/me")).json()).toMatchObject({ mailboxes: [{ id: ids.alice }, { id: ids.shared }] });
 	});
 
+	it("lists a mailbox's disabled addresses apart, still its own but out of its views", async () => {
+		const me = await (await request("/me")).json();
+		expect(me).toMatchObject({ mailboxes: [{ id: ids.alice, disabled: ["disabled@example.com"] }, { id: ids.shared, disabled: [] }] });
+		expect(JSON.stringify(me)).not.toContain('"address":"disabled@example.com"');
+	});
+
 	it.each(["bob@example.com", "readonly@example.com", "disabled@example.com", "alice@receive.test"])("refuses sending as %s", async (from) => {
 		expect((await request(`/mailboxes/${ids.alice}/send`, "POST", compose(from))).status).toBe(403);
 		const storage = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });

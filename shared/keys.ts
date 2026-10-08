@@ -4,6 +4,7 @@
  *   raw/2026/09/26/<ingestId>.eml             raw inbound message, shared across fan-out
  *   m/<mailboxId>/<messageId>/body.html        rendered HTML body (cid: rewritten)
  *   m/<mailboxId>/<messageId>/att/<attId>      attachment bytes
+ *   m/<mailboxId>/<messageId>/original.eml     raw message imported from another provider, this mailbox's alone
  *   m/<mailboxId>/draft-files/<userId>/<uuid> account-owned draft sources, shared by conflict copies
  *   uploads/<mailboxId>/<uuid>                 composer uploads awaiting send
  *
@@ -30,6 +31,10 @@ export const r2Keys = {
 	},
 	attachment(mailboxId: string, messageId: string, attachmentId: string): string {
 		return `m/${mailboxId}/${messageId}/att/${attachmentId}`;
+	},
+	/** The original of mail imported from another provider. Unlike raw/, nothing else shares it. */
+	imported(mailboxId: string, messageId: string): string {
+		return `m/${mailboxId}/${messageId}/original.eml`;
 	},
 	upload(mailboxId: string, uploadId: string): string {
 		return `uploads/${mailboxId}/${uploadId}`;

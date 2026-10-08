@@ -3,6 +3,7 @@ import { adminClient, emailOTPClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/client";
 import { hc, type InferRequestType, parseResponse } from "hono/client";
 import type { DraftWrite } from "#shared/drafts";
+import type { ImportPlacement } from "#shared/import";
 // Built declarations, not the worker's source: see tsconfig.app.json.
 import type { AppType } from "#worker/api";
 
@@ -97,6 +98,17 @@ export const api = {
 			mailbox.uploads.$post(
 				{ param: { mailboxId } },
 				{ init: { body: file }, headers: { "Content-Type": file.type || "application/octet-stream", "X-Filename": encodeURIComponent(file.name) } },
+			),
+		),
+	/** One message from another provider's export, filed where it was there. */
+	importMessage: (mailboxId: string, file: File, placement: ImportPlacement, signal: AbortSignal) =>
+		parseResponse(
+			mailbox.import.$post(
+				{
+					param: { mailboxId },
+					query: { labels: placement.labels.join(","), read: placement.read ? "1" : "0", sent: placement.sent === undefined ? undefined : placement.sent ? "1" : "0" },
+				},
+				{ init: { body: file, signal }, headers: { "Content-Type": "message/rfc822" } },
 			),
 		),
 	send: (mailboxId: string, draft: Json<typeof mailbox.send.$post>) => parseResponse(mailbox.send.$post({ param: { mailboxId }, json: draft })),

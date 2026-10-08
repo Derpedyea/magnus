@@ -29,6 +29,20 @@ export interface InboundJob {
 	 * with this one higher, so failures elsewhere, which the queue's own attempt count includes, don't use up its tries.
 	 */
 	checkFailures?: number;
+	/**
+	 * Mail imported from another provider (worker/mail/import.ts), placed as it was there instead of by triage. Its
+	 * envelope fields come from its headers: envelopeTo is the address of ours it belongs to, when it names one.
+	 */
+	imported?: Imported;
+}
+
+export interface Imported {
+	labels: string[];
+	read: boolean;
+	/** Sent from the mailbox rather than received by it. */
+	sent: boolean;
+	/** The mailbox's addresses it's filed under, as message_addresses holds them. envelopeTo is the first. */
+	addresses: string[];
 }
 
 // ─── Queue: magnus-email-events (Email Sending event subscription) ──────────
@@ -205,6 +219,8 @@ export interface MessageDetail {
 	from: Address;
 	to: Address[];
 	cc: Address[];
+	/** Who sent mail was Bcc'd to. Empty for received mail, which never says. */
+	bcc: Address[];
 	replyTo: Address[];
 	subject: string;
 	date: number;
@@ -283,6 +299,8 @@ export interface IngestInput {
 	from: Address;
 	to: Address[];
 	cc: Address[];
+	/** Only for sent mail, which is the only kind that names its Bcc. */
+	bcc?: Address[];
 	replyTo: Address[];
 	subject: string;
 	date: number;
@@ -292,10 +310,12 @@ export interface IngestInput {
 	attachments: StoredAttachment[];
 	auth: AuthResults | null;
 	sender: SenderCheck;
-	/** Set when the mailbox didn't know the sender (Mailbox.needsCheck()). */
+	/** Set when the mailbox didn't know the sender (Mailbox.needsCheck()). Never for imported mail. */
 	check: MailCheck | null;
-	/** Labels besides where its verdict puts it: its +tag's. */
+	/** Labels besides where its verdict puts it: its +tag's. Imported mail isn't judged; these are all of its labels. */
 	labels: string[];
+	/** Read and sent as it was at the provider it came from. Its labels are already in `labels`. */
+	imported?: Omit<Imported, "labels">;
 }
 
 export interface SendAttachmentRef {

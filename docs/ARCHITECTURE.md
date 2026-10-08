@@ -140,6 +140,7 @@ locally, so suggestions need no round trip.
 raw/2026/09/26/<ingestId>.eml          raw inbound, shared across fan-out, kept while a mailbox has it or lists it under Failed (source of truth)
 m/<mailboxId>/<messageId>/body.html     HTML body (served through the sanitizer)
 m/<mailboxId>/<messageId>/att/<attId>   attachments (inbound, and outbound once the outbox picks them up)
+m/<mailboxId>/<messageId>/original.eml  the original of mail imported from another provider (§4.7), this mailbox's alone
 m/<mailboxId>/draft-files/<userId>/<uuid> account-owned draft sources; conflict copies can share one source
 uploads/<mailboxId>/<uuid>              composer uploads; a lifecycle rule (DEPLOY.md) can reap abandoned ones
 ```
@@ -173,7 +174,9 @@ whole mailbox is the one exception. Code that writes or drops `m/` objects keeps
    verdicts, works out who the sender verifiably is (§5.6), and calls `Mailbox.ingest()`. Only the verdicts
    Email Routing stamped count: its `mx.cloudflare.net` header above its `X-CF-SpamH-Score`, since everything
    below that came from the sender. SPF is the envelope sender's result, not the HELO name's. If the mailbox was
-   deleted while that ran, it's cleared again (`destroy()`), in case its deletion got there first.
+   deleted while that ran, it's cleared again (`destroy()`), in case its deletion got there first. A batch parses
+   its messages together up to 25 MiB of them; a bigger one waits to go alone, since parsing holds a message several
+   times over and a batch shares one isolate's 128 MB.
 5. `ingest()` is idempotent. It dedupes on `ingestId` and on `Message-ID`, so the same mail arriving via two
    of our addresses, or our own outbound copy coming back, is stored once with merged labels. It decides between
    Inbox and Spam (§5.6), threads the message (§5.5), indexes it for search, and broadcasts `threads.changed`
@@ -312,6 +315,52 @@ Web Push with VAPID, on WebCrypto alone. Code: `worker/push.ts`, `worker/push-ap
    progress survives, or opens one. Every push shows a notification, even one it can't read, since Safari stops
    delivering to sites whose pushes show nothing.
 
+### 4.7 Importing mail from another provider
+
+Settings › Import mail takes a folder, dropped or chosen. Proton's
+[Export Tool](https://proton.me/support/proton-mail-export-tool) writes one `mail_<date>_<time>/` folder holding
+`<id>.eml` and `<id>.metadata.json` per message, plus `labels.json`; any other folder of `.eml` files works too.
+Code: `shared/import.ts`, `src/import.ts`, `worker/mail/import.ts`.
+
+1. **The browser reads the folder** and pairs each message with Proton's details: Inbox, Sent, Trash, Spam, and
+   Starred become those labels, the person's own folders and labels become labels (`Work/Clients` →
+   `work-clients`), Archive and All mail need none, and Unread carries over. Where a message was comes first among
+   its labels, so one with more than 20 loses only some of its own. Drafts are left out, since drafts here live in
+   the directory (§3), and so is mail Proton couldn't export as a message. A folder counts as Proton's export when
+   one of these files in it is shaped like Proton's (`{ "Version": …, "Payload": … }`); another program's
+   `labels.json` or `.metadata.json` anywhere else, or one over 1 MiB, is left alone. In an export, only version 1 is
+   read, with Unread 0 or 1 and the id its `.eml` is named by: a message
+   whose details are missing or can't be read is listed as unreadable rather than guessed at, and an export whose `labels.json` is
+   missing or unreadable is refused, since the person's own folders and labels would be lost. An `.eml` with no
+   details is filed as archived and read, or Sent when it's from one of the mailbox's addresses.
+2. **It sends each message on its own**, newest first and four at a time (big ones alone, since the Worker reads
+   each whole), to `POST /api/mailboxes/:id/import`, with where it goes in the query (one schema checks each label). Failures on the way are retried; being signed out or
+   losing the mailbox stops the import. The page has to stay open, and says so.
+3. **The Worker reads only the headers** to refuse what isn't mail and to fill in the envelope the message never had:
+   the mailbox's enabled addresses it reached (Delivered-To, then the recipients, and Bcc for sent mail), and for
+   sent mail the one it came from too, so mail one of them sent another is filed under both. Failed lists it under
+   each of them too. Mail that names none of them (to or from an old
+   address at the provider it came from, or one disabled here) goes under the mailbox's first address, so views of an
+   address show it. Its id is a ULID whose randomness is a digest of the mailbox and the bytes, so the same file is
+   the same message: importing a folder again adds nothing twice, and doesn't bring back mail deleted for good. A
+   date from the future counts as now, so a deleted original isn't kept until then. The original goes to R2 and an
+   `InboundJob` with `imported` set to the inbound queue, which parses it like new mail (§4.1). If the job can't be
+   queued, the original stays for the browser to retry; one never retried is overwritten by the next import of that
+   file, or deleted with the mailbox. It's never deleted on the spot: another upload of the same file can have
+   queued it.
+4. **`ingest()` places it as it was there**: its labels instead of a verdict (§5.6), its read state, and
+   `direction = 'out'` for sent mail, which keeps its Bcc. Its recipients join the contacts, and are trusted unless
+   this mailbox has judged them already, since the import is older than that judgment. The `Authentication-Results`
+   in the file aren't kept, even one naming Cloudflare, since nobody here checked them; so imported mail has no
+   verified sender, and marking it as spam judges nobody. A message already here by Message-ID stays as it is:
+   nothing of the imported copy is kept, and its id is tombstoned like deleted mail's, so importing the file again
+   once the mail here is deleted for good doesn't bring it back. Failed mail keeps `imported`, so retrying it from
+   Failed still places it.
+
+Imports share the inbound queue, so a large one can hold up new mail by the minutes its backlog takes to drain. Every
+filed message is announced live, and the client refetches at most once a second, so a large import stays cheap for
+open tabs.
+
 ## 5. Cross-cutting design
 
 ### 5.1 Authentication and authorization
@@ -441,11 +490,21 @@ Threading is RFC 5322 first, heuristic second:
 
 1. Every known Message-ID (inbound headers and Cloudflare-assigned outbound IDs) maps to a thread in
    `thread_refs`. An incoming message joins the first thread matched by `In-Reply-To`, then by `References`,
-   newest first.
+   newest first. Imported mail (§4.7) comes in any order, so it also maps up to 64 of the ids it answers (unless
+   it's spam) and is matched by its own Message-ID, which lets a message join the replies that came before it. When
+   it matches several threads, its earlier messages started apart (two replies before what they both answer), so
+   they become one. Live mail and imported spam do none of this: anyone who writes in could claim an id, or join two
+   conversations, that way.
 2. If a message *claims* to be a reply but nothing matches, it falls back to the normalized subject
    (`Re:`/`Fwd:`/`AW:`… stripped) where the sender is already a participant, within 30 days. This covers
-   replies whose parent Message-ID we never saw.
+   replies whose parent Message-ID we never saw. Imported mail skips it: imports come in any order, so the
+   parent can still be on its way.
 3. Everything else starts a new thread. Unrelated "Hello" emails never merge.
+
+An imported thread is titled by its oldest message, whichever came first. Live mail keeps the first message's
+subject, since anyone can set a Date. Proton's exports add the message's own internal id
+to `References` (`<id@protonmail.internalid>`, named in `X-Pm-Internal-Id`); it's dropped, or every exported message
+would look like a reply.
 
 Outbound replies carry `In-Reply-To` + a trimmed `References` chain, so Gmail, Apple Mail, and Outlook thread
 them too.
@@ -581,8 +640,8 @@ The web app is the only client, so it has to be good on phones and good enough t
 3. **Drafts**: implemented with private, account-scoped D1 storage, version checks, and a device-local recovery
    journal. Attachments live outside the temporary upload prefix; hourly cleanup keeps referenced files.
 4. **Keyboard shortcuts** (j/k, e archive, r reply, c compose, / search), **bulk select**.
-5. **Mailbox import** from your previous provider (export to `.eml`, e.g. Proton's Import-Export app). Upload
-   the raw files to R2 and enqueue `InboundJob`s; the existing ingest path does the rest.
+5. **Mailbox import**: implemented for Proton's Export Tool and folders of `.eml` (§4.7). Still to come: MBOX
+   (Gmail's Takeout, Thunderbird), and folder names as labels for plain `.eml` exports.
 
 **Later**
 

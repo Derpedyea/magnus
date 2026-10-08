@@ -1,6 +1,7 @@
-import { type Address, escapeMarkdown } from "#shared";
+import { type Address, escapeMarkdown, type MessageDetail } from "#shared";
 import { createStore } from "@tanstack/react-store";
 import type { Draft, SavedDraft } from "#shared/drafts";
+import type { Identity } from "./api";
 
 /**
  * The open composer. It floats above whatever route is showing, so any view can start a draft
@@ -52,4 +53,57 @@ export function withSignature(markdown: string, previous: string | null, next: s
 	}
 	const at = text.search(QUOTE);
 	return at === -1 ? text + block(next) : text.slice(0, at) + block(next) + text.slice(at);
+}
+
+export interface AnswerContext {
+	mailboxId: string;
+	identities: Identity[];
+	/** The thread's own addresses, which catch mail that reached us via Bcc or a list. */
+	delivered: string[];
+	outgoing: boolean;
+	inView: (address: string) => boolean;
+}
+
+/**
+ * Whether a message reads as sent: replies go to whom it was sent to. Mail one of our addresses sent another reads as
+ * received where only that recipient is in view. Sent mail from an address that isn't ours (imported from an old one)
+ * is always sent, and so is ours to other people, wherever it's filed. `ours` is every address of the mailbox, those
+ * that can only receive or are disabled too.
+ */
+export function isOutgoing(
+	m: Pick<MessageDetail, "direction" | "from" | "to" | "cc" | "bcc">,
+	ours: string[],
+	inView: (address: string) => boolean,
+): boolean {
+	if (m.direction !== "out") return false;
+	const own = new Set(ours.map((a) => a.toLowerCase()));
+	const from = m.from.address.toLowerCase();
+	if (inView(from) || !own.has(from)) return true;
+	return ![...m.to, ...m.cc, ...m.bcc].some((a) => own.has(a.address.toLowerCase()) && inView(a.address.toLowerCase()));
+}
+
+/**
+ * Who a reply goes to. Received mail answers its sender, or where it asks replies to go. Sent mail answers whom it was
+ * sent to: its To, else its Cc, else its Bcc, kept in Bcc so they stay hidden from each other as they were.
+ */
+export function replyRecipients(m: Pick<MessageDetail, "from" | "replyTo" | "to" | "cc" | "bcc">, outgoing: boolean): { to: Address[]; bcc: Address[] } {
+	if (!outgoing) return { to: m.replyTo.length ? m.replyTo : [m.from], bcc: [] };
+	if (m.to.length) return { to: m.to, bcc: [] };
+	return m.cc.length ? { to: m.cc, bcc: [] } : { to: [], bcc: m.bcc };
+}
+
+/** Which of our addresses answers or forwards a message: the one being viewed when it reached several of ours. */
+export function answerFrom(m: Pick<MessageDetail, "from" | "to" | "cc" | "bcc">, ctx: AnswerContext): string {
+	const ours = new Set(ctx.identities.map((i) => i.address.toLowerCase()));
+	// Sent mail imported from another provider can be from an address this one can't send as.
+	if (ctx.outgoing && ours.has(m.from.address.toLowerCase())) return m.from.address.toLowerCase();
+	// Bcc too: only mail one of ours sent names it, and another of ours it reached that way answers it.
+	const recipients = [...m.to, ...m.cc, ...m.bcc].filter((a) => ours.has(a.address.toLowerCase()));
+	const from =
+		recipients.find((a) => ctx.inView(a.address))?.address ??
+		recipients[0]?.address ??
+		ctx.delivered.find((a) => ours.has(a)) ??
+		ctx.identities[0]?.address ??
+		"";
+	return from.toLowerCase();
 }

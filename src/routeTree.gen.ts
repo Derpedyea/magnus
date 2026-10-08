@@ -25,6 +25,7 @@ import { Route as AppSettingsAdminDomainsRouteImport } from './routes/_app._sett
 import { Route as AppSettingsAdminPeopleRouteImport } from './routes/_app._settings.admin.people'
 import { Route as AppSettingsSettingsIndexRouteImport } from './routes/_app._settings.settings.index'
 import { Route as AppSettingsSettingsAppearanceRouteImport } from './routes/_app._settings.settings.appearance'
+import { Route as AppSettingsSettingsImportRouteImport } from './routes/_app._settings.settings.import'
 import { Route as AppSettingsSettingsNotificationsRouteImport } from './routes/_app._settings.settings.notifications'
 import { Route as AppSettingsSettingsSignInRouteImport } from './routes/_app._settings.settings.sign-in'
 import { Route as AppSettingsSettingsSignaturesRouteImport } from './routes/_app._settings.settings.signatures'
@@ -112,6 +113,12 @@ const AppSettingsSettingsAppearanceRoute =
     path: '/settings/appearance',
     getParentRoute: () => AppSettingsRoute,
   } as any)
+const AppSettingsSettingsImportRoute =
+  AppSettingsSettingsImportRouteImport.update({
+    id: '/settings/import',
+    path: '/settings/import',
+    getParentRoute: () => AppSettingsRoute,
+  } as any)
 const AppSettingsSettingsNotificationsRoute =
   AppSettingsSettingsNotificationsRouteImport.update({
     id: '/settings/notifications',
@@ -153,6 +160,7 @@ export interface FileRoutesByFullPath {
   '/admin/domains': typeof AppSettingsAdminDomainsRoute
   '/admin/people': typeof AppSettingsAdminPeopleRoute
   '/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
+  '/settings/import': typeof AppSettingsSettingsImportRoute
   '/settings/notifications': typeof AppSettingsSettingsNotificationsRoute
   '/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
@@ -171,6 +179,7 @@ export interface FileRoutesByTo {
   '/admin/domains': typeof AppSettingsAdminDomainsRoute
   '/admin/people': typeof AppSettingsAdminPeopleRoute
   '/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
+  '/settings/import': typeof AppSettingsSettingsImportRoute
   '/settings/notifications': typeof AppSettingsSettingsNotificationsRoute
   '/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
@@ -195,6 +204,7 @@ export interface FileRoutesById {
   '/_app/_settings/admin/domains': typeof AppSettingsAdminDomainsRoute
   '/_app/_settings/admin/people': typeof AppSettingsAdminPeopleRoute
   '/_app/_settings/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
+  '/_app/_settings/settings/import': typeof AppSettingsSettingsImportRoute
   '/_app/_settings/settings/notifications': typeof AppSettingsSettingsNotificationsRoute
   '/_app/_settings/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/_app/_settings/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
@@ -217,6 +227,7 @@ export interface FileRouteTypes {
     | '/admin/domains'
     | '/admin/people'
     | '/settings/appearance'
+    | '/settings/import'
     | '/settings/notifications'
     | '/settings/sign-in'
     | '/settings/signatures'
@@ -235,6 +246,7 @@ export interface FileRouteTypes {
     | '/admin/domains'
     | '/admin/people'
     | '/settings/appearance'
+    | '/settings/import'
     | '/settings/notifications'
     | '/settings/sign-in'
     | '/settings/signatures'
@@ -258,6 +270,7 @@ export interface FileRouteTypes {
     | '/_app/_settings/admin/domains'
     | '/_app/_settings/admin/people'
     | '/_app/_settings/settings/appearance'
+    | '/_app/_settings/settings/import'
     | '/_app/_settings/settings/notifications'
     | '/_app/_settings/settings/sign-in'
     | '/_app/_settings/settings/signatures'
@@ -388,6 +401,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsSettingsAppearanceRouteImport
       parentRoute: typeof AppSettingsRoute
     }
+    '/_app/_settings/settings/import': {
+      id: '/_app/_settings/settings/import'
+      path: '/settings/import'
+      fullPath: '/settings/import'
+      preLoaderRoute: typeof AppSettingsSettingsImportRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
     '/_app/_settings/settings/notifications': {
       id: '/_app/_settings/settings/notifications'
       path: '/settings/notifications'
@@ -475,6 +495,7 @@ const AppSettingsAdminRouteWithChildren =
 interface AppSettingsRouteChildren {
   AppSettingsAdminRoute: typeof AppSettingsAdminRouteWithChildren
   AppSettingsSettingsAppearanceRoute: typeof AppSettingsSettingsAppearanceRoute
+  AppSettingsSettingsImportRoute: typeof AppSettingsSettingsImportRoute
   AppSettingsSettingsNotificationsRoute: typeof AppSettingsSettingsNotificationsRoute
   AppSettingsSettingsSignInRoute: typeof AppSettingsSettingsSignInRoute
   AppSettingsSettingsSignaturesRoute: typeof AppSettingsSettingsSignaturesRoute
@@ -485,6 +506,7 @@ interface AppSettingsRouteChildren {
 const AppSettingsRouteChildren: AppSettingsRouteChildren = {
   AppSettingsAdminRoute: AppSettingsAdminRouteWithChildren,
   AppSettingsSettingsAppearanceRoute: AppSettingsSettingsAppearanceRoute,
+  AppSettingsSettingsImportRoute: AppSettingsSettingsImportRoute,
   AppSettingsSettingsNotificationsRoute: AppSettingsSettingsNotificationsRoute,
   AppSettingsSettingsSignInRoute: AppSettingsSettingsSignInRoute,
   AppSettingsSettingsSignaturesRoute: AppSettingsSettingsSignaturesRoute,
