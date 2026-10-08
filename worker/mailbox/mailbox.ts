@@ -363,9 +363,11 @@ export class Mailbox extends DurableObject<Env> {
 			return { threadId: existing.thread_id, duplicate: true, inbox: false };
 		}
 
-		const verdict = this.judge(input.sender, input.check);
-		const place = placeFor(verdict, this.mailSettings());
+		const judged = this.judge(input.sender, input.check);
+		const place = placeFor(judged, this.mailSettings());
 		const labels = [place, ...input.labels];
+		// Its banner names the setting only when the setting is why it's in Spam, not after someone moves it there.
+		const verdict = judged.kind === "checked" && judged.category === "outreach" && place === "spam" ? { ...judged, bySetting: true as const } : judged;
 
 		// Same message delivered twice to this mailbox (e.g. sent to two of our addresses,
 		// or our own outbound copy coming back): keep one copy, merge labels.
@@ -459,7 +461,7 @@ export class Mailbox extends DurableObject<Env> {
 	/** Defaults for a mailbox that hasn't changed them. */
 	private mailSettings(): MailSettings {
 		const stored = this.sql.exec<{ value: string }>(`SELECT value FROM _meta WHERE key = 'settings'`).toArray()[0];
-		return { screener: false, ...(stored ? JSON.parse(stored.value) : {}) };
+		return { screener: false, outreachToSpam: true, ...(stored ? JSON.parse(stored.value) : {}) };
 	}
 
 	/** Whether the queue should have Workers AI check mail from this sender before delivering it (worker/mail/checks.ts). */
@@ -1075,6 +1077,7 @@ export class Mailbox extends DurableObject<Env> {
 				released = this.judgeSenders([...wrong, ...(remove.includes("screener") ? this.labeled(ids, "screener") : [])], "trusted");
 			}
 			const corrected = this.verdictsOf(wrong);
+			if (add.includes("spam") || remove.includes("spam")) this.forgetSetting(ids);
 			this.removeLabels(ids, remove);
 			this.addLabels(ids, add);
 			return { corrected, released };
@@ -1098,6 +1101,7 @@ export class Mailbox extends DurableObject<Env> {
 			const ids = [input.messageId];
 			const wasSpam = this.labeled(ids, "spam").length > 0;
 			const corrected = wasSpam === (input.verdict === "spam") ? [] : this.verdictsOf(ids);
+			this.forgetSetting(ids);
 			const released = this.judgeSenders(ids, input.verdict);
 			// Out of Spam is into the inbox, not left in Trash too, as Move to inbox does.
 			this.removeLabels(ids, input.verdict === "spam" ? ["inbox", "screener"] : ["spam", "trash", "screener"]);
@@ -1150,6 +1154,18 @@ export class Mailbox extends DurableObject<Env> {
 		const people = new Map<string, Set<string>>();
 		for (const r of rows) people.set(r.thread_id, (people.get(r.thread_id) ?? new Set()).add(r.sender ?? `unverified:${r.from_address}`));
 		return rows.filter((r) => r.sender !== null && ((people.get(r.thread_id)?.size ?? 0) <= 1 || !r.trusted)).map((r) => r.id);
+	}
+
+	/**
+	 * Someone moved these messages into or out of Spam themselves, so a setting no longer explains where they are: their
+	 * banner stops naming it (Verdict `bySetting`).
+	 */
+	private forgetSetting(messageIds: string[]): void {
+		this.sql.exec(
+			`UPDATE messages SET verdict_json = json_remove(verdict_json, '$.bySetting')
+			 WHERE id IN (SELECT value FROM json_each(?1)) AND json_extract(verdict_json, '$.bySetting') IS NOT NULL`,
+			JSON.stringify(messageIds),
+		);
 	}
 
 	private verdictsOf(messageIds: string[]): Verdict[] {
@@ -1878,6 +1894,7 @@ function placeFor(verdict: Verdict, settings: MailSettings): string {
 			return settings.screener ? "screener" : "spam";
 		case "checked":
 			if (verdict.category === "spam" || verdict.category === "phishing") return "spam";
+			if (verdict.category === "outreach") return settings.outreachToSpam ? "spam" : firstTime;
 			return verdict.category === "transactional" ? "inbox" : firstTime;
 		case "unknown":
 			return firstTime;

@@ -471,11 +471,13 @@ apart for one person's mailbox is who you know, and what you've said about who y
   spam button answers for one message and its sender only (`judgeMessage()`). Writing to someone trusts them too,
   and everyone a mailbox had written to before this existed starts out trusted. The latest judgment stands.
 - **Checks** (`worker/mail/checks.ts`). Mail from a sender the mailbox doesn't know (`Mailbox.needsCheck()`) is
-  sorted into personal, transactional, newsletter, spam, or phishing. Cloudflare's Clef, a Workers AI decision
-  model that returns a probability per category, reads every such message (about 500 ms and a few hundred
-  tokens). Not Clef Flash: it scored a mailbox-quota phish at 0.23, and 0.18 with a line claiming the mail was
-  personal, where Clef gave both 0.78. When Clef's odds of spam or phishing land between 0.2 and 0.9, OpenAI's
-  GPT-6 Luna reads it too and its category stands. Luna goes through OpenRouter on the account's `default` AI
+  sorted into personal, transactional, newsletter, outreach, spam, or phishing. Cloudflare's Clef, a Workers AI
+  decision model that returns a probability per category, reads every such message (about 500 ms and a few
+  hundred tokens). Not Clef Flash: it scored a mailbox-quota phish at 0.23, and 0.18 with a line claiming the
+  mail was personal, where Clef gave both 0.78. When Clef's odds that it's unsolicited (outreach, spam, or
+  phishing) land between 0.2 and 0.9, OpenAI's GPT-6 Luna reads it too and its category stands. Luna also reads
+  mail Clef calls outreach with less than 0.8 on outreach itself, since outreach can be let through and phishing
+  can't. Luna goes through OpenRouter on the account's `default` AI
   Gateway, which holds the OpenRouter key (BYOK, Provider Keys) and adds it to the request, so the Worker never
   has it. The request asks only for providers that retain nothing (OpenRouter's `zdr`, which for Luna means Azure)
   and don't train on it (`data_collection: deny`), and tells the gateway not to log it. Without the key, Luna's
@@ -503,7 +505,7 @@ apart for one person's mailbox is who you know, and what you've said about who y
   before there were checks; who's trusted, forged senders, and Spam clicks don't depend on it.
 - **Verdicts.** `Mailbox.ingest()` decides, in order: failed its domain's authentication → Spam; a judged sender
   → their standing; verified mail from one of this install's own addresses → Inbox; anyone else → the checks'
-  call (spam and phishing → Spam). Standing is read inside the insert's transaction, so a click can't land
+  call (spam and phishing → Spam; cold outreach → Spam unless the mailbox's Settings › Spam says otherwise). Standing is read inside the insert's transaction, so a click can't land
   between the check and the write, and it overrides a check made before the sender became known. Each inbound
   message keeps its verdict, and mail in Spam shows it with a Not spam button, like Gmail's "Why is this message
   in spam?". Every Spam or Not spam click on mail the filter placed otherwise logs the verdicts it got wrong

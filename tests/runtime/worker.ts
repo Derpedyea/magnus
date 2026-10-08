@@ -31,7 +31,7 @@ let pushStatus = 201;
 let pushEndless = false;
 
 /** What the stand-in models answer: Clef's probability of spam, and Luna's category. "fail" throws; "garbage" is off-schema. */
-type ModelAnswers = { quick: number | "fail" | "garbage"; deep: MailCategory | "fail" | "echo" };
+type ModelAnswers = { quick: number | Record<MailCategory, number> | "fail" | "garbage"; deep: MailCategory | "fail" | "echo" };
 let answers: ModelAnswers = { quick: 0, deep: "personal" };
 /** Each model call, its inputs as JSON. */
 let modelCalls: { model: string; inputs: string }[] = [];
@@ -43,7 +43,9 @@ const models: Models = {
 		if (model === QUICK_MODEL) {
 			if (answers.quick === "fail") throw new Error("Injected model failure");
 			if (answers.quick === "garbage") return { answers: { category: { type: "choice", choice: "spam" } } };
-			const probabilities = { personal: 1 - answers.quick, transactional: 0, newsletter: 0, spam: answers.quick, phishing: 0 };
+			const probabilities = typeof answers.quick === "number"
+				? { personal: 1 - answers.quick, transactional: 0, newsletter: 0, outreach: 0, spam: answers.quick, phishing: 0 }
+				: answers.quick;
 			return { model: "clef", answers: { category: { type: "choice", choice: "personal", probabilities, confidence: 1 } }, usage: { input_tokens: 1, output_tokens: 0 } };
 		}
 		throw new Error(`Unexpected model ${model}`);

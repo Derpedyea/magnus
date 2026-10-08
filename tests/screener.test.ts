@@ -156,9 +156,9 @@ describe("Screener", () => {
 			});
 		expect((await call("bob", "PATCH", { screener: true })).status).toBe(404);
 		expect((await call("bob", "GET")).status).toBe(404);
-		expect(await box().settings()).toEqual({ screener: false });
+		expect(await box().settings()).toMatchObject({ screener: false });
 		expect((await call("alice", "PATCH", { screener: true })).status).toBe(200);
-		expect(await (await call("alice", "GET")).json()).toEqual({ screener: true });
+		expect(await (await call("alice", "GET")).json()).toMatchObject({ screener: true });
 		expect((await call("alice", "PATCH", { screener: "yes" })).status).toBe(400);
 	});
 });

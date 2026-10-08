@@ -11,7 +11,7 @@ import {
 	type ThreadMessage,
 } from "#shared";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { getRouteApi, useCanGoBack, useRouter } from "@tanstack/react-router";
+import { getRouteApi, Link, useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
 import { ArchiveIcon, ArrowLeftIcon, CircleAlertIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon, UserRoundCheckIcon, type LucideIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
@@ -429,13 +429,23 @@ function SpamReason(props: { mailboxId: string; message: MessageDetail }) {
 		mutationFn: () => api.judge(props.mailboxId, props.message.id, "trusted"),
 		onSuccess: () => qc.invalidateQueries({ queryKey: ["mail"] }),
 	});
-	const { danger, reason } = spamReason(props.message);
+	const { danger, reason, settings } = spamReason(props.message);
 	return (
 		<div className={cn("mb-3 flex items-start gap-2 rounded-lg px-3 py-2", danger ? "bg-destructive/10" : "bg-muted")}>
 			<OctagonAlertIcon className={cn("mt-0.5 size-4 shrink-0", danger ? "text-destructive" : "text-muted-foreground")} />
 			<div className="min-w-0 flex-1">
 				<p className={cn("font-medium", danger && "text-destructive")}>Why it's in Spam</p>
-				<p className="text-xs break-words text-muted-foreground">{notSpam.error ? errorMessage(notSpam.error) : reason}</p>
+				<p className="text-xs break-words text-muted-foreground">
+					{notSpam.error ? errorMessage(notSpam.error) : reason}
+					{settings && !notSpam.error ? (
+						<>
+							{" "}
+							<Link to="/settings/spam" className="underline underline-offset-2 hover:text-foreground">
+								Change where it goes
+							</Link>
+						</>
+					) : null}
+				</p>
 			</div>
 			<Button variant="outline" size="xs" disabled={notSpam.isPending || notSpam.isSuccess} onClick={() => notSpam.mutate()}>
 				{notSpam.isPending ? <Spinner className="size-3" /> : <InboxIcon />}
@@ -501,7 +511,8 @@ function Screening(props: { mailboxId: string; message: MessageDetail }) {
 }
 
 /** Mail that may be out to get you reads as a warning. */
-function spamReason({ from, verdict }: MessageDetail): { danger: boolean; reason: string } {
+/** `settings`: where it went is a setting, so the banner says where to change it. */
+function spamReason({ from, verdict }: MessageDetail): { danger: boolean; reason: string; settings?: boolean } {
 	switch (verdict?.kind) {
 		case "marked":
 			return { danger: false, reason: `Earlier mail from ${from.address} was marked as spam.` };
@@ -511,7 +522,8 @@ function spamReason({ from, verdict }: MessageDetail): { danger: boolean; reason
 			return { danger: false, reason: "It couldn't be checked, so it waits here instead of your inbox." };
 		case "checked":
 			if (verdict.category === "phishing") return { danger: true, reason: "It looks like phishing: it may be after your password, money, or data." };
-			if (verdict.category === "spam") return { danger: false, reason: "It looks like mail you didn't ask for: cold outreach, marketing, or a scam." };
+			if (verdict.category === "outreach" && verdict.bySetting) return { danger: false, reason: "It looks like cold outreach: a stranger pitching, recruiting, or asking for a meeting.", settings: true };
+			if (verdict.category === "spam") return { danger: false, reason: "It looks like marketing you didn't ask for, or a scam." };
 			return { danger: false, reason: "It was marked as spam." };
 		default:
 			return { danger: false, reason: "It was marked as spam." };

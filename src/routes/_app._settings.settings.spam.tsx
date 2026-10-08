@@ -59,6 +59,11 @@ function MailboxSettings({ mailbox, named }: { mailbox: MailboxMembership; named
 					"Screen first-time senders",
 					"Mail from people new to you waits in the Screener until you let them in. Receipts, sign-in codes, and other account mail still arrive.",
 				)}
+				{field(
+					"outreachToSpam",
+					"Send cold outreach to Spam",
+					"Sales, recruiting, and partnership pitches from strangers. Unticked, they arrive like other mail from someone new.",
+				)}
 				{settings.isError ? <FieldError>{settings.error.message}</FieldError> : save.isError ? <FieldError>{save.error.message}</FieldError> : null}
 			</FieldGroup>
 		</FieldSet>
