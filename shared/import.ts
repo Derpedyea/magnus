@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { SYSTEM_LABELS } from "./types";
+import { SYSTEM_LABELS, type SystemLabel } from "./types";
 
 /**
  * Importing mail from another provider: the browser uploads each message as it was exported, with where it was there,
@@ -18,8 +18,11 @@ export const MAX_IMPORT_LABELS = 20;
  */
 const RESERVED = new Set<string>([...SYSTEM_LABELS, "all", "drafts", "failed", "search"]);
 
-/** System labels an import can set; the outbox only ever holds mail Magnus is sending. */
-const IMPORT_SYSTEM = new Set<string>(SYSTEM_LABELS.filter((l) => l !== "outbox"));
+/**
+ * System labels an import can set. The outbox only ever holds mail Magnus is sending, and the Screener mail Magnus held
+ * for asking about its sender.
+ */
+const IMPORT_SYSTEM = new Set<string>(["inbox", "sent", "spam", "trash", "starred"] satisfies SystemLabel[]);
 
 const LABEL_RE = /^[\p{L}\p{N}._-]{1,64}$/u;
 

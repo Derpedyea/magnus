@@ -133,6 +133,13 @@ describe("import", () => {
 		expect(await db.exec("SELECT address, verdict FROM senders")).toEqual([{ address: "pal@outside.test", verdict: "spam" }]);
 	});
 
+	it("doesn't hold imported mail in the Screener, which asks about new senders", async () => {
+		await alice().updateSettings({ screener: true });
+		const { id } = await importNow(eml({ from: "Stranger <stranger@unknown.test>" }), "labels=inbox&read=0&sent=0");
+		expect((await alice().getMessage(id))?.message.labels).toEqual(["inbox"]);
+		expect((await upload(eml({ id: "<held@outside.test>" }), "labels=screener&read=0&sent=0")).status).toBe(400);
+	});
+
 	it("doesn't send imported mail to the models, which would sort it again", async () => {
 		await f.control.setModels({ quick: 0.99, deep: "spam" });
 		const { id } = await importNow(eml({ from: "Stranger <stranger@unknown.test>" }), "labels=inbox&read=0&sent=0");

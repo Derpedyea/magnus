@@ -493,7 +493,8 @@ export class Mailbox extends DurableObject<Env> {
 			// Delivered by a retry.
 			this.sql.exec(`DELETE FROM failed WHERE id = ?1`, input.id);
 			// Where it was placed, not every label it has; a +tag can't add `inbox` (labelFromTag()).
-			return { threadId, inbox: placed[0] === "inbox" };
+			// Imported mail is old: it never notifies (push.ts), wherever it goes.
+			return { threadId, inbox: !input.imported && placed[0] === "inbox" };
 		});
 
 		this.broadcast({ type: "threads.changed", threadIds: [...new Set([delivered.threadId, ...released])] });
