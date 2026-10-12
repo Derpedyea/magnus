@@ -16,24 +16,29 @@ const CODE_MINUTES = 10;
 const REGISTER_PATHS = new Set(["/passkey/generate-register-options", "/passkey/verify-registration"]);
 
 type Auth = ReturnType<typeof createAuth>;
-const instances = new Map<string, Promise<Auth>>();
+/** This install's session secret, once read. A plain value, so any request can use it. */
+let secret: string | undefined;
+const instances = new WeakMap<Request, Auth>();
 
 /**
  * Better Auth at /api/auth/*: a passkey, a code emailed to your sign-in address, or Google when configured, then a
  * session cookie in D1. Nobody signs up; an admin adds people (the admin plugin).
  *
- * One instance per origin the Worker is reached on (its workers.dev URL, a custom domain), so callbacks return
- * to the same site and only that origin is trusted. Passkeys are bound to that origin's hostname too: one made on
- * the custom domain doesn't work on workers.dev. Created on first use, since Workers forbid I/O at import.
+ * Each instance is made for the origin the request came in on (its workers.dev URL, a custom domain), so callbacks
+ * return to the same site and only that origin is trusted. Passkeys are bound to that origin's hostname too: one made
+ * on the custom domain doesn't work on workers.dev.
+ *
+ * One instance per request, made on first use since Workers forbid I/O at import. An instance can't outlive its
+ * request: it runs its queries one at a time (Kysely's single SQLite connection) and keeps locks of its own, and a
+ * request's I/O is cancelled when its client hangs up, so a query that never answers would hold up every later request.
+ * Making one is CPU work; only the secret is kept between requests.
  */
-export function auth(request: Request): Promise<Auth> {
-	const { origin } = new URL(request.url);
-	let instance = instances.get(origin);
-	if (!instance) {
-		instance = authSecret(env.DIRECTORY).then((secret) => createAuth(origin, secret));
-		instance.catch(() => instances.delete(origin));
-		instances.set(origin, instance);
-	}
+export async function auth(request: Request): Promise<Auth> {
+	const made = instances.get(request);
+	if (made) return made;
+	secret ??= await authSecret(env.DIRECTORY);
+	const instance = instances.get(request) ?? createAuth(new URL(request.url).origin, secret);
+	instances.set(request, instance);
 	return instance;
 }
 
@@ -114,6 +119,9 @@ function createAuth(baseURL: string, secret: string) {
 			},
 		},
 		advanced: {
+			// Migrations own the schema (worker/migrate.ts). Better Auth's own check would read D1's schema for every
+			// instance, so every request, and hold each auth call until it's done.
+			database: { validateSchema: false },
 			ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
 			// Codes send after the response, so its timing can't reveal which addresses have an account.
 			backgroundTasks: { handler: waitUntil },

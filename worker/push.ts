@@ -123,18 +123,17 @@ type Token = z.infer<typeof TokenSchema>;
  * would otherwise sign its own. Kept in D1's settings, since a Worker runs in many isolates, and here per isolate.
  * Keyed by push service, sender, and key, which a token names.
  */
-const tokens = new Map<string, Promise<Token>>();
+const tokens = new Map<string, Token>();
 
 async function authorization(db: D1Database, endpoint: string, origin: string, keys: VapidKeys, now: number): Promise<string> {
 	const name = `vapid_token ${new URL(endpoint).origin} ${origin} ${keys.publicKey}`;
-	const cached = tokens.get(name);
-	const token = cached && (await cached);
-	if (token && token.until > now) return token.header;
-	// Kept before it's settled, so pushes to several devices at once share it. A failure isn't kept.
-	const shared = sharedToken(db, name, endpoint, origin, keys, now);
-	tokens.set(name, shared);
-	shared.catch(() => tokens.get(name) === shared && tokens.delete(name));
-	return (await shared).header;
+	const kept = tokens.get(name);
+	if (kept && kept.until > now) return kept.header;
+	// Kept once it's settled, never before: an invocation's I/O can be cancelled with it, and pushes waiting on a token
+	// still in flight would then wait forever. Pushes to several devices at once each ask D1, which gives them all one.
+	const token = await sharedToken(db, name, endpoint, origin, keys, now);
+	tokens.set(name, token);
+	return token.header;
 }
 
 /** The token every isolate uses, signing one when it's due. Isolates that sign at once all get whichever landed first. */
