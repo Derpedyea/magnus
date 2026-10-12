@@ -255,7 +255,8 @@ Events from the earlier send are older, so they no longer apply to the retried r
 The browser opens `GET /api/mailboxes/:id/live` for each of the user's mailboxes. The API authenticates the request and hands the upgrade
 to the Mailbox DO, which accepts it with the **hibernation API**. Idle sockets cost nothing, and `ping`/`pong`
 is answered by `setWebSocketAutoResponse` without waking the object. Every mutation broadcasts a small
-event, and the client invalidates the matching TanStack Query caches.
+event, and the client invalidates the matching TanStack Query caches. Whenever a socket opens, the first one
+included, the client refetches mail as well: nothing that changed while it had no socket was sent to it.
 
 ### 4.5 Files too big to attach
 

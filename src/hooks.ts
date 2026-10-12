@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { LIVE_RECHECK, type Me, parseScope } from "#shared";
+import { type Me, parseScope } from "#shared";
 import type { Identity } from "./api";
+import { subscribe } from "./live";
 import { countsQuery, meQuery } from "./queries";
 import { throttle } from "./throttle";
 
@@ -69,9 +70,10 @@ export function useLive(mailboxIds: string[]): boolean {
 	useEffect(() => {
 		if (!key) return;
 		const refresh = throttle(() => void qc.invalidateQueries({ queryKey: ["mail"] }), REFRESH_MS);
+		const proto = location.protocol === "https:" ? "wss" : "ws";
 		const stops = key.split(",").map((id) =>
 			subscribe(
-				id,
+				`${proto}://${location.host}/api/mailboxes/${id}/live`,
 				refresh.call,
 				(up) =>
 					setOpen((prev) => {
@@ -89,50 +91,4 @@ export function useLive(mailboxIds: string[]): boolean {
 	}, [key, qc]);
 
 	return mailboxIds.length > 0 && mailboxIds.every((id) => open.has(id));
-}
-
-/** One reconnecting WebSocket to a Mailbox DO. Returns a function that closes it for good. */
-function subscribe(mailboxId: string, onChange: () => void, onStatus: (connected: boolean) => void): () => void {
-	let ws: WebSocket | null = null;
-	let stopped = false;
-	let opened = false;
-	let attempt = 0;
-	let heartbeat: number | undefined;
-	let reconnect: number | undefined;
-
-	const connect = () => {
-		const proto = location.protocol === "https:" ? "wss" : "ws";
-		const socket = new WebSocket(`${proto}://${location.host}/api/mailboxes/${mailboxId}/live`);
-		ws = socket;
-		socket.onopen = () => {
-			// Whatever changed while there was no socket is refetched, including the event a recheck held back.
-			if (opened) onChange();
-			opened = true;
-			attempt = 0;
-			onStatus(true);
-			heartbeat = window.setInterval(() => socket.send("ping"), 30_000);
-		};
-		socket.onmessage = (e) => {
-			if (e.data === "pong") return;
-			if (e.data !== LIVE_RECHECK) return onChange();
-			// Routine, so swap sockets and stay "live". If the sign-in is gone, the new one fails and shows it.
-			socket.onclose = null;
-			socket.close();
-			window.clearInterval(heartbeat);
-			connect();
-		};
-		socket.onclose = () => {
-			onStatus(false);
-			window.clearInterval(heartbeat);
-			if (!stopped) reconnect = window.setTimeout(connect, Math.min(1000 * 2 ** attempt++, 30_000));
-		};
-	};
-	connect();
-
-	return () => {
-		stopped = true;
-		window.clearInterval(heartbeat);
-		window.clearTimeout(reconnect);
-		ws?.close();
-	};
 }
