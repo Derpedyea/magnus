@@ -30,6 +30,7 @@ import { type Context, Hono } from "hono";
 import { z } from "zod";
 import { DraftSchema } from "#shared/drafts";
 import { ImportQuerySchema, MAX_IMPORT_BYTES } from "#shared/import";
+import { ProtonAnswerSchema, ProtonJobRefSchema, ProtonStartSchema } from "#shared/proton-export";
 import { admin } from "./admin";
 import { auth, currentUser, endReplacedSession, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
@@ -175,6 +176,8 @@ async function localTo(c: Context<AppEnv>, from: string, recipients: string[]): 
 	return localRecipients(routed, c.var.mailboxId);
 }
 
+const protonImport = (c: Context<AppEnv>) => c.env.PROTON_IMPORT.getByName(c.var.mailboxId);
+
 const mb = new Hono<AppEnv>()
 	.use("*", async (c, next) => {
 		const mailboxId = c.req.param("mailboxId");
@@ -285,6 +288,35 @@ const mb = new Hono<AppEnv>()
 		if (raw.byteLength > MAX_IMPORT_BYTES) return tooBig();
 		const result = await importMessage(c.env, c.var.mailboxId, raw, c.req.valid("query"));
 		return "refused" in result ? c.json({ error: result.refused }, 422) : c.json(result, 202);
+	})
+
+	// ─── Importing from Proton on the server (worker/proton-import.ts) ───────────
+	// One import per mailbox. Only whoever started it sees Proton's questions, answers them, or stops it.
+
+	.get("/proton-import", async (c) => c.json({ job: await protonImport(c).status(c.var.user.id) }))
+
+	/** Signs in to Proton and starts exporting. The password goes to the export tool's container and nowhere else. */
+	.post("/proton-import", zValidator("json", ProtonStartSchema), async (c) => {
+		const { login, password } = c.req.valid("json");
+		const result = await protonImport(c).start({ userId: c.var.user.id, mailboxId: c.var.mailboxId, login, password });
+		return "error" in result ? c.json({ error: result.error }, result.status) : c.json(result, 202);
+	})
+
+	.post("/proton-import/answer", zValidator("json", ProtonAnswerSchema), async (c) => {
+		const { job, prompt, value } = c.req.valid("json");
+		const result = await protonImport(c).answer(c.var.user.id, job, { prompt, value });
+		return "error" in result ? c.json({ error: result.error }, result.status) : c.json(result);
+	})
+
+	.post("/proton-import/cancel", zValidator("json", ProtonJobRefSchema), async (c) => {
+		const result = await protonImport(c).cancel(c.var.user.id, c.req.valid("json").job);
+		return "error" in result ? c.json({ error: result.error }, result.status) : c.json(result);
+	})
+
+	/** Clears a finished import from the page. */
+	.delete("/proton-import", zValidator("query", ProtonJobRefSchema), async (c) => {
+		const result = await protonImport(c).dismiss(c.req.valid("query").job);
+		return "error" in result ? c.json({ error: result.error }, result.status) : c.json(result);
 	})
 
 	/** Composer attachment upload: raw body, filename in X-Filename (URI-encoded). Whatever doesn't fit in the message goes as a link. */

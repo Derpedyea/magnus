@@ -39,6 +39,9 @@ npx wrangler queues create magnus-email-events
 pnpm run deploy        # typechecks, tests, and builds; creates the database and bucket on first deploy
 ```
 
+Docker has to be running: `wrangler deploy` builds the image for importing from Proton (`container/proton-export/`).
+Workers Builds builds it on its own.
+
 The Worker applies the D1 schema itself and generates the session secret on first run.
 
 ## 2. Set up
@@ -102,7 +105,8 @@ A domain that gets mail elsewhere (Proton, Google, …) shows that provider when
 removes the provider's MX records and adds Cloudflare's, so **mail stops arriving at the old provider right
 away**, and Magnus asks you to confirm first. Before you do:
 
-1. Export your old mail (usually to `.eml`). Importing it is on the [roadmap](ARCHITECTURE.md#8-roadmap).
+1. Bring your old mail over: Settings › Import mail signs in to Proton and copies it, or takes a folder of `.eml`
+   files from anywhere else. Do it after the switch too, to catch what arrived in between; nothing is copied twice.
 2. Lower the TTL on the existing MX records a day ahead, so the switch spreads quickly.
 
 Moving also replaces the old provider's MTA-STS records, if it had any: their policy names its own mail servers,

@@ -10,6 +10,9 @@
 	// First visit goes to <name>.<subdomain>.workers.dev/setup. Add a custom domain whenever you like.
 	"workers_dev": true,
 	"preview_urls": false,
+	// Local dev doesn't build or start the Proton export container, so it needs no Docker. To try an import locally,
+	// run the container yourself and point PROTON_EXPORTER_URL at it (worker/optional.ts).
+	"dev": { "enable_containers": false },
 	"triggers": { "crons": ["0 * * * *"] },
 	"observability": {
 		"enabled": true,
@@ -25,15 +28,28 @@
 	"d1_databases": [{ "binding": "DIRECTORY", "database_name": "magnus-directory", "migrations_dir": "migrations" }],
 	"r2_buckets": [{ "binding": "MAIL", "bucket_name": "magnus-mail" }],
 	"durable_objects": {
-		// Vault encrypts the saved Cloudflare token and keeps its key out of D1 and R2.
+		// Vault encrypts the saved Cloudflare token and keeps its key out of D1 and R2. ProtonImport runs an import from
+		// Proton for one mailbox, in its container below.
 		"bindings": [
 			{ "name": "MAILBOX", "class_name": "Mailbox" },
-			{ "name": "VAULT", "class_name": "Vault" }
+			{ "name": "VAULT", "class_name": "Vault" },
+			{ "name": "PROTON_IMPORT", "class_name": "ProtonImport" }
 		]
 	},
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["Mailbox"] },
-		{ "tag": "v2", "new_sqlite_classes": ["Vault"] }
+		{ "tag": "v2", "new_sqlite_classes": ["Vault"] },
+		{ "tag": "v3", "new_sqlite_classes": ["ProtonImport"] }
+	],
+	// Proton's Export Tool (container/proton-export/), one container per import running. Billed only while one runs.
+	"containers": [
+		{
+			"class_name": "ProtonImport",
+			"image": "./container/proton-export/Dockerfile",
+			// The tool decrypts with one core and budgets 1.5 GiB of memory; exported mail waits on disk until it's filed.
+			"instance_type": { "vcpu": 1, "memory_mib": 4096, "disk_mb": 8000 },
+			"max_instances": 5
+		}
 	],
 	"queues": {
 		"producers": [{ "binding": "INBOUND", "queue": "magnus-inbound" }],

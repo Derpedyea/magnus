@@ -59,6 +59,7 @@ Constraints worth being honest about:
 | `queue()` | `worker/mail/` | Parse inbound mail into its mailbox; apply delivery events. Messages are told apart by shape, since queues can be renamed at deploy |
 | `fetch()` | `worker/api.ts`, `worker/links.ts`, `worker/mta-sts.ts`, `src/` | The React app (static assets), `/api/*` (mail, `/setup`, `/admin`, Better Auth), `/f/*` downloads for files sent as links, and each domain's MTA-STS policy |
 | `Mailbox` | `worker/mailbox/` | The Durable Object class that owns all mail data and the outbox |
+| `ProtonImport` | `worker/proton-import.ts`, `container/proton-export/` | A Durable Object per mailbox with a container, for importing from Proton (§4.7) |
 
 Why one Worker: it's what the Deploy to Cloudflare button can install in one click, it deploys as a unit, and
 local development is a single `vite dev`. The earlier design split inbound, storage, and web into three Workers
@@ -358,6 +359,37 @@ Code: `shared/import.ts`, `src/import.ts`, `worker/mail/import.ts`.
    once the mail here is deleted for good doesn't bring it back. Failed mail keeps `imported`, so retrying it from
    Failed still places it.
 
+**Signing in to Proton instead.** The same page can do the export too, so nobody has to run a terminal program.
+Proton's Export Tool (the official Linux build, unmodified and pinned by sha256) runs in a Cloudflare Container that
+belongs to a `ProtonImport` Durable Object, one per mailbox. Code: `container/proton-export/`,
+`worker/proton-import.ts`, `src/components/ProtonImport.tsx`, and the contract between them in
+`shared/proton-export.ts`.
+
+1. `POST /api/mailboxes/:id/proton-import` claims the mailbox's one job, starts the container, and hands the login
+   and password to the wrapper on its private port (`server.ts`). The wrapper runs the tool with the login in its
+   environment and writes the password when it asks, then drops it. Nothing stores either: a container that dies
+   takes the sign-in with it, and the job fails as interrupted. Each start is one sign-in, and a mailbox gets five an
+   hour, so Magnus can't be used to guess someone's Proton password.
+2. The wrapper reads the tool's output (`session.ts`) and turns its prompts into questions for the page: the 2FA code,
+   the mailbox password, or Proton's human check (a link to verify.proton.me, then Continue). Every answer, stop, and
+   clear names the import and question it's for, so one meant for an earlier import or question is refused before it
+   reaches the tool. Passwords go as typed. A failed sign-in stops there: the tool would try the same password twice
+   more.
+3. The Durable Object's alarm polls the wrapper every few seconds. Once the tool writes `labels.json`, it takes the
+   exported `<id>.eml` and `<id>.metadata.json` pairs a batch at a time, places each with `protonPlacement()` and
+   files it with `importMessage()`, exactly as a dropped folder's would be, then deletes it from the container's
+   disk. What became of each is kept by Proton's id, so a message filed again after a crash isn't counted twice.
+   Whether the job is still running, and its starter still in the mailbox, is checked again just before each message
+   is filed. Every request to the wrapper has a deadline (10 s, a minute for a message), and one that fails on the
+   way is tried again next alarm rather than taken as the message's fault.
+4. When the tool is done and nothing is left to file, the job is done. A finished, failed, or cancelled job asks the
+   tool to stop (it signs out of Proton) and destroys the container once it has, or after 30 seconds. Questions left
+   unanswered for 15 minutes, or the person leaving the mailbox, cancel it. Only whoever started it sees Proton's
+   questions, answers them, or stops it; other members see the progress.
+
+The tool's own log, which holds the account's encrypted keys, never leaves the container's disk, and the wrapper
+logs only phase names. Local dev starts no containers; `PROTON_EXPORTER_URL` points at one run by hand.
+
 Imports share the inbound queue, so a large one can hold up new mail by the minutes its backlog takes to drain. Every
 filed message is announced live, and the client refetches at most once a second, so a large import stays cheap for
 open tabs.
@@ -598,6 +630,9 @@ apart for one person's mailbox is who you know, and what you've said about who y
 - Workers Paid ($5/mo) is required for Email Sending to arbitrary recipients and includes 3,000 outbound
   emails a month.
 - Inbound, D1, DO, R2, and Queues usage for one to a few people sits inside the plan's included allowances.
+- Importing from Proton runs a container (1 vCPU, 4 GiB, 8 GB disk) only while an import does. The plan includes
+  25 GiB-hours of memory, 200 GB-hours of disk, and 375 vCPU-minutes a month, about six hours of importing; past
+  that it's about 4¢ an hour, plus up to 7¢ for the CPU it uses.
   The one variable is R2 storage for large attachment archives (~$0.015/GB-month).
 - Spam checks only read mail from senders a mailbox doesn't know. Clef costs $0.24 per million input tokens,
   about 0.012¢ a message, inside Workers AI's free 10,000 neurons a day for several hundred messages. GPT-6 Luna

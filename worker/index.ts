@@ -8,6 +8,7 @@ import { cleanDraftFiles } from "./drafts";
 import { forgetExpiredDevices } from "./push";
 
 export { Mailbox } from "./mailbox/mailbox";
+export { ProtonImport } from "./proton-import";
 export { Vault } from "./vault";
 
 /**

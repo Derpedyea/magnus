@@ -111,6 +111,16 @@ export const api = {
 				{ init: { body: file, signal }, headers: { "Content-Type": "message/rfc822" } },
 			),
 		),
+	/** The import from Proton running in this mailbox, or the last one until it's cleared. */
+	protonImport: (mailboxId: string) => parseResponse(mailbox["proton-import"].$get({ param: { mailboxId } })),
+	/** Signs in to Proton on the server and starts importing; takes a while when its container has to start. */
+	startProtonImport: (mailboxId: string, login: string, password: string) =>
+		parseResponse(mailbox["proton-import"].$post({ param: { mailboxId }, json: { login, password } })),
+	/** The answer to Proton's question `prompt` in import `job`: a code, the mailbox password, or "" once the human check is done. */
+	answerProton: (mailboxId: string, job: string, prompt: number, value: string) =>
+		parseResponse(mailbox["proton-import"].answer.$post({ param: { mailboxId }, json: { job, prompt, value } })),
+	stopProtonImport: (mailboxId: string, job: string) => parseResponse(mailbox["proton-import"].cancel.$post({ param: { mailboxId }, json: { job } })),
+	clearProtonImport: (mailboxId: string, job: string) => parseResponse(mailbox["proton-import"].$delete({ param: { mailboxId }, query: { job } })),
 	send: (mailboxId: string, draft: Json<typeof mailbox.send.$post>) => parseResponse(mailbox.send.$post({ param: { mailboxId }, json: draft })),
 	shareLink: (mailboxId: string, messageId: string, attachmentId: string, shared: boolean) =>
 		parseResponse(mailbox.messages[":messageId"].attachments[":attachmentId"].$patch({ param: { mailboxId, messageId, attachmentId }, json: { shared } })),

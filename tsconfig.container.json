@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    // The container runs these with Node's type stripping (container/proton-export/Dockerfile): no build step, so
+    // imports name .ts files and only erasable syntax is allowed.
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
+  },
+  "include": ["container"]
+}
