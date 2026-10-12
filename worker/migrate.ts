@@ -9,15 +9,15 @@ const MIGRATIONS = Object.entries(FILES)
 	.map(([path, sql]) => ({ name: path.slice(path.lastIndexOf("/") + 1), statements: splitStatements(sql) }))
 	.sort((a, b) => a.name.localeCompare(b.name));
 
-let ready: Promise<void> | undefined;
+let migrated = false;
 
-export function migrate(db: D1Database): Promise<void> {
-	// A failure isn't cached: the next request tries again.
-	ready ??= apply(db).catch((error: unknown) => {
-		ready = undefined;
-		throw error;
-	});
-	return ready;
+export async function migrate(db: D1Database): Promise<void> {
+	// Only success is kept. A request's I/O is cancelled when its client hangs up, so sharing a run still in flight could
+	// leave every later request waiting on it forever. Until one finishes, each request runs its own: a migration that
+	// another got to first rolls back harmlessly (see apply). A failure throws, and the next request tries again.
+	if (migrated) return;
+	await apply(db);
+	migrated = true;
 }
 
 async function apply(db: D1Database): Promise<void> {
