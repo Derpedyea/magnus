@@ -22,7 +22,13 @@ export function ThreadList({ threadOpen }: { threadOpen: boolean }) {
 	return <Threads key={`${view}/${scope.join()}/${q}`} view={view} scope={scope} q={q} threadOpen={threadOpen} />;
 }
 
-/** Only the rows near the viewport are rendered, and the next page loads as its placeholder row nears it. */
+/**
+ * How many rows below the screen are left when the next page starts loading: about 2,500px, so a page (half a second
+ * or so) usually lands before a quick scroll gets there. Under a page (50) less a screen, so opening a list loads one.
+ */
+const LEAD = 30;
+
+/** Only the rows near the viewport are rendered, and the next page loads while LEAD rows are still to go. */
 function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]; q: string; threadOpen: boolean }) {
 	const account = useAccount();
 	const { data, hasNextPage, isFetching, isFetchNextPageError, fetchNextPage } = useSuspenseInfiniteQuery(listQuery(scope, view, q));
@@ -47,10 +53,10 @@ function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]
 	});
 	const items = rows.getVirtualItems();
 
-	const placeholderNear = (items.at(-1)?.index ?? 0) >= threads.length;
+	const nearEnd = (rows.calculateRange()?.endIndex ?? 0) >= threads.length - LEAD;
 	useEffect(() => {
-		if (placeholderNear && hasNextPage && !isFetching && !isFetchNextPageError) void fetchNextPage();
-	}, [placeholderNear, hasNextPage, isFetching, isFetchNextPageError, fetchNextPage]);
+		if (nearEnd && hasNextPage && !isFetching && !isFetchNextPageError) void fetchNextPage();
+	}, [nearEnd, hasNextPage, isFetching, isFetchNextPageError, fetchNextPage]);
 
 	// When mail arrives (or leaves) above the rows you're reading, keep those rows still. Browsers do this
 	// for ordinary lists but not for positioned rows. At the very top, new mail shows up as usual.
