@@ -131,7 +131,7 @@ describe("Screener", () => {
 		await box().judgeMessage({ messageId: "flood-0", verdict: "trusted" });
 		const counts = (await box().counts({})).labels;
 		expect([counts.find((l) => l.label === "screener"), counts.find((l) => l.label === "inbox")?.threads]).toEqual([undefined, 150]);
-	}, 30_000);
+	});
 
 	it("lets in only the message itself when its sender can't be verified", async () => {
 		const unverified = "dkim=none; dmarc=none; spf=pass smtp.mailfrom=bounce@bulk.test";
