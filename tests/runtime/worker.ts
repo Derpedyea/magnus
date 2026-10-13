@@ -7,6 +7,8 @@ import { email, queue } from "../../worker/mail/inbound";
 import { DEEP_MODEL, type Models, QUICK_MODEL } from "../../worker/mail/checks";
 import { ingest } from "../../worker/mail/ingest";
 import { Mailbox as ProductionMailbox } from "../../worker/mailbox/mailbox";
+import { type Exporter, ProtonImport as ProductionProtonImport } from "../../worker/proton-import";
+import type { ExporterState, ProtonImportJob } from "#shared/proton-export";
 import { cleanDraftFiles } from "../../worker/drafts";
 import { forgetExpiredDevices } from "../../worker/push";
 import { NOW } from "./clock";
@@ -184,7 +186,124 @@ export class Mailbox extends ProductionMailbox {
 	alarmAt() { return this.ctx.storage.getAlarm(); }
 }
 
-export type TestEnv = Omit<Env, "MAILBOX"> & { MAILBOX: DurableObjectNamespace<Mailbox> };
+/**
+ * The Proton export tool's container, as its wrapper answers (container/proton-export/server.ts): tests set what it
+ * says and holds, and read back what it was asked.
+ */
+type FakeExport = {
+	running: boolean;
+	/** The container never comes up. */
+	startFails: boolean;
+	state: ExporterState;
+	/** labels.json, once the tool has written it. */
+	labels: string | null;
+	/** Exported messages by Proton id: the .eml and its .metadata.json. `size` overrides the length the wrapper reports. */
+	messages: Map<string, { eml: string; metadata: string; size?: number }>;
+	/** Deletes that fail before one succeeds, as a crash between filing and deleting would leave it. */
+	deleteFailures: number;
+	/** Message details whose body fails partway, as a dropped connection would. */
+	bodyFailures: number;
+	/** Requests for paths ending in these wait until releaseExport(), so a test can act while one is on its way. */
+	hold: string[];
+	/** Paths that never answer, unless the request is given up on. */
+	hang: string[];
+	/** No container can be had at all, as in local dev without PROTON_EXPORTER_URL. */
+	unavailable: boolean;
+	requests: { method: string; path: string; body: string }[];
+	destroyed: number;
+};
+
+function freshExport(): FakeExport {
+	return {
+		running: false, startFails: false, labels: null, messages: new Map(), deleteFailures: 0, bodyFailures: 0, hold: [], hang: [], unavailable: false, requests: [], destroyed: 0,
+		state: { phase: "idle", prompt: 0, error: null, verifyUrl: null, percent: 0, ready: 0, unexported: 0 },
+	};
+}
+let exported = freshExport();
+
+function sized(body: string, type: string, size = new TextEncoder().encode(body).byteLength): Response {
+	return new Response(body, { headers: { "Content-Type": type, "Content-Length": String(size) } });
+}
+
+const fakeExporter: Exporter = {
+	get running() { return exported.running; },
+	async start() {
+		if (exported.startFails) throw new Error("Injected container start failure");
+		exported.running = true;
+	},
+	async destroy() { exported.running = false; exported.destroyed++; },
+	async fetch(path, init) {
+		const method = init?.method ?? "GET";
+		const body = typeof init?.body === "string" ? init.body : "";
+		exported.requests.push({ method, path, body });
+		if (exported.hang.some((p) => path.startsWith(p))) {
+			return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)));
+		}
+		const state = () => Response.json({ ...exported.state, ready: exported.messages.size });
+		const message = /^\/messages\/([^/]+)(?:\/(eml|metadata))?$/.exec(path);
+		if (path === "/state") return state();
+		if (path === "/start") {
+			exported.state = { ...exported.state, phase: "signing-in" };
+			return state();
+		}
+		if (path === "/answer") {
+			const answer = z.object({ prompt: z.number(), value: z.string() }).parse(JSON.parse(body));
+			const asking = ["needs-code", "needs-mailbox-password", "needs-verification"].includes(exported.state.phase);
+			if (!asking || answer.prompt !== exported.state.prompt) return Response.json({ error: "Stale" }, { status: 409 });
+			exported.state = { ...exported.state, phase: "signing-in", error: null, verifyUrl: null };
+			return state();
+		}
+		if (path === "/stop") {
+			if (exported.state.phase !== "idle") exported.state = { ...exported.state, phase: "stopped" };
+			return state();
+		}
+		if (path === "/labels") return exported.labels === null ? Response.json({ error: "Not found" }, { status: 404 }) : sized(exported.labels, "application/json");
+		if (path.startsWith("/messages?")) return Response.json({ ids: [...exported.messages.keys()].slice(0, Number(new URL(path, "http://c").searchParams.get("limit"))) });
+		if (message?.[1]) {
+			const id = decodeURIComponent(message[1]);
+			const found = exported.messages.get(id);
+			if (!found) return Response.json({ error: "Not found" }, { status: 404 });
+			if (method === "DELETE") {
+				if (exported.deleteFailures > 0) {
+					exported.deleteFailures--;
+					return Response.json({ error: "Injected delete failure" }, { status: 500 });
+				}
+				exported.messages.delete(id);
+				return new Response(null, { status: 204 });
+			}
+			// Polled rather than a promise: workerd never resumes a promise settled from another request's context.
+			while (exported.hold.some((suffix) => path.endsWith(suffix))) await scheduler.wait(5);
+			if (message[2] === "metadata" && exported.bodyFailures > 0) {
+				exported.bodyFailures--;
+				const broken = new ReadableStream({ start: (controller) => controller.error(new Error("Injected body failure")) });
+				return new Response(broken, { headers: { "Content-Type": "application/json", "Content-Length": String(found.metadata.length) } });
+			}
+			return message[2] === "eml" ? sized(found.eml, "message/rfc822", found.size) : sized(found.metadata, "application/json");
+		}
+		return Response.json({ error: "Not found" }, { status: 404 });
+	},
+};
+
+export class ProtonImport extends ProductionProtonImport {
+	// A wrapper that hangs is given up on in a blink rather than seconds.
+	protected override readonly limits = { control: 50, file: 50 };
+	constructor(ctx: DurableObjectState, env: Env) { super(ctx, controlled(env)); }
+	protected override exporter(): Exporter | null { return exported.unavailable ? null : fakeExporter; }
+
+	override start(input: Parameters<ProductionProtonImport["start"]>[0]) { return atTestTime(() => super.start(input)); }
+	override answer(userId: string, jobId: string, answer: Parameters<ProductionProtonImport["answer"]>[2]) { return atTestTime(() => super.answer(userId, jobId, answer)); }
+	override cancel(userId: string, jobId: string) { return atTestTime(() => super.cancel(userId, jobId)); }
+
+	async drain() {
+		await this.ctx.storage.deleteAlarm();
+		await atTestTime(() => super.alarm());
+	}
+
+	alarmAt() { return this.ctx.storage.getAlarm(); }
+}
+
+export type TestEnv = Omit<Env, "MAILBOX" | "PROTON_IMPORT"> & { MAILBOX: DurableObjectNamespace<Mailbox>; PROTON_IMPORT: DurableObjectNamespace<ProtonImport> };
+export type { ProtonImportJob };
 
 export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	override async fetch(request: Request) { return app.fetch(request, controlled(this.env), this.ctx); }
@@ -200,6 +319,17 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	setModels(next: Partial<ModelAnswers>) { answers = { ...answers, ...next }; }
 	cleanDrafts() { return cleanDraftFiles(controlled(this.env), now); }
 	setNow(value: number) { now = value; }
+	/** Changes what the Proton export container says and holds. */
+	setExport(change: {
+		running?: boolean; startFails?: boolean; state?: Partial<ExporterState>; labels?: string | null; deleteFailures?: number; bodyFailures?: number;
+		hold?: string[]; hang?: string[]; unavailable?: boolean;
+	}) {
+		const { state, ...rest } = change;
+		exported = { ...exported, ...rest, state: { ...exported.state, ...state } };
+	}
+	releaseExport() { exported.hold = []; }
+	exportMessage(id: string, eml: string, metadata: string, size?: number) { exported.messages.set(id, { eml, metadata, ...(size === undefined ? {} : { size }) }); }
+	exportState() { return { ...exported, messages: [...exported.messages.keys()] }; }
 	setSendErrors(codes: string[]) { sendErrors = codes; }
 	setPushStatus(status: number, endless = false) { pushStatus = status; pushEndless = endless; }
 	pushes() { return pushes; }
@@ -215,7 +345,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 			})),
 		})) };
 	}
-	reset() { now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; answers = { quick: 0, deep: "personal" }; modelCalls = []; }
+	reset() { exported = freshExport(); now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; answers = { quick: 0, deep: "personal" }; modelCalls = []; }
 
 	async consume(bodies: unknown[], attempts = 1) {
 		const acks: string[] = [];

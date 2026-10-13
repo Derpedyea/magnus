@@ -12,8 +12,8 @@ export async function fixture() {
 		name: "magnus-tests", main: "tests/runtime/worker.ts", compatibility_date: "2026-09-26", compatibility_flags: ["nodejs_compat"],
 		d1_databases: [{ binding: "DIRECTORY", database_name: "test-directory", database_id: "test-directory", migrations_dir: "migrations" }],
 		r2_buckets: [{ binding: "MAIL", bucket_name: "test-mail" }],
-		durable_objects: { bindings: [{ name: "MAILBOX", class_name: "Mailbox" }, { name: "VAULT", class_name: "Vault" }] },
-		migrations: [{ tag: "v1", new_sqlite_classes: ["Mailbox", "Vault"] }],
+		durable_objects: { bindings: [{ name: "MAILBOX", class_name: "Mailbox" }, { name: "VAULT", class_name: "Vault" }, { name: "PROTON_IMPORT", class_name: "ProtonImport" }] },
+		migrations: [{ tag: "v1", new_sqlite_classes: ["Mailbox", "Vault", "ProtonImport"] }],
 		version_metadata: { binding: "CF_VERSION_METADATA" },
 		vars: { GOOGLE_CLIENT_ID: "", GOOGLE_CLIENT_SECRET: "", DEV_USER_EMAIL: "" },
 	} }] });

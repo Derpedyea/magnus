@@ -2,7 +2,7 @@ import { formatBytes, type Me } from "#shared";
 import { MAX_IMPORT_BYTES } from "#shared/import";
 import { createFileRoute, Link, useBlocker } from "@tanstack/react-router";
 import { CircleCheckIcon, FolderInputIcon } from "lucide-react";
-import { type DragEvent, useEffect, useId, useRef, useState } from "react";
+import { type DragEvent, useEffect, useRef, useState } from "react";
 import {
 	AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
 	AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -10,13 +10,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { Progress } from "@/components/ui/progress";
-import { Field, FieldContent, FieldDescription, FieldLabel, FieldTitle } from "@/components/ui/field";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { api, errorMessage } from "../api";
+import { MailboxChoice } from "../components/MailboxChoice";
+import { ProtonImport } from "../components/ProtonImport";
 import { SettingsPage } from "../components/SettingsPage";
 import { useAccount } from "../hooks";
+import { LIST, plural } from "../words";
 import {
 	droppedFiles, type ImportItem, type ImportOutcome, type ImportPlan, type ImportProgress, type PickedFile,
 	pickedFiles, planImport, runImport, wait,
@@ -31,7 +32,8 @@ type Stage =
 	| { step: "reading" }
 	| { step: "ready"; plan: ImportPlan }
 	| { step: "running"; plan: ImportPlan; items: ImportItem[]; before: number; progress: ImportProgress; left: string | null }
-	| { step: "done"; plan: ImportPlan; imported: number; outcome: ImportOutcome };
+	// Where it went, so trying the failed ones again sends them there whatever's chosen since.
+	| { step: "done"; plan: ImportPlan; imported: number; outcome: ImportOutcome; into: string };
 
 /**
  * Brings mail over from Proton, or any folder of .eml files, like Tuta's and mailbox.org's file imports: drop the export,
@@ -62,7 +64,7 @@ function Import() {
 		}
 	};
 
-	const start = async (plan: ImportPlan, items: ImportItem[], before: number) => {
+	const start = async (plan: ImportPlan, items: ImportItem[], before: number, into: string) => {
 		const controller = new AbortController();
 		running.current = controller;
 		const started = Date.now();
@@ -70,7 +72,7 @@ function Import() {
 		setStage({ step: "running", plan, items, before, progress: { done: 0, failed: [], bytesDone: 0 }, left: null });
 		const outcome = await runImport(items, {
 			signal: controller.signal,
-			upload: (item, signal) => api.importMessage(mailboxId, item.file, item.placement, signal),
+			upload: (item, signal) => api.importMessage(into, item.file, item.placement, signal),
 			sleep: wait,
 			onProgress: (progress) => {
 				const left = timeLeft(Date.now() - started, progress.bytesDone, total);
@@ -80,7 +82,7 @@ function Import() {
 		// Left the page, which stopped it.
 		if (running.current !== controller) return;
 		running.current = null;
-		setStage({ step: "done", plan, imported: before + outcome.done, outcome });
+		setStage({ step: "done", plan, imported: before + outcome.done, outcome, into });
 	};
 
 	const mailbox = mailboxes.find((m) => m.id === mailboxId);
@@ -94,7 +96,11 @@ function Import() {
 
 	return (
 		<SettingsPage title="Import mail">
-			<div className="flex max-w-xl flex-col gap-4">
+			<div className="flex max-w-xl flex-col gap-8">
+				{/* Chooses where its mail goes on its own: the folder's choice below is the folder's. */}
+				<ProtonImport mailboxes={mailboxes} />
+				<div className="flex flex-col gap-3">
+					<h2 className="font-medium">Or import a folder</h2>
 				{stage.step === "pick" || stage.step === "reading" ? (
 					<DropZone reading={stage.step === "reading"} error={stage.step === "pick" ? stage.error : null} onFiles={(files) => void read(files)} />
 				) : stage.step === "ready" ? (
@@ -103,7 +109,7 @@ function Import() {
 						mailboxes={mailboxes}
 						mailboxId={mailboxId}
 						onMailbox={setMailboxId}
-						onStart={() => void start(stage.plan, stage.plan.items, 0)}
+						onStart={() => void start(stage.plan, stage.plan.items, 0, mailboxId)}
 						onCancel={() => setStage({ step: "pick", error: null })}
 					/>
 				) : stage.step === "running" ? (
@@ -116,10 +122,11 @@ function Import() {
 				) : (
 					<Done
 						stage={stage}
-						onRetry={() => void start(stage.plan, stage.outcome.failed.map((f) => f.item), stage.imported)}
+						onRetry={() => void start(stage.plan, stage.outcome.failed.map((f) => f.item), stage.imported, stage.into)}
 						onAgain={() => setStage({ step: "pick", error: null })}
 					/>
 				)}
+				</div>
 			</div>
 
 			<AlertDialog
@@ -175,13 +182,13 @@ function DropZone(props: { reading: boolean; error: string | null; onFiles: (fil
 					<FolderInputIcon className="size-5" />
 				</div>
 				<div className="flex max-w-sm flex-col gap-1 text-balance">
-					<h2 className="font-medium">Drop your Proton export here</h2>
+					<p className="font-medium">Drop an export folder here</p>
 					<p className="text-muted-foreground">
-						The <span className="font-mono text-[0.9em]">mail_…</span> folder that{" "}
+						Folders of .eml files from anywhere, or the <span className="font-mono text-[0.9em]">mail_…</span> folder{" "}
 						<a href={EXPORT_TOOL} target="_blank" rel="noreferrer" className="text-foreground underline underline-offset-3">
 							Proton’s Export Tool
 						</a>{" "}
-						saves. Folders of .eml files from anywhere else work too.
+						saves on your computer.
 					</p>
 				</div>
 				{props.reading ? (
@@ -222,7 +229,6 @@ function Ready(props: {
 	onCancel: () => void;
 }) {
 	const { plan } = props;
-	const intoId = useId();
 	const count = plan.items.length;
 	const skipped = [
 		plan.drafts ? plural(plan.drafts, "draft") : null,
@@ -239,27 +245,7 @@ function Ready(props: {
 				</p>
 				{skipped.length ? <p className="text-muted-foreground">Skipping {LIST.format(skipped)}.</p> : null}
 			</div>
-			{count && props.mailboxes.length > 1 ? (
-				<div className="flex flex-col gap-2">
-					<p id={intoId} className="font-medium">Import into</p>
-					{/* Each with its addresses, as the sidebar groups them: a mailbox's name alone only says whose it is. */}
-					<RadioGroup value={props.mailboxId} onValueChange={(value) => props.onMailbox(String(value))} aria-labelledby={intoId}>
-						{props.mailboxes.map((m) => (
-							<FieldLabel key={m.id}>
-								<Field orientation="horizontal">
-									<FieldContent className="min-w-0">
-										<FieldTitle>{m.name}</FieldTitle>
-										<FieldDescription className="break-words">
-											{m.addresses.length ? m.addresses.map((a) => a.address).join(" · ") : "No addresses"}
-										</FieldDescription>
-									</FieldContent>
-									<RadioGroupItem value={m.id} />
-								</Field>
-							</FieldLabel>
-						))}
-					</RadioGroup>
-				</div>
-			) : null}
+			{count ? <MailboxChoice mailboxes={props.mailboxes} value={props.mailboxId} onChange={props.onMailbox} /> : null}
 			<div className="flex flex-wrap items-center gap-2">
 				{count ? <Button onClick={props.onStart}>Import</Button> : null}
 				<Button variant="ghost" onClick={props.onCancel} className={count ? "ml-auto" : undefined}>
@@ -343,10 +329,3 @@ function timeLeft(elapsedMs: number, bytesDone: number, bytesTotal: number): str
 	const minutes = Math.round(((bytesTotal - bytesDone) / bytesDone) * elapsedMs / 60_000);
 	return minutes < 1 ? "Less than a minute left" : `About ${plural(minutes, "minute")} left`;
 }
-
-function plural(n: number, noun: string): string {
-	return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
-}
-
-/** "a, b, and c". */
-const LIST = new Intl.ListFormat("en", { type: "conjunction" });
