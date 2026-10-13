@@ -36,8 +36,32 @@ export function mergePage<T extends ThreadSummary>(lists: T[][], size: number): 
 	const all = lists.flat().sort(listOrder);
 	const threads = all.slice(0, size);
 	const last = threads.at(-1);
-	return { threads, next: all.length > size && last ? `${last.lastMessageAt}.${last.id}` : null };
+	return { threads, next: all.length > size && last ? cursorOf(last) : null };
 }
+
+/** The most threads one `through` read returns: 20 pages. */
+export const THROUGH_MAX = 1000;
+
+/**
+ * Merges each mailbox's answer to a `through` read (see ListPage) into every thread down to `through`, at most `max`.
+ * A thread after it means more follow, so `next` resumes there. Past `max`, the list stops short and `next` resumes
+ * after the last thread shown, as mergePage's would.
+ */
+export function mergeThrough<T extends ThreadSummary>(lists: T[][], through: ListCursor, max: number): { threads: T[]; next: string | null } {
+	const all = lists.flat().sort(listOrder);
+	const above = all.filter((t) => !isAfter(t, through));
+	const threads = above.slice(0, max);
+	const last = threads.at(-1);
+	if (above.length > max && last) return { threads, next: cursorOf(last) };
+	return { threads, next: all.length > above.length ? formatCursor(through) : null };
+}
+
+const isAfter = (t: ThreadSummary, c: ListCursor) => t.lastMessageAt < c.at || (t.lastMessageAt === c.at && t.id < c.id);
+
+const formatCursor = (c: ListCursor) => `${c.at}.${c.id}`;
+
+/** Where `t` sits in a list, as a `next` or `through`. */
+export const cursorOf = (t: Pick<ThreadSummary, "lastMessageAt" | "id">) => formatCursor({ at: t.lastMessageAt, id: t.id });
 
 /** Reads a `next` from mergePage. Missing or malformed means the first page. Mail dated before 1970 has negative times. */
 export function parseCursor(value: string | undefined): ListCursor | undefined {

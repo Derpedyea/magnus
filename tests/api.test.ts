@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { fixture, type Fixture, inbound, job, type Mailboxes } from "./runtime/fixture";
+import { fixture, type Fixture, inbound, job, type Mailboxes, NOW } from "./runtime/fixture";
 import { z } from "zod";
 import { r2Keys, type IngestInput } from "#shared";
 
@@ -97,6 +97,10 @@ describe("API permissions", () => {
 		expect(await (await request("/search?q=Secret")).json()).toMatchObject({ threads: [{ id: own.threadId, mailboxId: ids.alice }] });
 		expect(await (await request("/threads?in=bob@example.com")).json()).toEqual({ threads: [], next: null });
 		expect(await (await request("/search?q=Secret&in=bob@example.com")).json()).toEqual({ threads: [], next: null });
+		// A `through` is a place in the list, not a grant: one from Bob's mailbox still reads only Alice's.
+		const forged = await (await request(`/threads?through=0.${threadId}`)).json();
+		expect(forged).toMatchObject({ threads: [{ id: own.threadId, mailboxId: ids.alice }], next: null });
+		expect(await (await request(`/threads?in=bob@example.com&through=0.${threadId}`)).json()).toEqual({ threads: [], next: null });
 		expect(await (await request("/counts")).json()).toMatchObject({ labels: [{ label: "inbox", threads: 1, unread: 1 }] });
 		// Bob's unique correspondent must never appear in Alice's suggestions.
 		await f.env.MAILBOX.getByName(ids.bob).ingest({ ...inbound(ids.bob, "private-contact"), from: { address: "private@outside.test" } });
@@ -172,3 +176,46 @@ describe("API permissions", () => {
 		expect(response.status).toBe(403);
 	});
 });
+
+describe("List reads", () => {
+	let f: Fixture;
+	let cookie: string;
+	beforeAll(async () => { f = await fixture(); }, 30_000);
+	afterAll(async () => { await f?.server.close(); });
+	beforeEach(async () => {
+		const ids = await f.seed();
+		cookie = await f.login("alice");
+		// Five threads a minute apart, across Alice's own mailbox and the one she shares.
+		for (const [i, mailboxId] of [ids.alice, ids.shared, ids.alice, ids.shared, ids.alice].entries()) {
+			const at = NOW - i * 60_000;
+			await f.env.MAILBOX.getByName(mailboxId).ingest({ ...inbound(mailboxId, `letter-${i}`), subject: `Letter ${i}`, date: at, receivedAt: at });
+		}
+	});
+
+	async function list(query: string) {
+		const response = await f.worker.fetch(`https://magnus.test/api/threads?${query}`, { headers: { Cookie: cookie } });
+		return { status: response.status, body: await response.json() };
+	}
+	const Page = z.object({ threads: z.array(z.object({ subject: z.string(), lastMessageAt: z.number(), id: z.string() })), next: z.string().nullable() });
+	const subjects = (body: unknown) => Page.parse(body).threads.map((t) => t.subject);
+
+	it("rereads every mailbox down to the last thread loaded in one request, and the next page carries on after it", async () => {
+		const third = Page.parse((await list("")).body).threads[2];
+		expect(third).toBeDefined();
+		const through = `${third?.lastMessageAt}.${third?.id}`;
+		const reread = await list(`through=${through}`);
+		expect(subjects(reread.body)).toEqual(["Letter 0", "Letter 1", "Letter 2"]);
+		expect(Page.parse(reread.body).next).toBe(through);
+		expect(subjects((await list(`cursor=${through}`)).body)).toEqual(["Letter 3", "Letter 4"]);
+	});
+
+	it("says nothing follows when the list ends at the last thread loaded", async () => {
+		const last = Page.parse((await list("")).body).threads.at(-1);
+		expect(Page.parse((await list(`through=${last?.lastMessageAt}.${last?.id}`)).body)).toMatchObject({ next: null });
+	});
+
+	it.each(["through=junk", "through=", "cursor=1.a&through=1.a"])("refuses %s rather than reading from the top", async (query) => {
+		expect((await list(query)).status).toBe(400);
+	});
+});
+
