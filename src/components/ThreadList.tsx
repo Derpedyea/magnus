@@ -1,5 +1,5 @@
 import type { MailboxThread } from "#shared";
-import { useSuspenseInfiniteQuery } from "@tanstack/react-query";
+import { useQueryClient, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { getRouteApi, Link } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useRef } from "react";
@@ -8,7 +8,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { formatDate } from "../dates";
 import { useAccount } from "../hooks";
-import { listQuery } from "../queries";
+import { foldList, listQuery } from "../queries";
 import { viewName } from "../views";
 import { PermanentDelete } from "./PermanentDelete";
 
@@ -22,7 +22,13 @@ export function ThreadList({ threadOpen }: { threadOpen: boolean }) {
 	return <Threads key={`${view}/${scope.join()}/${q}`} view={view} scope={scope} q={q} threadOpen={threadOpen} />;
 }
 
-/** Only the rows near the viewport are rendered, and the next page loads as its placeholder row nears it. */
+/**
+ * How many rows below the screen are left when the next page starts loading: about 2,500px, so a page (half a second
+ * or so) usually lands before a quick scroll gets there. Under a page (50) less a screen, so opening a list loads one.
+ */
+const LEAD = 30;
+
+/** Only the rows near the viewport are rendered, and the next page loads while LEAD rows are still to go. */
 function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]; q: string; threadOpen: boolean }) {
 	const account = useAccount();
 	const { data, hasNextPage, isFetching, isFetchNextPageError, fetchNextPage } = useSuspenseInfiniteQuery(listQuery(scope, view, q));
@@ -47,10 +53,15 @@ function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]
 	});
 	const items = rows.getVirtualItems();
 
-	const placeholderNear = (items.at(-1)?.index ?? 0) >= threads.length;
+	const nearEnd = (rows.calculateRange()?.endIndex ?? 0) >= threads.length - LEAD;
 	useEffect(() => {
-		if (placeholderNear && hasNextPage && !isFetching && !isFetchNextPageError) void fetchNextPage();
-	}, [placeholderNear, hasNextPage, isFetching, isFetchNextPageError, fetchNextPage]);
+		if (nearEnd && hasNextPage && !isFetching && !isFetchNextPageError) void fetchNextPage();
+	}, [nearEnd, hasNextPage, isFetching, isFetchNextPageError, fetchNextPage]);
+
+	// Each page that lands joins the rest, so a refetch (on any mail change) is one request however far down this is,
+	// and the next page waits on it for one round trip rather than one per page.
+	const qc = useQueryClient();
+	useEffect(() => foldList(qc, scope, view, q), [data, qc, scope, view, q]);
 
 	// When mail arrives (or leaves) above the rows you're reading, keep those rows still. Browsers do this
 	// for ordinary lists but not for positioned rows. At the very top, new mail shows up as usual.
