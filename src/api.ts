@@ -24,6 +24,14 @@ export class ApiError extends Error {
 	}
 }
 
+/**
+ * Where a list read starts: `after` a previous page's `next` ("" for the top), or from the top `through` a thread
+ * already shown, to reread everything loaded in one request.
+ */
+export type ListPlace = { after: string } | { through: string };
+
+const placeQuery = (place: ListPlace) => ("through" in place ? { through: place.through } : { cursor: place.after || undefined });
+
 /** For error boundaries, which receive whatever was thrown. */
 export const errorMessage = (error: unknown) => (error instanceof Error ? error.message : "Something went wrong");
 
@@ -75,11 +83,11 @@ export const api = {
 	draft: (id: string) => parseResponse(client.drafts[":id"].$get({ param: { id } })),
 	saveDraft: (id: string, json: DraftWrite, signal: AbortSignal) => parseResponse(client.drafts[":id"].$put({ param: { id }, json }, { init: { signal } })),
 	discardDraft: (id: string, revision: number, signal: AbortSignal) => parseResponse(client.drafts[":id"].$delete({ param: { id }, json: { revision } }, { init: { signal } })),
-	/** One page of a list; `cursor` is the previous page's `next`, or "" for the first. */
-	threads: (scope: string[], label: string, cursor: string) =>
-		parseResponse(client.threads.$get({ query: { in: formatScope(scope), label, cursor: cursor || undefined } })),
-	search: (scope: string[], q: string, cursor: string) =>
-		parseResponse(client.search.$get({ query: { in: formatScope(scope), q, cursor: cursor || undefined } })),
+	/** One page of a list, or every thread down to `through` (see ListPlace). */
+	threads: (scope: string[], label: string, place: ListPlace) =>
+		parseResponse(client.threads.$get({ query: { in: formatScope(scope), label, ...placeQuery(place) } })),
+	search: (scope: string[], q: string, place: ListPlace) =>
+		parseResponse(client.search.$get({ query: { in: formatScope(scope), q, ...placeQuery(place) } })),
 	counts: (scope: string[]) => parseResponse(client.counts.$get({ query: { in: formatScope(scope) } })),
 	thread: (mailboxId: string, threadId: string) => parseResponse(mailbox.threads[":threadId"].$get({ param: { mailboxId, threadId } })),
 	deleteThread: (mailboxId: string, threadId: string) => parseResponse(mailbox.threads[":threadId"].$delete({ param: { mailboxId, threadId } })),

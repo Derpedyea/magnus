@@ -14,6 +14,7 @@ import {
 	type InboundJob,
 	type IngestInput,
 	isValidAddress,
+	type ListCursor,
 	type ListPage,
 	LIVE_RECHECK,
 	type MailCheck,
@@ -35,6 +36,7 @@ import {
 	type SendQueued,
 	type StoredAttachment,
 	stripSubaddress,
+	THROUGH_MAX,
 	type ThreadDetail,
 	type ThreadSummary,
 	ulid,
@@ -816,21 +818,24 @@ export class Mailbox extends DurableObject<Env> {
 		return this.page(filter, match, query);
 	}
 
-	/** One page of threads passing `filter`, which reads its own parameter as ?1 and the address filter as ?2. */
+	/** One page of threads passing `filter` (see ListPage), which reads its own parameter as ?1 and the address filter as ?2. */
 	private page(filter: string, param: string, query: ListPage & AddressFilter): ThreadSummary[] {
-		const before = query.before ?? { at: Number.MAX_SAFE_INTEGER, id: "" };
-		return this.sql
-			.exec<ThreadRow>(
-				`${THREAD_SELECT} WHERE ${filter} AND (t.last_message_at, t.id) < (?3, ?4)
-				 ORDER BY t.last_message_at DESC, t.id DESC LIMIT ?5`,
-				param,
-				addressParam(query),
-				before.at,
-				before.id,
-				Math.min(query.limit ?? 50, 200),
-			)
-			.toArray()
-			.map(toThreadSummary);
+		const read = (side: "<" | ">=", cursor: ListCursor, limit: number) =>
+			this.sql
+				.exec<ThreadRow>(
+					`${THREAD_SELECT} WHERE ${filter} AND (t.last_message_at, t.id) ${side} (?3, ?4)
+					 ORDER BY t.last_message_at DESC, t.id DESC LIMIT ?5`,
+					param,
+					addressParam(query),
+					cursor.at,
+					cursor.id,
+					limit,
+				)
+				.toArray()
+				.map(toThreadSummary);
+		const limit = Math.min(query.limit ?? 50, THROUGH_MAX + 1);
+		if (query.through) return [...read(">=", query.through, limit), ...read("<", query.through, 1)];
+		return read("<", query.before ?? { at: Number.MAX_SAFE_INTEGER, id: "" }, limit);
 	}
 
 	async getThread(threadId: string): Promise<ThreadDetail | null> {

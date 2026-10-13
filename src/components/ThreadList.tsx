@@ -1,5 +1,5 @@
 import type { MailboxThread } from "#shared";
-import { useSuspenseInfiniteQuery } from "@tanstack/react-query";
+import { useQueryClient, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { getRouteApi, Link } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useRef } from "react";
@@ -8,7 +8,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { formatDate } from "../dates";
 import { useAccount } from "../hooks";
-import { listQuery } from "../queries";
+import { foldList, listQuery } from "../queries";
 import { viewName } from "../views";
 import { PermanentDelete } from "./PermanentDelete";
 
@@ -57,6 +57,11 @@ function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]
 	useEffect(() => {
 		if (nearEnd && hasNextPage && !isFetching && !isFetchNextPageError) void fetchNextPage();
 	}, [nearEnd, hasNextPage, isFetching, isFetchNextPageError, fetchNextPage]);
+
+	// Each page that lands joins the rest, so a refetch (on any mail change) is one request however far down this is,
+	// and the next page waits on it for one round trip rather than one per page.
+	const qc = useQueryClient();
+	useEffect(() => foldList(qc, scope, view, q), [data, qc, scope, view, q]);
 
 	// When mail arrives (or leaves) above the rows you're reading, keep those rows still. Browsers do this
 	// for ordinary lists but not for positioned rows. At the very top, new mail shows up as usual.

@@ -283,8 +283,11 @@ export interface ListCursor {
 	id: string;
 }
 
-/** At most `limit` threads, starting after `before` (or from the top). */
-export type ListPage = { before?: ListCursor; limit?: number };
+/**
+ * At most `limit` threads, starting after `before` (or from the top). With `through` instead, at most `limit` threads
+ * from the top down to that place, then the first thread after it, if any, so the caller knows more follow.
+ */
+export type ListPage = { limit?: number } & ({ before?: ListCursor; through?: undefined } | { through: ListCursor; before?: undefined });
 
 // ─── Mailbox RPC inputs ─────────────────────────────────────────────────────
 export interface IngestInput {

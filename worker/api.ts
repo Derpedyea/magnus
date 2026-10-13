@@ -13,12 +13,14 @@ import {
 	mergeContacts,
 	mergeCounts,
 	mergePage,
+	mergeThrough,
 	normalizeAddress,
 	parseCursor,
 	planAttachments,
 	planScope,
 	r2Keys,
 	type SendAttachmentRef,
+	THROUGH_MAX,
 	type ThreadSummary,
 	type User,
 	withForward,
@@ -83,10 +85,25 @@ const PAGE = 50;
 const CONTACTS = 1000;
 
 const ScopeQuery = z.object({ in: z.string().optional() });
-/** `cursor` is a previous page's `next`; without one (or with a malformed one) a list starts at the top. */
-const PageQuery = ScopeQuery.extend({ cursor: z.string().optional().transform(parseCursor) });
-const ThreadsQuery = PageQuery.extend({ label: z.string().default("inbox") });
-const SearchQuery = PageQuery.extend({ q: z.string().trim().default("") });
+/**
+ * `cursor` is a previous page's `next`; without one (or with a malformed one) a list starts at the top. `through`
+ * rereads a list already loaded, down to its last thread, in one request. The app only ever sends one it was given,
+ * so a malformed one is an error rather than the top.
+ */
+const PageQuery = ScopeQuery.extend({
+	cursor: z.string().optional().transform(parseCursor),
+	through: z
+		.string()
+		.transform((value, ctx) => {
+			const cursor = parseCursor(value);
+			if (!cursor) ctx.addIssue("Malformed through");
+			return cursor ?? z.NEVER;
+		})
+		.optional(),
+});
+const onePlace = (q: { cursor?: ListCursor; through?: ListCursor }) => !(q.cursor && q.through);
+const ThreadsQuery = PageQuery.extend({ label: z.string().default("inbox") }).refine(onePlace, "Send cursor or through, not both");
+const SearchQuery = PageQuery.extend({ q: z.string().trim().default("") }).refine(onePlace, "Send cursor or through, not both");
 
 async function planRequest(c: Context<AppEnv>, scope = ""): Promise<MailboxQuery[]> {
 	const mailboxes = await getUserMailboxes(c.env.DIRECTORY, c.var.user.id);
@@ -97,19 +114,19 @@ async function planRequest(c: Context<AppEnv>, scope = ""): Promise<MailboxQuery
 	);
 }
 
-/** A page of threads from every mailbox the request can match, each tagged with where it lives. */
+/** A page of threads from every mailbox the request can match, each tagged with where it lives. With `through`, every thread down to it. */
 async function readPage(
 	c: Context<AppEnv>,
 	scope: string | undefined,
-	before: ListCursor | undefined,
+	{ cursor, through }: { cursor?: ListCursor; through?: ListCursor },
 	read: (stub: MailboxStub, q: MailboxQuery, page: ListPage) => Promise<ThreadSummary[]>,
 ) {
-	const page = { before, limit: PAGE + 1 };
+	const page: ListPage = through ? { through, limit: THROUGH_MAX + 1 } : { before: cursor, limit: PAGE + 1 };
 	const queries = (await planRequest(c, scope)).filter(canMatch);
 	const lists = await Promise.all(
 		queries.map(async (q) => (await read(c.env.MAILBOX.getByName(q.mailboxId), q, page)).map((t) => ({ ...t, mailboxId: q.mailboxId }))),
 	);
-	return mergePage(lists, PAGE);
+	return through ? mergeThrough(lists, through, THROUGH_MAX) : mergePage(lists, PAGE);
 }
 
 const views = new Hono<AppEnv>()
@@ -126,14 +143,14 @@ const views = new Hono<AppEnv>()
 	})
 
 	.get("/threads", zValidator("query", ThreadsQuery), async (c) => {
-		const { label, cursor, in: scope } = c.req.valid("query");
-		return c.json(await readPage(c, scope, cursor, (stub, q, page) => stub.listThreads({ label, ...page, addresses: q.addresses })));
+		const { label, in: scope, ...place } = c.req.valid("query");
+		return c.json(await readPage(c, scope, place, (stub, q, page) => stub.listThreads({ label, ...page, addresses: q.addresses })));
 	})
 
 	.get("/search", zValidator("query", SearchQuery), async (c) => {
-		const { q: query, cursor, in: scope } = c.req.valid("query");
+		const { q: query, in: scope, ...place } = c.req.valid("query");
 		if (!query) return c.json({ threads: [], next: null });
-		return c.json(await readPage(c, scope, cursor, (stub, q, page) => stub.search({ query, ...page, addresses: q.addresses })));
+		return c.json(await readPage(c, scope, place, (stub, q, page) => stub.search({ query, ...page, addresses: q.addresses })));
 	})
 
 	// Every mailbox, not just matching ones: per-address unread counts cover all of the user's addresses.
