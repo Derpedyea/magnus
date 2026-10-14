@@ -11,7 +11,7 @@ import {
 	type ProtonJobPhase,
 } from "#shared/proton-export";
 import { z } from "zod";
-import { isMailboxMember } from "./directory";
+import { hasMember } from "./directory";
 import { importMessage } from "./mail/import";
 import { optional } from "./optional";
 
@@ -292,7 +292,7 @@ export class ProtonImport extends DurableObject<Env> {
 			if (now - job.started_at > BOOT_MS * 2) this.#finish(job.id, "failed", INTERRUPTED, null);
 			return false;
 		}
-		if (!(await isMailboxMember(this.env.DIRECTORY, job.user_id, job.mailbox_id))) {
+		if (!(await hasMember(this.env.DIRECTORY, job.mailbox_id, job.user_id))) {
 			this.#finish(job.id, "cancelled", "Stopped: whoever started it is no longer in this mailbox.", null);
 			return false;
 		}
@@ -447,7 +447,7 @@ export class ProtonImport extends DurableObject<Env> {
 		if (raw.byteLength > MAX_IMPORT_BYTES) return { outcome: "too-big", error: null };
 		// Checked again just before filing: Stop, or the person leaving the mailbox, while it was on its way here.
 		// What's already inside importMessage() lands (Known gaps).
-		if (!(await isMailboxMember(this.env.DIRECTORY, job.user_id, job.mailbox_id)) || !this.#isCurrent(job.id)) return null;
+		if (!(await hasMember(this.env.DIRECTORY, job.mailbox_id, job.user_id)) || !this.#isCurrent(job.id)) return null;
 		const result = await importMessage(this.env, job.mailbox_id, raw, placement);
 		return "refused" in result ? { outcome: "refused", error: result.refused } : { outcome: "imported", error: null };
 	}

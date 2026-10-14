@@ -146,7 +146,8 @@ m/<mailboxId>/draft-files/<userId>/<uuid> account-owned draft sources; conflict 
 uploads/<mailboxId>/<uuid>              composer uploads; a lifecycle rule (DEPLOY.md) can reap abandoned ones
 ```
 
-Everything a mailbox owns sits under `m/<mailboxId>/`, so deleting a mailbox (removing a person) is a prefix delete. Its
+Everything a mailbox owns sits under `m/<mailboxId>/`, so deleting a mailbox (30 days after its person is removed:
+`worker/removals.ts`) is a prefix delete. Its
 originals under `raw/` go too, unless another mailbox holds that message or is still due it from the queue. The raw archive
 means any parsing bug can be fixed by re-queuing `InboundJob`s. Ingest is idempotent.
 
@@ -418,9 +419,13 @@ open tabs.
   IP (3 a minute), with the counters in D1 so the limit holds across Worker instances.
 - **Roles** are the admin plugin's: `admin` or not. Role changes and suspensions go from the browser straight
   to the plugin (`/api/auth/admin/*`); adding and removing people goes through `/api/admin`, since that also
-  creates or deletes their mailbox. Suspending revokes sessions immediately, apart from the 5-minute session
-  cookie cache. You can't change your own role, suspend yourself, or remove yourself.
-- Mailbox access requires a `mailbox_members` row, and sending as an address requires
+  creates or hides their mailbox. Suspending or removing someone ends their sessions at once. A session cookie
+  vouches for itself for up to 5 minutes without asking D1, and Better Auth renews it from the cookie alone, so
+  everything that matters asks D1 whether the session still exists: reading mail (`Reader`, `worker/directory.ts`),
+  admin powers (`isAdminNow()`), and every Better Auth endpoint but signing in and out. Removing also refuses
+  their mail; they and their mailbox are deleted 30 days later unless an admin restores them first. You can't
+  change your own role, suspend yourself, or remove yourself.
+- Mailbox access requires a `mailbox_members` row and a live session, and sending as an address requires
   `address_routes.can_send` on a domain that can send.
 - One Better Auth instance per origin the Worker is reached on (`workers.dev`, a custom domain), so OAuth
   callbacks return to the same host and only that origin is trusted.

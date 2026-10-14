@@ -2,6 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { type AddressFilter, type InboundJob, type MailCategory, type SendInput } from "#shared";
 import { z } from "zod";
 import { app } from "../../worker/api";
+import { links } from "../../worker/links";
 import { auth, signInWithoutCode } from "../../worker/auth";
 import { email, queue } from "../../worker/mail/inbound";
 import { DEEP_MODEL, type Models, QUICK_MODEL } from "../../worker/mail/checks";
@@ -11,12 +12,14 @@ import { type Exporter, ProtonImport as ProductionProtonImport } from "../../wor
 import type { ExporterState, ProtonImportJob } from "#shared/proton-export";
 import { cleanDraftFiles } from "../../worker/drafts";
 import { forgetExpiredDevices } from "../../worker/push";
+import { purgePerson, purgeRemoved, REMOVAL_MS } from "../../worker/removals";
 import { NOW } from "./clock";
 
 export { Vault } from "../../worker/vault";
 
 type Operation = "get" | "put" | "delete" | "directory" | "queue";
-type Hook = { operation: "get" | "put"; prefix: string; mailboxId: string; cancelMessageId?: string };
+/** After the I/O: Undo that send, hide the mailbox as removing its person does, or by default delete the mailbox. */
+type Hook = { operation: "get" | "put"; prefix: string; mailboxId: string; cancelMessageId?: string; hide?: true };
 type Failure = { operation: Operation; prefix: string; remaining: number };
 
 let now = NOW;
@@ -104,6 +107,7 @@ async function afterIO(env: Env, operation: "get" | "put", key: string): Promise
 	const action = hook;
 	hook = null;
 	if (action.cancelMessageId) await env.MAILBOX.getByName(action.mailboxId).cancelSend(action.cancelMessageId);
+	else if (action.hide) await env.DIRECTORY.prepare("UPDATE mailboxes SET removed_with = 'removed' WHERE id = ?1").bind(action.mailboxId).run();
 	else await env.DIRECTORY.prepare("DELETE FROM mailboxes WHERE id = ?1").bind(action.mailboxId).run();
 }
 
@@ -306,7 +310,8 @@ export type TestEnv = Omit<Env, "MAILBOX" | "PROTON_IMPORT"> & { MAILBOX: Durabl
 export type { ProtonImportJob };
 
 export default class TestWorker extends WorkerEntrypoint<TestEnv> {
-	override async fetch(request: Request) { return app.fetch(request, controlled(this.env), this.ctx); }
+	// Routed as worker/index.ts routes them.
+	override async fetch(request: Request) { return (new URL(request.url).pathname.startsWith("/f/") ? links : app).fetch(request, controlled(this.env), this.ctx); }
 	override async email(message: ForwardableEmailMessage) { await atTestTime(() => email(message, controlled(this.env))); }
 	login(address: string) { return signInWithoutCode(new Request("https://magnus.test/api/auth/sign-in/email-otp"), address); }
 	/** A sign-in code, as if emailed, for signing in through the API. */
@@ -315,6 +320,9 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 		return a.api.createVerificationOTP({ body: { email: address, type: "sign-in" } });
 	}
 	forgetExpiredDevices() { return forgetExpiredDevices(this.env.DIRECTORY, Date.now()); }
+	purgeRemoved() { return atTestTime(() => purgeRemoved(controlled(this.env), now)); }
+	/** One person's purge, as if they'd been picked as due before whatever the test did since. */
+	purgePerson(userId: string) { return purgePerson(controlled(this.env).DIRECTORY, userId, now - REMOVAL_MS); }
 	parse(job: InboundJob) { return withPushService(() => ingest(controlled(this.env), job, models)); }
 	setModels(next: Partial<ModelAnswers>) { answers = { ...answers, ...next }; }
 	cleanDrafts() { return cleanDraftFiles(controlled(this.env), now); }

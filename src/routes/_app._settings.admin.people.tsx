@@ -1,4 +1,4 @@
-import type { DirectoryDomain, Person } from "#shared";
+import { type DirectoryDomain, type Person, REMOVAL_DAYS } from "#shared";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { EllipsisIcon, UserPlusIcon } from "lucide-react";
@@ -30,14 +30,19 @@ import { directoryQuery } from "../queries";
 
 export const Route = createFileRoute("/_app/_settings/admin/people")({ component: People });
 
+// Shared by both tables, so the removed line up under the rest.
+const PERSON_COLUMN = "sm:w-1/3";
+const ADDRESSES_COLUMN = "hidden sm:table-cell sm:w-2/5";
+
 function People() {
 	const { people, mailboxes, addresses, domains } = useSuspenseQuery(directoryQuery).data;
 	const { user } = useAccount();
 	const [adding, setAdding] = useState(false);
+	const removed = people.filter((p): p is Removed => p.deletesAt !== null);
 
-	/** Every address that delivers to one of this person's mailboxes. */
+	/** Every address that delivers to one of this person's mailboxes, or, once they're removed, to one their removal hid. */
 	const addressesOf = (personId: string) => {
-		const theirs = new Set(mailboxes.filter((m) => m.memberIds.includes(personId)).map((m) => m.id));
+		const theirs = new Set(mailboxes.filter((m) => m.memberIds.includes(personId) || m.removedWith === personId).map((m) => m.id));
 		return addresses.filter((a) => a.mailboxIds.some((id) => theirs.has(id))).map((a) => a.address);
 	};
 
@@ -54,18 +59,42 @@ function People() {
 			<Table>
 				<TableHeader>
 					<TableRow>
-						<TableHead>Person</TableHead>
-						<TableHead className="hidden sm:table-cell">Addresses</TableHead>
+						<TableHead className={PERSON_COLUMN}>Person</TableHead>
+						<TableHead className={ADDRESSES_COLUMN}>Addresses</TableHead>
 						<TableHead>Role</TableHead>
 						<TableHead className="w-0" />
 					</TableRow>
 				</TableHeader>
 				<TableBody>
-					{people.map((p) => (
-						<PersonRow key={p.id} person={p} addresses={addressesOf(p.id)} self={p.id === user.id} />
-					))}
+					{people
+						.filter((p) => p.deletesAt === null)
+						.map((p) => (
+							<PersonRow key={p.id} person={p} addresses={addressesOf(p.id)} self={p.id === user.id} />
+						))}
 				</TableBody>
 			</Table>
+			{removed.length > 0 ? (
+				<section aria-labelledby="removed-people" className="flex flex-col gap-2">
+					<h2 id="removed-people" className="font-medium">
+						Removed
+					</h2>
+					<Table>
+						<TableHeader>
+							<TableRow>
+								<TableHead className={PERSON_COLUMN}>Person</TableHead>
+								<TableHead className={ADDRESSES_COLUMN}>Addresses</TableHead>
+								<TableHead>Deleted for good</TableHead>
+								<TableHead className="w-0" />
+							</TableRow>
+						</TableHeader>
+						<TableBody>
+							{removed.map((p) => (
+								<RemovedRow key={p.id} person={p} addresses={addressesOf(p.id)} />
+							))}
+						</TableBody>
+					</Table>
+				</section>
+			) : null}
 			<AddPersonDialog open={adding} onOpenChange={setAdding} domains={domains} />
 		</SettingsPage>
 	);
@@ -100,17 +129,7 @@ function PersonRow(props: { person: Person; addresses: string[]; self: boolean }
 					{failed ? <span className="text-destructive">{errorMessage(failed)}</span> : null}
 				</div>
 			</TableCell>
-			<TableCell className="hidden sm:table-cell">
-				{props.addresses.length ? (
-					<div className="flex flex-col">
-						{props.addresses.map((a) => (
-							<span key={a}>{a}</span>
-						))}
-					</div>
-				) : (
-					<span className="text-muted-foreground">None</span>
-				)}
-			</TableCell>
+			<AddressesCell addresses={props.addresses} />
 			<TableCell>{person.isAdmin ? "Admin" : "Member"}</TableCell>
 			<TableCell>
 				<DropdownMenu>
@@ -136,8 +155,8 @@ function PersonRow(props: { person: Person; addresses: string[]; self: boolean }
 						<AlertDialogHeader>
 							<AlertDialogTitle>Remove {person.name}?</AlertDialogTitle>
 							<AlertDialogDescription>
-								Their mailbox and all the mail in it are deleted, and so are addresses only they receive. This can't be undone. To keep their mail, suspend
-								them instead.
+								They're signed out, and mail to addresses only they receive is refused. Their mailbox and mail are deleted for good in {REMOVAL_DAYS}{" "}
+								days, and until then you can restore them here. To keep their mail coming in, suspend them instead.
 							</AlertDialogDescription>
 						</AlertDialogHeader>
 						{remove.error ? <FieldError>{errorMessage(remove.error)}</FieldError> : null}
@@ -151,6 +170,54 @@ function PersonRow(props: { person: Person; addresses: string[]; self: boolean }
 				</AlertDialog>
 			</TableCell>
 		</TableRow>
+	);
+}
+
+type Removed = Person & { deletesAt: number };
+
+/** Someone removed but not yet deleted: when they will be, and the way back. */
+function RemovedRow(props: { person: Removed; addresses: string[] }) {
+	const { person } = props;
+	const qc = useQueryClient();
+	const restore = useMutation({
+		mutationFn: () => adminApi.restorePerson(person.id),
+		onSuccess: () => qc.invalidateQueries({ queryKey: ["admin"] }),
+	});
+
+	return (
+		<TableRow>
+			<TableCell>
+				<div className="flex flex-col">
+					<span className="font-medium">{person.name}</span>
+					<span className="text-muted-foreground">{person.email}</span>
+					{restore.error ? <span className="text-destructive">{errorMessage(restore.error)}</span> : null}
+				</div>
+			</TableCell>
+			<AddressesCell addresses={props.addresses} />
+			<TableCell>{new Date(person.deletesAt).toLocaleDateString([], { dateStyle: "medium" })}</TableCell>
+			<TableCell>
+				<Button variant="outline" size="sm" onClick={() => restore.mutate()} disabled={restore.isPending}>
+					{restore.isPending ? <Spinner data-icon="inline-start" /> : null}
+					Restore
+				</Button>
+			</TableCell>
+		</TableRow>
+	);
+}
+
+function AddressesCell(props: { addresses: string[] }) {
+	return (
+		<TableCell className="hidden sm:table-cell">
+			{props.addresses.length ? (
+				<div className="flex flex-col">
+					{props.addresses.map((a) => (
+						<span key={a}>{a}</span>
+					))}
+				</div>
+			) : (
+				<span className="text-muted-foreground">None</span>
+			)}
+		</TableCell>
 	);
 }
 

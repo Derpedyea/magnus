@@ -42,7 +42,7 @@ export async function fixture() {
 
 	async function seed() {
 		await control.reset();
-		await env.DIRECTORY.batch(["domains", "mailboxes", "auth_users", "settings", "sender_blocks"].map((table) => env.DIRECTORY.prepare(`DELETE FROM ${table}`)));
+		await env.DIRECTORY.batch(["domains", "mailboxes", "auth_users", "settings", "sender_blocks", "mailbox_deletions"].map((table) => env.DIRECTORY.prepare(`DELETE FROM ${table}`)));
 		const files = await env.MAIL.list();
 		if (files.objects.length) await env.MAIL.delete(files.objects.map((o) => o.key));
 		const ids = { alice: `alice-${++serial}`, bob: `bob-${serial}`, shared: `shared-${serial}` };
@@ -52,7 +52,7 @@ export async function fixture() {
 			].map(([id, name, email, role]) => env.DIRECTORY.prepare("INSERT INTO auth_users (id, name, email, role, emailVerified, createdAt, updatedAt) VALUES (?1, ?2, ?3, ?4, 1, 1, 1)").bind(id, name, email, role)),
 			...Object.entries(ids).map(([name, id]) => env.DIRECTORY.prepare("INSERT INTO mailboxes (id, name) VALUES (?1, ?2)").bind(id, name)),
 			...[ [ids.alice, "alice", "owner"], [ids.bob, "bob", "owner"], [ids.shared, "alice", "member"], [ids.shared, "bob", "member"] ]
-				.map(([mailbox, user, role]) => env.DIRECTORY.prepare("INSERT INTO mailbox_members VALUES (?1, ?2, ?3)").bind(mailbox, user, role)),
+				.map(([mailbox, user, role]) => env.DIRECTORY.prepare("INSERT INTO mailbox_members (mailbox_id, user_id, role) VALUES (?1, ?2, ?3)").bind(mailbox, user, role)),
 			env.DIRECTORY.prepare("INSERT INTO domains (name, receiving, sending) VALUES ('example.com', 1, 1), ('receive.test', 1, 0)"),
 			...["alice@example.com", "bob@example.com", "family@example.com", "readonly@example.com", "disabled@example.com", "alice@receive.test"]
 				.map((address) => env.DIRECTORY.prepare("INSERT INTO addresses (address, domain, enabled) VALUES (?1, ?2, ?3)").bind(address, address.split("@")[1], address !== "disabled@example.com" ? 1 : 0)),
@@ -67,7 +67,15 @@ export async function fixture() {
 		return (await control.login(`${user}@login.test`)).map((cookie) => cookie.split(";")[0]).join("; ");
 	}
 
-	return { server, worker, get env() { return env; }, get control() { return control; }, seed, login, restart };
+	/** A fresh session's person and id, as a request carries them (Reader in worker/directory.ts). */
+	async function reader(user: "alice" | "bob" | "admin") {
+		await login(user);
+		const row = await env.DIRECTORY.prepare("SELECT id FROM auth_sessions WHERE userId = ?1 ORDER BY createdAt DESC LIMIT 1").bind(user).first<{ id: string }>();
+		if (!row) throw new Error(`No session for ${user}`);
+		return { userId: user, sessionId: row.id };
+	}
+
+	return { server, worker, get env() { return env; }, get control() { return control; }, seed, login, reader, restart };
 }
 
 export type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -84,7 +92,7 @@ export function inbound(mailboxId: string, id = "inbound-1"): IngestInput {
 
 export function sendInput(mailboxId: string, overrides: Partial<SendInput> = {}): SendInput {
 	return {
-		mailboxId, from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "recipient@outside.test" }], cc: [], bcc: [],
+		mailboxId, senderId: "alice", from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "recipient@outside.test" }], cc: [], bcc: [],
 		subject: "Hello", markdown: "Hello **world**", attachments: [], links: [], linkBase: `https://magnus.test/f/${mailboxId}/`, delayMs: 0, localRecipients: [], localOnly: false, ...overrides,
 	};
 }

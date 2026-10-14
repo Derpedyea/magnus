@@ -44,6 +44,7 @@ import {
 	withForward,
 } from "#shared";
 import { noteBody } from "#shared/markdown";
+import { hasMember, mailboxInUse } from "../directory";
 import { retryAddressing } from "./retry";
 import { MIGRATIONS } from "./schema";
 
@@ -85,6 +86,8 @@ interface OutboxPayload {
 	// Optional so rows queued before local delivery existed still go out through Email Sending.
 	localRecipients?: LocalRecipient[];
 	localOnly?: boolean;
+	/** Who queued it (SendInput.senderId). Rows queued before it was recorded can't say, and go by the mailbox alone. */
+	senderId?: string;
 }
 
 type Row = Record<string, SqlStorageValue>;
@@ -279,6 +282,36 @@ export class Mailbox extends DurableObject<Env> {
 			} catch {
 				// Socket already closing; the runtime cleans it up.
 			}
+		}
+	}
+
+	/**
+	 * Asks the directory something the outbox needs to know before it sends. Undefined if it can't answer: nothing may
+	 * send, and the alarm asks again in a minute, since Cloudflare stops retrying an alarm that keeps failing and nothing
+	 * else would wake the outbox.
+	 */
+	private async askDirectory<T>(question: () => Promise<T>): Promise<{ answer: T } | undefined> {
+		try {
+			return { answer: await question() };
+		} catch (error) {
+			console.error(JSON.stringify({ msg: "outbox waiting on the directory", error: String(error) }));
+			await this.ctx.storage.setAlarm(Date.now() + TRASH_RETRY_MS);
+			return undefined;
+		}
+	}
+
+	/**
+	 * Makes every open tab check its sign-in now rather than at its socket's next check (SOCKET_MS), as when someone in
+	 * the mailbox is removed: reconnecting checks who may read it again. The others' tabs swap sockets and stay live.
+	 */
+	async recheckSockets(): Promise<void> {
+		for (const ws of this.ctx.getWebSockets()) {
+			try {
+				ws.send(LIVE_RECHECK);
+			} catch {
+				// Socket already closing; the close below is all it needs.
+			}
+			ws.close(1000, "Sign-in check due");
 		}
 	}
 
@@ -1374,6 +1407,7 @@ export class Mailbox extends DurableObject<Env> {
 			attachments,
 			localRecipients: input.localRecipients,
 			localOnly: input.localOnly,
+			senderId: input.senderId,
 		};
 
 		const snippet = makeSnippet(text);
@@ -1492,7 +1526,7 @@ export class Mailbox extends DurableObject<Env> {
 	 * It's the same message: a retry of mail that already went out keeps its date, and delivery events for
 	 * either send still land on it (the `sends` table).
 	 */
-	async retrySend(messageId: string, local: LocalRecipient[]): Promise<boolean> {
+	async retrySend(messageId: string, local: LocalRecipient[], senderId: string): Promise<boolean> {
 		const htmlKey = this.sql.exec<{ html_key: string | null }>(`SELECT html_key FROM messages WHERE id = ?1`, messageId).toArray()[0]?.html_key;
 		const html = htmlKey ? await (await this.env.MAIL.get(htmlKey))?.text() : undefined;
 		// Checked after reading R2, since other calls can run while it waits.
@@ -1518,6 +1552,7 @@ export class Mailbox extends DurableObject<Env> {
 			attachments: this.sql.exec<AttachmentRow>(`SELECT * FROM attachments WHERE message_id = ?1`, messageId).toArray().map(toStoredAttachment),
 			localRecipients,
 			localOnly: localRecipients.length === recipients.size,
+			senderId,
 		};
 
 		this.ctx.storage.transactionSync(() => {
@@ -1610,9 +1645,29 @@ export class Mailbox extends DurableObject<Env> {
 				this.finishSend(row.message_id, row.thread_id, { status: "failed", detail: "Interrupted mid-send; check Sent logs before retrying." });
 				continue;
 			}
+			// A removed person's mailbox sends nothing (worker/removals.ts): what comes due meanwhile fails, for them to send
+			// again if they're restored. Asked for each message, as a removal can land while an earlier one goes, so none starts
+			// after it.
+			const inUse = await this.askDirectory(() => mailboxInUse(this.env.DIRECTORY, this.mailboxId()));
+			if (!inUse) return;
+			if (!inUse.answer) {
+				this.finishSend(row.message_id, row.thread_id, { status: "failed", detail: "Not sent: this mailbox was removed from Magnus when it was due." });
+				continue;
+			}
+			const payload: OutboxPayload = JSON.parse(row.payload);
+			// Nor does anything someone queued once they've left the mailbox, removed or not. In a shared mailbox the others
+			// see it failed, and send it again if it should go.
+			const { senderId } = payload;
+			if (senderId !== undefined) {
+				const stayed = await this.askDirectory(() => hasMember(this.env.DIRECTORY, this.mailboxId(), senderId));
+				if (!stayed) return;
+				if (!stayed.answer) {
+					this.finishSend(row.message_id, row.thread_id, { status: "failed", detail: "Not sent: whoever sent it had left this mailbox when it was due." });
+					continue;
+				}
+			}
 			this.sql.exec(`UPDATE outbox SET attempts = attempts + 1 WHERE message_id = ?1`, row.message_id);
 
-			const payload: OutboxPayload = JSON.parse(row.payload);
 			let providerMessageId: string | undefined;
 			let handoff: number;
 			try {

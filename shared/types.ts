@@ -335,6 +335,8 @@ export interface SendInput {
 	id?: string;
 	/** Must equal the DO name; recorded so the outbox alarm can build R2 keys. */
 	mailboxId: string;
+	/** Who queued it. It goes only if they're still in the mailbox when it's due (Mailbox.alarm()). */
+	senderId: string;
 	from: Address;
 	to: Address[];
 	cc: Address[];

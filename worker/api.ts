@@ -36,7 +36,7 @@ import { ProtonAnswerSchema, ProtonJobRefSchema, ProtonStartSchema } from "#shar
 import { admin } from "./admin";
 import { auth, currentUser, endReplacedSession, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
-import { getSendIdentities, getUserMailboxes, isMailboxMember, resolveRecipient, setSignature } from "./directory";
+import { getSendIdentities, getUserMailboxes, isMailboxMember, type Reader, resolveRecipient, setSignature } from "./directory";
 import { fileHeaders, renderEmailHtml, serveFile } from "./html";
 import type { Mailbox } from "./mailbox/mailbox";
 import { getInstall } from "./settings";
@@ -50,7 +50,7 @@ type MailboxStub = DurableObjectStub<Mailbox>;
 
 export type AppEnv = {
 	Bindings: Env;
-	Variables: { user: User; mailboxId: string; mailbox: MailboxStub };
+	Variables: { user: User; reader: Reader; mailboxId: string; mailbox: MailboxStub };
 };
 
 export const app = new Hono<AppEnv>().basePath("/api");
@@ -107,7 +107,7 @@ const ThreadsQuery = PageQuery.extend({ label: z.string().default("inbox") }).re
 const SearchQuery = PageQuery.extend({ q: z.string().trim().default("") }).refine(onePlace, "Send cursor or through, not both");
 
 async function planRequest(c: Context<AppEnv>, scope = ""): Promise<MailboxQuery[]> {
-	const mailboxes = await getUserMailboxes(c.env.DIRECTORY, c.var.user.id);
+	const mailboxes = await getUserMailboxes(c.env.DIRECTORY, c.var.reader);
 	const selected = scope.split(",").map(normalizeAddress).filter(Boolean);
 	return planScope(
 		mailboxes.map((m) => ({ id: m.id, addresses: m.addresses.map((a) => a.address) })),
@@ -198,7 +198,7 @@ const protonImport = (c: Context<AppEnv>) => c.env.PROTON_IMPORT.getByName(c.var
 const mb = new Hono<AppEnv>()
 	.use("*", async (c, next) => {
 		const mailboxId = c.req.param("mailboxId");
-		if (!mailboxId || !(await isMailboxMember(c.env.DIRECTORY, c.var.user.id, mailboxId))) {
+		if (!mailboxId || !(await isMailboxMember(c.env.DIRECTORY, c.var.reader, mailboxId))) {
 			return c.json({ error: "Not found" }, 404);
 		}
 		c.set("mailboxId", mailboxId);
@@ -441,6 +441,7 @@ const mb = new Hono<AppEnv>()
 		const queued = await c.var.mailbox.enqueueSend({
 			id: saved?.send_id ?? undefined,
 			mailboxId: c.var.mailboxId,
+			senderId: userId,
 			from: { address: identity.address, name: identity.displayName ?? c.var.user.name },
 			to: req.to,
 			cc: req.cc,
@@ -477,7 +478,7 @@ const mb = new Hono<AppEnv>()
 		const identity = await sendIdentity(c, target.from);
 		if (!identity) return c.json({ error: `This mailbox can't send as ${target.from}` }, 403);
 		const local = await localTo(c, identity.address, target.recipients);
-		return (await c.var.mailbox.retrySend(messageId, local)) ? c.body(null, 204) : c.json({ error: "Nothing to retry" }, 409);
+		return (await c.var.mailbox.retrySend(messageId, local, c.var.user.id)) ? c.body(null, 204) : c.json({ error: "Nothing to retry" }, 409);
 	})
 
 	/** Live updates: the WebSocket terminates in the Mailbox DO (hibernatable). */
@@ -509,6 +510,7 @@ const routes = app
 		const signedIn = await currentUser(c.req.raw);
 		if (!signedIn) return c.json({ error: "Unauthenticated" }, 401);
 		c.set("user", signedIn.user);
+		c.set("reader", { userId: signedIn.user.id, sessionId: signedIn.sessionId });
 		await next();
 		// Everything past sign-in is someone's mail or settings, which the browser mustn't keep for whoever uses it next.
 		// A WebSocket upgrade has nothing to cache, so it's passed through untouched.
@@ -520,16 +522,16 @@ const routes = app
 
 	.get("/me", async (c) => {
 		const user = c.var.user;
-		return c.json({ user, mailboxes: await getUserMailboxes(c.env.DIRECTORY, user.id) });
+		return c.json({ user, mailboxes: await getUserMailboxes(c.env.DIRECTORY, c.var.reader) });
 	})
 
 	/** Your signature for one of the addresses you send as. /me returns them. */
 	.put("/signatures", zValidator("json", SignatureSchema), async (c) => {
 		const { text } = c.req.valid("json");
 		const address = normalizeAddress(c.req.valid("json").address);
-		const mailboxes = await getUserMailboxes(c.env.DIRECTORY, c.var.user.id);
+		const mailboxes = await getUserMailboxes(c.env.DIRECTORY, c.var.reader);
 		if (!mailboxes.some((m) => m.addresses.some((a) => a.address === address && a.canSend))) return c.json({ error: `You can't send as ${address}` }, 403);
-		return c.json({ signature: await setSignature(c.env.DIRECTORY, c.var.user.id, address, text) });
+		return c.json({ signature: await setSignature(c.env.DIRECTORY, c.var.reader, address, text) });
 	})
 
 	.route("/", views)

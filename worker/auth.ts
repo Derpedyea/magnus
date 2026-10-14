@@ -6,14 +6,34 @@ import { APIError, createAuthMiddleware, getAuthoritativeSessionFromCtx } from "
 import { admin } from "better-auth/plugins/admin";
 import { emailOTP } from "better-auth/plugins/email-otp";
 import { env, waitUntil } from "cloudflare:workers";
+import { z } from "zod";
 import { FRESH_SIGN_IN_MINUTES, type User } from "#shared";
 import { findUserByEmail, loginCodeSender } from "./directory";
 import { optional } from "./optional";
+import { isRemoved } from "./removals";
 import { authSecret } from "./settings";
 
 const CODE_MINUTES = 10;
 /** Both steps of adding a passkey. */
 const REGISTER_PATHS = new Set(["/passkey/generate-register-options", "/passkey/verify-registration"]);
+/**
+ * Better Auth's endpoints that need no session: signing in or out, and asking who's signed in. OAuth callbacks too
+ * (/callback/*). Every other one acts for a session, so D1 has to vouch for it (hooks.before below).
+ */
+const SESSIONLESS = new Set([
+	"/sign-in/email-otp",
+	"/email-otp/send-verification-otp",
+	"/sign-in/social",
+	"/passkey/generate-authenticate-options",
+	"/passkey/verify-authentication",
+	"/sign-out",
+	"/get-session",
+	// Swaps back to the admin's own session, which Better Auth looks up in D1, even once the person they were signed in
+	// as has been removed or suspended (and that session with them).
+	"/admin/stop-impersonating",
+	"/ok",
+	"/error",
+]);
 
 type Auth = ReturnType<typeof createAuth>;
 /** This install's session secret, once read. A plain value, so any request can use it. */
@@ -67,8 +87,9 @@ function createAuth(baseURL: string, secret: string) {
 			// A mail client should stay signed in; every day of use pushes expiry out again.
 			expiresIn: 60 * 60 * 24 * 30,
 			updateAge: 60 * 60 * 24,
-			// Skips the D1 session lookup on most requests. A suspended person keeps access for up to 5 minutes, admin
-			// powers aside (isAdminNow()).
+			// Skips the D1 session lookup for who's asking on most requests. A cookie can renew this cache itself, so an ended
+			// session can stay signed in: reading mail checks the session still exists (Reader in directory.ts), and so do
+			// admin powers (isAdminNow()) and Better Auth's own endpoints (hooks.before).
 			cookieCache: { enabled: true, maxAge: 5 * 60 },
 			// Adding a passkey (or unlinking Google) needs a recent sign-in, so a stolen session cookie can't plant a
 			// passkey that outlives the session.
@@ -85,7 +106,8 @@ function createAuth(baseURL: string, secret: string) {
 				allowedAttempts: 3,
 				storeOTP: "hashed",
 			}),
-			// Registering needs a session; nobody signs up with a passkey. Removing a person removes theirs (ON DELETE CASCADE).
+			// Registering needs a session; nobody signs up with a passkey. A removed person's stay unusable until they're
+			// restored, and go when they're deleted (ON DELETE CASCADE).
 			passkey({
 				rpID: new URL(baseURL).hostname,
 				rpName: "Magnus Mail",
@@ -97,14 +119,43 @@ function createAuth(baseURL: string, secret: string) {
 			}),
 			admin(),
 		],
+		databaseHooks: {
+			session: {
+				create: {
+					// Every way in makes a session: a code, a passkey, Google, an admin signing in as them. Asked once it's written,
+					// so a removal can't slip in between: one before this check finds it here, and one after deletes it with the
+					// rest of their sessions. Throwing here fails the sign-in before any cookie is set.
+					async after(session) {
+						if (!(await isRemoved(env.DIRECTORY, session.userId))) return;
+						await env.DIRECTORY.prepare(`DELETE FROM auth_sessions WHERE id = ?1`).bind(session.id).run();
+						throw new APIError("FORBIDDEN", { message: "An admin removed you from Magnus." });
+					},
+				},
+			},
+		},
 		hooks: {
 			before: createAuthMiddleware(async (ctx) => {
-				if (!REGISTER_PATHS.has(ctx.path)) return;
-				// Asks D1 rather than the 5-minute cookie cache, so a session revoked a minute ago can't add one. An admin
-				// signed in as someone else (impersonation) can't leave a passkey behind on their account either.
+				// A call with no HTTP request is Magnus's own (auth.api.*), made behind its own checks.
+				if (!ctx.request || SESSIONLESS.has(ctx.path) || ctx.path.startsWith("/callback/")) return;
+				// Asks D1 rather than the cookie cache, which vouches for a session after it's ended (suspended, removed, signed
+				// out elsewhere) and can renew itself: such a cookie can't touch passkeys, the person's details, or admin powers.
 				const session = await getAuthoritativeSessionFromCtx(ctx);
-				if (!session) throw new APIError("UNAUTHORIZED", { message: "Sign in to add a passkey." });
-				if (session.session.impersonatedBy) throw new APIError("FORBIDDEN", { message: "You can't add a passkey for someone else." });
+				if (!session) throw new APIError("UNAUTHORIZED", { message: REGISTER_PATHS.has(ctx.path) ? "Sign in to add a passkey." : "Sign in again." });
+				// An admin signed in as someone else (impersonation) can't leave a passkey behind on their account.
+				if (REGISTER_PATHS.has(ctx.path) && session.session.impersonatedBy) throw new APIError("FORBIDDEN", { message: "You can't add a passkey for someone else." });
+			}),
+			after: createAuthMiddleware(async (ctx) => {
+				if (ctx.path !== "/passkey/verify-registration" || !ctx.request) return;
+				// The session can end (they're removed, say) between the check above and the passkey being saved. Asked again
+				// now it's saved: an ended session stays ended, so if it's gone, so is the passkey, which would outlive it.
+				if (await getAuthoritativeSessionFromCtx(ctx)) return;
+				// Only the passkey this request saved, as Better Auth answered with it: nothing if registering failed.
+				const returned: unknown = ctx.context.returned;
+				const answer: unknown = returned instanceof Response ? (returned.ok ? await returned.clone().json() : null) : returned;
+				const saved = z.object({ id: z.string(), userId: z.string() }).safeParse(answer);
+				if (!saved.success) return;
+				await env.DIRECTORY.prepare(`DELETE FROM auth_passkeys WHERE id = ?1 AND userId = ?2`).bind(saved.data.id, saved.data.userId).run();
+				throw new APIError("UNAUTHORIZED", { message: "Sign in to add a passkey." });
 			}),
 		},
 		// Sign-in endpoints allow a few tries per minute per client IP (the email-code plugin's own limits). Each
@@ -126,6 +177,10 @@ function createAuth(baseURL: string, secret: string) {
 			// Codes send after the response, so its timing can't reveal which addresses have an account.
 			backgroundTasks: { handler: waitUntil },
 		},
+		// Deleting someone at once would skip their removal (worker/removals.ts) and leave their mailbox behind. People are
+		// removed through /api/admin. And nothing links accounts: Google joins someone by their sign-in email when they first
+		// use it, while linking would let any session attach any Google account, which signs in long after it's ended.
+		disabledPaths: ["/admin/remove-user", "/link-social"],
 		telemetry: { enabled: false },
 	});
 }
@@ -161,12 +216,12 @@ export async function signInWithoutCode(request: Request, email: string): Promis
 	return headers.getSetCookie();
 }
 
-/** The signed-in person, plus any cookies the response has to set; null if nobody is. */
-export async function currentUser(request: Request): Promise<{ user: User; cookies: string[] } | null> {
+/** The signed-in person and their session, plus any cookies the response has to set; null if nobody is. */
+export async function currentUser(request: Request): Promise<{ user: User; sessionId: string; cookies: string[] } | null> {
 	const session = await (await auth(request)).api.getSession({ headers: request.headers });
 	if (session) {
 		const { id, email, name, role } = session.user;
-		return { user: { id, email, name, isAdmin: role === "admin" }, cookies: [] };
+		return { user: { id, email, name, isAdmin: role === "admin" }, sessionId: session.session.id, cookies: [] };
 	}
 
 	// Local dev: sign the seeded person in for real, so admin actions (which need a session) work too.
@@ -174,7 +229,11 @@ export async function currentUser(request: Request): Promise<{ user: User; cooki
 	const devEmail = optional("DEV_USER_EMAIL");
 	if (!devEmail || (hostname !== "localhost" && hostname !== "127.0.0.1")) return null;
 	const user = await findUserByEmail(env.DIRECTORY, devEmail);
-	return user ? { user, cookies: await signInWithoutCode(request, user.email) } : null;
+	if (!user) return null;
+	const cookies = await signInWithoutCode(request, user.email);
+	const signedIn = await (await auth(request)).api.getSession({ headers: { Cookie: cookies.map((c) => c.split(";")[0]).join("; ") } });
+	if (!signedIn) throw new Error("Signing the local dev person in made no session");
+	return { user, sessionId: signedIn.session.id, cookies };
 }
 
 /** The request's session id, for what belongs to the session rather than the person. Null if it has none. */
