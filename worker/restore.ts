@@ -1,5 +1,5 @@
 import { type InboundJob, r2Keys, stripSubaddress, ulid, ulidTime } from "#shared";
-import { INGEST_WINDOW_MS } from "./mailbox/mailbox";
+import { INGEST_WINDOW_MS, RESTORE_LEASE_MS, type Waiting } from "./mailbox/mailbox";
 
 // Restores one mailbox to how it was at an earlier moment, with Cloudflare's point-in-time recovery of its Durable Object
 // (Mailbox.prepareRestore() and on), then queues again the mail it should have and doesn't. docs/RESTORE.md has the
@@ -7,9 +7,6 @@ import { INGEST_WINDOW_MS } from "./mailbox/mailbox";
 
 /** How far back Cloudflare can restore a Durable Object: "any point in time in the past 30 days". */
 export const RESTORE_WINDOW_MS = 30 * 24 * 3600_000;
-
-/** How long a restore holds its mailbox against another (restoring_until): long past any restore, in case one dies. */
-const LEASE_MS = 10 * 60_000;
 
 /** Where to restore to: a moment, or for undoing a restore, the bookmark it returned (with the moment it was taken). */
 export interface RestoreTarget {
@@ -20,6 +17,8 @@ export interface RestoreTarget {
 export type RestoreResult =
 	| { kind: "missing" }
 	| { kind: "busy" }
+	/** Mail waiting to send, which the restore would take away or hold. Nothing changed. */
+	| { kind: "waiting"; waiting: Waiting[] }
 	| {
 			kind: "done";
 			/** Restore to this to undo this restore. */
@@ -44,19 +43,19 @@ export async function restoreMailbox(env: Env, mailboxId: string, target: Restor
 	const now = Date.now();
 	const claimed = await db
 		.prepare(`UPDATE mailboxes SET restoring = ?2, restoring_until = ?3 WHERE id = ?1 AND coalesce(restoring_until, 0) < ?4`)
-		.bind(mailboxId, restoreId, now + LEASE_MS, now)
+		.bind(mailboxId, restoreId, now + RESTORE_LEASE_MS, now)
 		.run();
 	if (claimed.meta.changes !== 1) {
 		const exists = await db.prepare(`SELECT 1 AS ok FROM mailboxes WHERE id = ?1`).bind(mailboxId).first();
 		return { kind: exists ? "busy" : "missing" };
 	}
 	const release = async () => db.prepare(`UPDATE mailboxes SET restoring = NULL, restoring_until = NULL WHERE id = ?1 AND restoring = ?2`).bind(mailboxId, restoreId).run();
-	// Should letting go fail, the claim runs out by itself (LEASE_MS), so what the restore did (its undo above all) is
+	// Should letting go fail, the claim runs out by itself (RESTORE_LEASE_MS), so what the restore did (its undo above all) is
 	// answered either way.
 	const letGo = () =>
 		release().catch((error: unknown) => console.error(JSON.stringify({ msg: "restore lease kept until it runs out", mailboxId, error: String(error) })));
 	try {
-		const result = await restoreClaimed(env, mailboxId, restoreId, target);
+		const result = await restoreClaimed(env, mailboxId, restoreId, target, now + RESTORE_LEASE_MS);
 		await letGo();
 		return result;
 	} catch (error) {
@@ -65,11 +64,13 @@ export async function restoreMailbox(env: Env, mailboxId: string, target: Restor
 	}
 }
 
-async function restoreClaimed(env: Env, mailboxId: string, restoreId: string, target: RestoreTarget): Promise<RestoreResult> {
+async function restoreClaimed(env: Env, mailboxId: string, restoreId: string, target: RestoreTarget, until: number): Promise<RestoreResult> {
 	const undoAt = Date.now();
 	// A fresh stub for every call: one whose object reset can't be used again.
 	const mailbox = () => env.MAILBOX.getByName(mailboxId);
-	const bookmark = await mailbox().prepareRestore(target.at, target.bookmark, restoreId);
+	const prepared = await mailbox().prepareRestore(target.at, target.bookmark, restoreId, until);
+	if ("waiting" in prepared) return { kind: "waiting", waiting: prepared.waiting };
+	const { bookmark } = prepared;
 	// Named before it's armed, so the object applies the restore from its first moment restored, even if Cloudflare
 	// restarts it before restart() does. The state from before still works as usual: it's marked pending.
 	const named = await env.DIRECTORY.prepare(`UPDATE mailboxes SET restore_id = ?2 WHERE id = ?1 AND restoring = ?2`).bind(mailboxId, restoreId).run();

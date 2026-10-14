@@ -176,8 +176,8 @@ function controlled(env: Env): Env {
 
 /**
  * Restores armed per mailbox, taken up when its object next starts. Local development has no point-in-time recovery,
- * so a restore here goes back only to just before it was prepared: all that changes is the mark that tells the states
- * apart (Mailbox.prepareRestore()). Whether the next restore takes at all is up to the test.
+ * so a restore here goes back only to just before it was prepared: all that changes is what prepareRestore() wrote,
+ * the mark that tells the states apart and the hold on sends. Whether the next restore takes at all is up to the test.
  */
 const armed = new Map<string, string>();
 let restoresTake = true;
@@ -189,7 +189,7 @@ export class Mailbox extends ProductionMailbox {
 		const bookmark = ctx.id.name === undefined ? undefined : armed.get(ctx.id.name);
 		if (ctx.id.name === undefined || bookmark === undefined) return;
 		armed.delete(ctx.id.name);
-		ctx.storage.sql.exec(`DELETE FROM _meta WHERE key LIKE 'restore_pending:%'`);
+		ctx.storage.sql.exec(`DELETE FROM _meta WHERE key LIKE 'restore_pending:%' OR key = 'restore_fence'`);
 		restored.push(bookmark);
 	}
 

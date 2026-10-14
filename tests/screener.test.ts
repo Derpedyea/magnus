@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { QUICK_MODEL } from "../worker/mail/checks";
-import { fixture, type Fixture, inbound, job, type Mailboxes, sendInput } from "./runtime/fixture";
+import { asQueued, fixture, type Fixture, inbound, job, type Mailboxes, sendInput } from "./runtime/fixture";
 
 const VERIFIED = "dkim=pass header.d=outside.test; dmarc=pass header.from=outside.test; spf=pass smtp.mailfrom=bounce@outside.test";
 
@@ -82,7 +82,7 @@ describe("Screener", () => {
 		await box().enqueueSend(sendInput(ids.alice, { to: [{ address: "bob@outside.test" }] }));
 		const bob = await deliver("bob@outside.test");
 		expect((await deliver("carol@outside.test", { inReplyTo: bob.messageIdHeader ?? "" })).labels).toEqual(["inbox"]);
-		const sent = await box().enqueueSend(sendInput(ids.alice, { to: [{ address: "list@outside.test" }] }));
+		const sent = asQueued(await box().enqueueSend(sendInput(ids.alice, { to: [{ address: "list@outside.test" }] })));
 		// Sending gives it the Message-ID a reply names.
 		await box().drain();
 		const ours = await box().getMessage(sent?.id ?? "");

@@ -40,6 +40,7 @@ import {
 	type ThreadDetail,
 	type ThreadSummary,
 	ulid,
+	ulidTime,
 	type Verdict,
 	withForward,
 } from "#shared";
@@ -61,6 +62,19 @@ const MAX_PARTICIPANTS = 12;
  * most an hour apart (worker/mail/inbound.ts, wrangler.jsonc).
  */
 export const INGEST_WINDOW_MS = 24 * 3600 * 1000;
+/** How long a restore holds its mailbox against another (worker/restore.ts): long past any restore, in case one dies. */
+export const RESTORE_LEASE_MS = 10 * 60_000;
+
+/**
+ * Until when one of these mailboxes may still take in again, from originals under raw/, mail its latest restore took
+ * from it (replayMail() in worker/restore.ts): its lease, then the inbound queue's retries. Till then it doesn't hold
+ * that mail, so asking it (holding()) can't tell whether an original is still needed. Rows are whole (SELECT *), so a
+ * directory not yet migrated has no restore_id: nothing restored.
+ */
+function replayUntil(mailboxes: Record<string, unknown>[]): number {
+	const restored = mailboxes.flatMap((m) => (typeof m.restore_id === "string" ? [ulidTime(m.restore_id)] : []));
+	return Math.max(0, ...restored) + (restored.length > 0 ? RESTORE_LEASE_MS + INGEST_WINDOW_MS : 0);
+}
 /** Failed mail listed at once. counts() has the total. */
 const FAILED_LIMIT = 200;
 /** Threads a release of held mail names in its live event, at most (judgeAddresses()). */
@@ -77,6 +91,13 @@ const TRANSIENT_SEND_ERRORS = new Set(["E_RATE_LIMIT_EXCEEDED", "E_DAILY_LIMIT_E
 export interface RestoreApplied {
 	held: number;
 	linksStopped: number;
+}
+
+/** A message waiting in the outbox, which a restore would take away or hold (prepareRestore()). */
+export interface Waiting {
+	subject: string;
+	recipients: string[];
+	sendAt: number;
 }
 
 interface OutboxPayload {
@@ -325,9 +346,11 @@ export class Mailbox extends DurableObject<Env> {
 	/**
 	 * Checks the moment can be restored to, and marks the state as from before this restore. Returns the bookmark to
 	 * restore: Cloudflare's name for that moment, which compares as a string, earlier first. `bookmark` is one a restore
-	 * returned for undoing it; otherwise it's the one for `at`.
+	 * returned for undoing it; otherwise it's the one for `at`. Returns what's waiting to send instead, if anything is,
+	 * leaving the state unmarked: the restore would take away whatever was queued since that moment, unsent, and hold the
+	 * rest. From then until `until` (its lease's end), nothing joins the outbox (restoring()).
 	 */
-	async prepareRestore(at: number, bookmark: string | null, restoreId: string): Promise<string> {
+	async prepareRestore(at: number, bookmark: string | null, restoreId: string, until: number): Promise<{ bookmark: string } | { waiting: Waiting[] }> {
 		// One that rewound but failed before it was applied is applied now, or this attempt's mark would make its state look
 		// like one from before a restore, never to be applied.
 		await this.applyLatestRestore();
@@ -335,9 +358,33 @@ export class Mailbox extends DurableObject<Env> {
 		const target = bookmark ?? (await this.pointInTime().getBookmarkForTime(at));
 		// The mark has to come after the state restored, or the restored state would carry it and seem unrestored.
 		if (target > (await this.pointInTime().getCurrentBookmark())) throw new Error("A restore can't go forward in time");
+		// Nothing awaits from here to the marks, so nothing can join the outbox between the two.
+		const waiting = this.sql
+			.exec<{ subject: string; recipients: string; send_at: number }>(
+				`SELECT m.subject, o.send_at,
+					(SELECT json_group_array(json_extract(p.value, '$.address')) FROM (
+						SELECT value FROM json_each(m.to_json) UNION ALL SELECT value FROM json_each(m.cc_json) UNION ALL SELECT value FROM json_each(m.bcc_json)
+					) p) AS recipients
+				 FROM outbox o JOIN messages m ON m.id = o.message_id ORDER BY o.send_at`,
+			)
+			.toArray()
+			.map((row): Waiting => ({ subject: row.subject, recipients: JSON.parse(row.recipients), sendAt: row.send_at }));
+		if (waiting.length > 0) return { waiting };
 		// One mark per attempt, so a retry leaves the mark of one that failed before rewinding, which D1 may still name.
-		this.sql.exec(`INSERT OR REPLACE INTO _meta (key, value) VALUES (?1, '1')`, `restore_pending:${restoreId}`);
-		return target;
+		this.sql.exec(
+			`INSERT OR REPLACE INTO _meta (key, value) VALUES (?1, '1'), ('restore_fence', ?2)`,
+			`restore_pending:${restoreId}`,
+			String(until),
+		);
+		return { bookmark: target };
+	}
+
+	/**
+	 * Whether a restore under way refuses new sends: anything queued between prepareRestore() and the restart would be
+	 * lost to it unsent. Until the restore's lease runs out, if it never restarts into the restore.
+	 */
+	private restoring(): boolean {
+		return Number(this.meta("restore_fence") ?? 0) > Date.now();
 	}
 
 	/**
@@ -375,10 +422,14 @@ export class Mailbox extends DurableObject<Env> {
 	 * tell which. A state from before the restore (still pending) is left alone. Returns what it did, or did before.
 	 */
 	private applyRestore(restoreId: string): RestoreApplied {
-		if (this.meta("restore_applied") === restoreId) {
+		const applied = this.meta("restore_applied");
+		if (applied === restoreId) {
 			return { held: Number(this.meta("restore_held") ?? 0), linksStopped: Number(this.meta("restore_links_stopped") ?? 0) };
 		}
 		if (this.meta(`restore_pending:${restoreId}`)) return { held: 0, linksStopped: 0 };
+		// Older than one this state has applied: the directory was put back to before a later restore (docs/RESTORE.md),
+		// and nothing here was. Restore ids are ULIDs, so a later one sorts after.
+		if (applied !== undefined && restoreId < applied) return { held: 0, linksStopped: 0 };
 		const rows = this.sql.exec<{ message_id: string; thread_id: string }>(`SELECT o.message_id, m.thread_id FROM outbox o JOIN messages m ON m.id = o.message_id`).toArray();
 		const detail = "Not sent: the mailbox was restored to before it went out, so it may have gone already. Send it again only if it didn't.";
 		for (const row of rows) this.finishSend(row.message_id, row.thread_id, { status: "failed", detail });
@@ -389,6 +440,8 @@ export class Mailbox extends DurableObject<Env> {
 			String(rows.length),
 			String(linksStopped),
 		);
+		// Restored to while another restore was under way, the state would refuse sends till that one's lease ran out.
+		this.sql.exec(`DELETE FROM _meta WHERE key = 'restore_fence'`);
 		return { held: rows.length, linksStopped };
 	}
 
@@ -445,7 +498,13 @@ export class Mailbox extends DurableObject<Env> {
 				 UNION SELECT id, raw_key, received_at FROM failed`,
 			)
 			.toArray();
-		const { results } = await this.env.DIRECTORY.prepare(`SELECT id FROM mailboxes`).all<{ id: string }>();
+		const { results } = await this.env.DIRECTORY.prepare(`SELECT * FROM mailboxes`).all<{ id: string } & Record<string, unknown>>();
+		const replay = replayUntil(results);
+		if (replay > Date.now()) {
+			// Tried again then, by this alarm, and by whatever asked for the deletion.
+			await this.ctx.storage.setAlarm(replay);
+			throw new Error(`Waiting until ${new Date(replay).toISOString()} for a restored mailbox to take its mail in again`);
+		}
 		const others = new Set(results.map((r) => r.id));
 		const held = new Set<string>();
 		for (let i = 0; i < rows.length; i += HOLDING_BATCH) {
@@ -1424,7 +1483,7 @@ export class Mailbox extends DurableObject<Env> {
 	// ─── Outbound ───────────────────────────────────────────────────────────
 
 	/** Null when a forward's original was cancelled while the forward was put together, taking its files with it. */
-	async enqueueSend(input: SendInput): Promise<SendQueued | null> {
+	async enqueueSend(input: SendInput): Promise<SendQueued | null | "restoring"> {
 		if (!input.id) return this.enqueueSendOnce(input);
 		const pending = this.pendingSends.get(input.id);
 		if (pending) return pending;
@@ -1438,9 +1497,10 @@ export class Mailbox extends DurableObject<Env> {
 		}
 	}
 
-	private readonly pendingSends = new Map<string, Promise<SendQueued | null>>();
+	private readonly pendingSends = new Map<string, Promise<SendQueued | null | "restoring">>();
 
-	private async enqueueSendOnce(input: SendInput): Promise<SendQueued | null> {
+	/** "restoring" while a restore under way refuses new sends (restoring()). */
+	private async enqueueSendOnce(input: SendInput): Promise<SendQueued | null | "restoring"> {
 		this.bindMailboxId(input.mailboxId);
 		// Before it joins the outbox, so applying a restore later can't take it for one the restore brought back.
 		await this.applyLatestRestore();
@@ -1515,11 +1575,12 @@ export class Mailbox extends DurableObject<Env> {
 		const forwarded = attachments.filter((a) => !needsAttachmentCopy(a)).map((a) => a.r2Key);
 		// Threads of held mail that writing to its senders lets in (recordContacts()).
 		let released: string[] = [];
-		const threadId = this.ctx.storage.transactionSync(() => {
+		const inserted = this.ctx.storage.transactionSync((): { threadId: string } | "gone" | "restoring" => {
 			// Another retry can commit while HTML is written. Check in the insert's transaction, after the await.
 			const existing = this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM messages WHERE id = ?1`, id).toArray()[0];
-			if (existing) return existing.thread_id;
-			if (forwarded.some((key) => this.sql.exec(`SELECT 1 FROM attachments WHERE r2_key = ?1`, key).toArray().length === 0)) return null;
+			if (existing) return { threadId: existing.thread_id };
+			if (this.restoring()) return "restoring";
+			if (forwarded.some((key) => this.sql.exec(`SELECT 1 FROM attachments WHERE r2_key = ?1`, key).toArray().length === 0)) return "gone";
 			const threadId = parent?.thread_id ?? this.createThread(input.subject, now);
 			const { rowid } = this.sql
 				.exec<{ rowid: number }>(
@@ -1549,13 +1610,14 @@ export class Mailbox extends DurableObject<Env> {
 			this.touchThread(threadId, sendAt, snippet, [input.from, ...input.to, ...input.cc]);
 			released = this.recordContacts([...input.to, ...input.cc, ...input.bcc], true, now);
 			this.sql.exec(`INSERT INTO outbox (message_id, send_at, payload) VALUES (?1, ?2, ?3)`, id, sendAt, JSON.stringify(payload));
-			return threadId;
+			return { threadId };
 		});
-		if (threadId === null) {
+		if (typeof inserted === "string") {
 			if (htmlKey) this.sql.exec(`INSERT OR IGNORE INTO trash (r2_key) VALUES (?1)`, htmlKey);
 			await this.emptyTrash();
-			return null;
+			return inserted === "gone" ? null : "restoring";
 		}
+		const { threadId } = inserted;
 
 		await this.scheduleOutbox();
 		this.broadcast({ type: "threads.changed", threadIds: [...new Set([threadId, ...released])] });
@@ -1625,7 +1687,7 @@ export class Mailbox extends DurableObject<Env> {
 	 * It's the same message: a retry of mail that already went out keeps its date, and delivery events for
 	 * either send still land on it (the `sends` table).
 	 */
-	async retrySend(messageId: string, local: LocalRecipient[], senderId: string): Promise<boolean> {
+	async retrySend(messageId: string, local: LocalRecipient[], senderId: string): Promise<boolean | "restoring"> {
 		await this.applyLatestRestore();
 		const htmlKey = this.sql.exec<{ html_key: string | null }>(`SELECT html_key FROM messages WHERE id = ?1`, messageId).toArray()[0]?.html_key;
 		const html = htmlKey ? await (await this.env.MAIL.get(htmlKey))?.text() : undefined;
@@ -1655,10 +1717,13 @@ export class Mailbox extends DurableObject<Env> {
 			senderId,
 		};
 
-		this.ctx.storage.transactionSync(() => {
+		const queued = this.ctx.storage.transactionSync(() => {
+			if (this.restoring()) return false;
 			this.sql.exec(`INSERT INTO outbox (message_id, send_at, payload) VALUES (?1, ?2, ?3)`, messageId, Date.now(), JSON.stringify(payload));
 			this.sql.exec(`UPDATE messages SET delivery_status = 'queued', delivery_detail = NULL WHERE id = ?1`, messageId);
+			return true;
 		});
+		if (!queued) return "restoring";
 		await this.scheduleOutbox();
 		this.broadcast({ type: "delivery.changed", messageId, status: "queued" });
 		this.broadcast({ type: "threads.changed", threadIds: [row.thread_id] });
@@ -1693,7 +1758,8 @@ export class Mailbox extends DurableObject<Env> {
 		const due = this.sql.exec<{ at: number | null }>(`SELECT min(send_at) AS at FROM outbox`).one().at;
 		const retry = this.sql.exec(`${DELETABLE_TRASH} LIMIT 1`).toArray().length > 0 ? Date.now() + TRASH_RETRY_MS : null;
 		const raw = this.sql.exec<{ at: number | null }>(`SELECT min(received_at) + ?1 AS at FROM deleted_messages WHERE raw_key IS NOT NULL`, INGEST_WINDOW_MS).one().at;
-		const times = [due, retry, raw === null ? null : Math.max(raw, Date.now() + TRASH_RETRY_MS)].filter((at) => at !== null);
+		const wait = Number(this.meta("originals_wait") ?? 0);
+		const times = [due, retry, raw === null ? null : Math.max(raw, Date.now() + TRASH_RETRY_MS, wait)].filter((at) => at !== null);
 		const next = times.length > 0 ? Math.min(...times) : null;
 		if (next === null) {
 			await this.ctx.storage.deleteAlarm();
@@ -1898,7 +1964,13 @@ export class Mailbox extends DurableObject<Env> {
 		).toArray();
 		if (rows.length === 0) return;
 		try {
-			const { results } = await this.env.DIRECTORY.prepare(`SELECT id FROM mailboxes WHERE id != ?1`).bind(this.mailboxId()).all<{ id: string }>();
+			const { results } = await this.env.DIRECTORY.prepare(`SELECT * FROM mailboxes WHERE id != ?1`).bind(this.mailboxId()).all<{ id: string } & Record<string, unknown>>();
+			const replay = replayUntil(results);
+			if (replay > Date.now()) {
+				this.sql.exec(`INSERT OR REPLACE INTO _meta (key, value) VALUES ('originals_wait', ?1)`, String(replay));
+				await this.scheduleOutbox();
+				return;
+			}
 			const held = new Set((await Promise.all(results.map((m) => this.env.MAILBOX.getByName(m.id).holding(rows.map((r) => r.id))))).flat());
 			const keys = rows.filter((r) => !held.has(r.id)).map((r) => r.raw_key);
 			if (keys.length > 0) await this.env.MAIL.delete(keys);

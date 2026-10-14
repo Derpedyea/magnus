@@ -82,6 +82,8 @@ app.on(["GET", "POST"], "/auth/*", async (c) => {
 // narrows them to some of the user's addresses. Everything else stays mailbox-scoped below.
 
 const PAGE = 50;
+/** A send refused while an admin restores the mailbox (Mailbox.prepareRestore()), which would lose it. */
+const RESTORING = "This mailbox is being restored to an earlier time. Send again in a few minutes.";
 /** Enough to find anyone by typing, small enough to send whole so matching needs no round trip. */
 const CONTACTS = 1000;
 
@@ -458,9 +460,9 @@ const mb = new Hono<AppEnv>()
 			localRecipients: local,
 			localOnly: local.length === recipients.length,
 		});
-		if (!queued) {
+		if (!queued || queued === "restoring") {
 			if (saved) await db.prepare(`UPDATE drafts SET state = 'active', send_id = NULL WHERE id = ?1 AND user_id = ?2 AND state = 'sending'`).bind(saved.id, userId).run();
-			return c.json({ error: "The message to forward is gone" }, 404);
+			return queued === "restoring" ? c.json({ error: RESTORING }, 409) : c.json({ error: "The message to forward is gone" }, 404);
 		}
 		if (saved) await finishDraftSend(db, userId, saved.id, queued);
 		return c.json(queued, 202);
@@ -479,7 +481,9 @@ const mb = new Hono<AppEnv>()
 		const identity = await sendIdentity(c, target.from);
 		if (!identity) return c.json({ error: `This mailbox can't send as ${target.from}` }, 403);
 		const local = await localTo(c, identity.address, target.recipients);
-		return (await c.var.mailbox.retrySend(messageId, local, c.var.user.id)) ? c.body(null, 204) : c.json({ error: "Nothing to retry" }, 409);
+		const queued = await c.var.mailbox.retrySend(messageId, local, c.var.user.id);
+		if (queued === "restoring") return c.json({ error: RESTORING }, 409);
+		return queued ? c.body(null, 204) : c.json({ error: "Nothing to retry" }, 409);
 	})
 
 	/** Live updates: the WebSocket terminates in the Mailbox DO (hibernatable). */

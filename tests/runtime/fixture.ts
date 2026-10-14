@@ -97,6 +97,12 @@ export function sendInput(mailboxId: string, overrides: Partial<SendInput> = {})
 	};
 }
 
+/** A send the mailbox queued, for a test that needs it to have been: not refused, by a restore or otherwise. */
+export function asQueued<T extends object>(result: T | null | "restoring"): T {
+	if (result === null || result === "restoring") throw new Error(`Not queued: ${result}`);
+	return result;
+}
+
 export function job(mailboxId: string, id = "inbound-1"): InboundJob {
 	return { v: 1, ingestId: id, rawKey: r2Keys.raw(id, NOW), rawSize: 0, mailboxId, envelopeFrom: "sender@outside.test", envelopeTo: "alice@example.com", subaddress: null, receivedAt: NOW };
 }

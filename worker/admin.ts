@@ -215,6 +215,10 @@ export const admin = new Hono<AppEnv>()
 			}
 			if (result.kind === "missing") return c.json({ error: "Not found" }, 404);
 			if (result.kind === "busy") return c.json({ error: "This mailbox is being restored already. Try again once that's done." }, 409);
+			if (result.kind === "waiting") {
+				const waiting = result.waiting.map((w) => ({ ...w, sendAt: new Date(w.sendAt).toISOString() }));
+				return c.json({ error: "Mail is waiting to send from this mailbox, which a restore would lose. Restore once it's gone, or its senders have cancelled it.", waiting }, 409);
+			}
 			const { held, linksStopped, replayed, unknown, undo } = result;
 			return c.json({ held, linksStopped, replayed, unknown, undo: { at: new Date(undo.at).toISOString(), bookmark: undo.bookmark } });
 		},

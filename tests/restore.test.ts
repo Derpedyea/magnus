@@ -1,13 +1,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { r2Keys, ulid } from "#shared";
+import { r2Keys, ulid, ulidTime } from "#shared";
 import { claimDraft } from "../worker/drafts";
-import { fixture, type Fixture, inbound, type Mailboxes, NOW, sendInput } from "./runtime/fixture";
+import { asQueued, fixture, type Fixture, inbound, type Mailboxes, NOW, sendInput } from "./runtime/fixture";
 
 const ORIGIN = "https://magnus.test";
 const DAY = 24 * 3600_000;
 const TOKEN = "restore-link-token-abc";
 const RAW = "From: sender@outside.test\r\n\r\nHi";
+const LEASE_MS = 10 * 60_000;
 const HELD = "Not sent: the mailbox was restored to before it went out, so it may have gone already. Send it again only if it didn't.";
 
 // Local development has no point-in-time recovery: the test Mailbox stands in for Cloudflare's (tests/runtime/worker.ts),
@@ -27,18 +28,20 @@ describe("restoring a mailbox", () => {
 		});
 	const restoreId = (id: string) => f.env.DIRECTORY.prepare("UPDATE mailboxes SET restore_id = ?2 WHERE id = ?1").bind(ids.alice, id).run();
 	const delivery = async () => (await storage()).exec("SELECT delivery_status, delivery_detail FROM messages WHERE delivery_status IS NOT NULL ORDER BY id");
+	const latestRestore = async () => z.object({ restore_id: z.string() }).parse(await f.env.DIRECTORY.prepare("SELECT restore_id FROM mailboxes WHERE id = ?1").bind(ids.alice).first()).restore_id;
 
-	it("restarts the mailbox into the restore, and holds what it brought back of the outbox", async () => {
-		await mailbox().enqueueSend(sendInput(ids.alice, { delayMs: 10_000 }));
+	it("waits till nothing is waiting to send, which a restore would take away unsent, then restarts the mailbox into it", async () => {
+		const later = asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { subject: "Later", cc: [{ address: "cc@outside.test" }], delayMs: 3600_000 })));
+		const refused = await restore(hourAgo());
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toMatchObject({ waiting: [{ subject: "Later", recipients: ["recipient@outside.test", "cc@outside.test"], sendAt: new Date(NOW + 3600_000).toISOString() }] });
+		expect(await f.control.restored()).toEqual([]);
+
+		expect(await mailbox().cancelSend(later.id)).toBe(true);
 		const response = await restore(hourAgo());
 		expect(response.status).toBe(200);
-		expect(await response.json()).toMatchObject({ held: 1, linksStopped: 0, replayed: 0, unknown: 0, undo: { at: expect.any(String), bookmark: expect.any(String) } });
+		expect(await response.json()).toMatchObject({ held: 0, linksStopped: 0, replayed: 0, unknown: 0, undo: { at: expect.any(String), bookmark: expect.any(String) } });
 		expect(await f.control.restored()).toHaveLength(1);
-		await f.control.setNow(NOW + 10_000);
-		await mailbox().drain();
-		expect((await f.control.state()).sends).toEqual([]);
-		expect(await delivery()).toEqual([{ delivery_status: "failed", delivery_detail: HELD }]);
-
 		// What's sent after it goes as usual.
 		await mailbox().enqueueSend(sendInput(ids.alice));
 		await mailbox().drain();
@@ -66,6 +69,8 @@ describe("restoring a mailbox", () => {
 
 	it("applies a restore before queueing a send, so the new one goes", async () => {
 		await mailbox().enqueueSend(sendInput(ids.alice, { subject: "Brought back" }));
+		// Restored to while another restore held sends, which this one lifts.
+		await (await storage()).exec(`INSERT INTO _meta (key, value) VALUES ('restore_fence', '${NOW + 3600_000}')`);
 		await restoreId("restore-1");
 		await mailbox().enqueueSend(sendInput(ids.alice, { subject: "New" }));
 		await mailbox().drain();
@@ -84,12 +89,29 @@ describe("restoring a mailbox", () => {
 		expect((await f.control.state()).sends).toHaveLength(1);
 	});
 
-	it("fails, leaving the mailbox as it was, when it doesn't restart into the restore, and can be tried again", async () => {
-		await f.control.setRestoresTake(false);
-		await mailbox().enqueueSend(sendInput(ids.alice));
-		expect((await restore(hourAgo())).status).toBe(500);
+	it("refuses sends from when it begins, so none is lost to it, till it finishes or its hold runs out", async () => {
+		// On the restore's clock, as the hold is.
+		await f.control.setNow(Date.now());
+		await f.control.setSendErrors(["E_REFUSED"]);
+		const failed = asQueued(await mailbox().enqueueSend(sendInput(ids.alice)));
 		await mailbox().drain();
-		expect((await f.control.state()).sends).toHaveLength(1);
+		// It doesn't restart into the restore, so the restore fails and is armed for the next start.
+		await f.control.setRestoresTake(false);
+		expect((await restore(hourAgo())).status).toBe(500);
+		const send = async () => f.worker.fetch(`${ORIGIN}/api/mailboxes/${ids.alice}/send`, {
+			method: "POST", headers: { Cookie: await f.login("alice"), Origin: ORIGIN, "Content-Type": "application/json" },
+			body: JSON.stringify({ from: "alice@example.com", to: [{ address: "friend@outside.test" }], subject: "Hi", text: "Hi", delaySeconds: 0 }),
+		});
+		const refused = await send();
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ error: expect.stringContaining("being restored") });
+		expect(await mailbox().retrySend(failed.id, [], "alice")).toBe("restoring");
+
+		await f.control.setNow(Date.now() + LEASE_MS + 1000);
+		expect((await send()).status).toBe(202);
+		await f.control.setSendErrors([]);
+		await mailbox().drain();
+		// Tried again, it finishes.
 		await f.control.setRestoresTake(true);
 		expect((await restore(hourAgo())).status).toBe(200);
 	});
@@ -104,7 +126,7 @@ describe("restoring a mailbox", () => {
 		const link = () => f.worker.fetch(`${ORIGIN}/f/${ids.alice}/${TOKEN}/receipt.pdf`);
 		expect((await link()).status).toBe(200);
 		// Named by the directory, not yet finished: the link asks first.
-		await restoreId("restore-1");
+		await restoreId(ulid(Date.now() - 60_000));
 		expect((await link()).status).toBe(410);
 		await f.env.DIRECTORY.prepare("UPDATE mailboxes SET restore_id = NULL WHERE id = ?1").bind(ids.alice).run();
 		await (await storage()).exec("UPDATE attachments SET link_stopped = 0");
@@ -147,13 +169,15 @@ describe("restoring a mailbox", () => {
 		expect((await save(0)).status).toBe(200);
 		const first = z.object({ id: z.string() }).parse(await (await send(1)).json());
 		expect(first.id).toBe(`draft-${id}-1`);
-		// Caught mid-send by a restore: the queued message is failed, and the draft is a draft again.
+		await f.control.setNow(NOW + 60_000);
+		await mailbox().drain();
+		// Caught mid-send by a restore: D1 says it's sending, and the draft is a draft again.
 		await f.env.DIRECTORY.prepare("UPDATE drafts SET state = 'sending', send_id = ?2, content = ?3 WHERE id = ?1").bind(id, first.id, JSON.stringify(content)).run();
 		expect((await restore(hourAgo())).status).toBe(200);
 		const again = z.object({ id: z.string() }).parse(await (await send(2)).json());
 		expect(again.id).toBe(`draft-${id}-2`);
 		expect(await (await storage()).exec("SELECT id, delivery_status FROM messages ORDER BY id")).toEqual([
-			{ id: first.id, delivery_status: "failed" },
+			{ id: first.id, delivery_status: "sent" },
 			{ id: again.id, delivery_status: "queued" },
 		]);
 	});
@@ -207,6 +231,56 @@ describe("restoring a mailbox", () => {
 		expect((await f.worker.fetch(`${ORIGIN}/api/admin/mailboxes/${ids.alice}/restore`, {
 			method: "POST", headers: { Cookie: await f.login("admin"), Origin: ORIGIN, "Content-Type": "application/json" }, body: JSON.stringify({ at: undo.at, bookmark: "not-one" }),
 		})).status).toBe(400);
+	});
+
+	it("leaves the mailbox alone when the directory is put back to before a later restore of it", async () => {
+		expect((await restore(hourAgo())).status).toBe(200);
+		const first = await latestRestore();
+		expect((await restore(hourAgo())).status).toBe(200);
+		await mailbox().enqueueSend(sendInput(ids.alice, { delayMs: 10_000 }));
+		// D1 Time Travel to between the two names the first again.
+		await restoreId(first);
+		await f.control.setNow(NOW + 10_000);
+		await mailbox().drain();
+		expect((await f.control.state()).sends).toHaveLength(1);
+	});
+
+	const bob = () => f.env.MAILBOX.getByName(ids.bob);
+	it.each([
+		{
+			other: "let its copy go",
+			setup: async (id: string, rawKey: string, at: number) => {
+				await bob().holding([]);
+				await (await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.bob })).exec(`INSERT INTO deleted_messages (id, raw_key, received_at) VALUES ('${id}', '${rawKey}', ${at})`);
+			},
+			letGo: async () => { await bob().drain(); },
+		},
+		{
+			other: "is deleted",
+			setup: async (id: string, rawKey: string, at: number) => {
+				await bob().ingest({ ...inbound(ids.bob, id), rawKey, receivedAt: at, htmlKey: null });
+				// Gone from the directory first, as the purge does.
+				await f.env.DIRECTORY.prepare("DELETE FROM mailboxes WHERE id = ?1").bind(ids.bob).run();
+			},
+			letGo: async () => { await bob().destroy().then(() => undefined, () => undefined); },
+		},
+	])("keeps the originals it takes mail in again from, though another mailbox they were for $other", async ({ setup, letGo }) => {
+		// Other mailboxes' cleanup on the restore's clock.
+		await f.control.setNow(Date.now());
+		const at = Date.now() - 2 * DAY;
+		const id = ulid(at + 1000);
+		const rawKey = r2Keys.raw(id, at + 1000);
+		await f.env.MAIL.put(rawKey, RAW, { customMetadata: { envelopeFrom: "sender@outside.test", envelopeTo: "family@example.com", mailboxes: `${ids.alice},${ids.bob}` } });
+		await setup(id, rawKey, at + 1000);
+		expect(await (await restore(new Date(at).toISOString())).json()).toMatchObject({ replayed: 1 });
+		// Till Alice has it again, she doesn't hold it. Bob's cleanup comes back once she can have.
+		await letGo();
+		expect(await f.env.MAIL.head(rawKey)).not.toBeNull();
+		expect(await bob().alarmAt()).toBe(ulidTime(await latestRestore()) + LEASE_MS + DAY);
+		// Once she can have taken it in again (here she never did), it goes as usual.
+		await restoreId(ulid(Date.now() - DAY - LEASE_MS - 1000));
+		await letGo();
+		expect(await f.env.MAIL.head(rawKey)).toBeNull();
 	});
 
 	it("queues again the mail this mailbox should have and doesn't, from the day before the moment restored to on", async () => {

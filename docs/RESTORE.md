@@ -16,9 +16,9 @@ Cloudflare's own words: Durable Objects can be restored "to any point in time in
 ## Restoring a mailbox
 
 For when a bug or a bad deploy has spoiled one mailbox, or all of them. A restore puts the whole mailbox back as it
-was at that moment. Single threads can't be restored. Restore while nobody is using the mailbox: suspend its person
-first (Admin › People), and give access back once it's done, since a send in flight as the restore happens can go
-twice.
+was at that moment. Single threads can't be restored. Restore while nobody is using the mailbox (suspend its person
+first in Admin › People if need be): what they do in it meanwhile is undone, and it refuses to send until the restore
+is done.
 
 1. Find the mailbox's id. It's in the address bar when you open mail (`/inbox/<mailboxId>/…`), and every mailbox is
    listed at `/api/admin/directory`.
@@ -35,6 +35,10 @@ twice.
 3. It answers `{ held, linksStopped, replayed, unknown, undo }`. Keep `undo`, even from an answer that says the
    restore didn't finish: sending it back as the body (`body: JSON.stringify(undo)`) undoes this restore, to exactly the
    moment before it.
+
+   If it answers `waiting` instead (409), mail is waiting to send from the mailbox, such as a scheduled send. The
+   restore would take away, unsent, whatever was queued since the moment you picked. Nothing has changed: restore once
+   it's gone, or once its senders have cancelled it.
 
 What else changes:
 
@@ -64,13 +68,19 @@ for (const m of mailboxes) {
 }
 ```
 
-A restore that fails partway (a non-200 answer) is finished by running it again with the same time. A mailbox
-restores one at a time: another restore of it while one runs answers 409.
+A restore that fails partway (a 500 answer) is finished by running it again with the same time. Until then the mailbox
+refuses to send, for at most 10 minutes. A mailbox restores one at a time: another restore of it while one runs
+answers 409.
 
 ## Restoring the directory
 
 For when a bug or a bad migration has spoiled people, addresses, domains, or settings. This overwrites the whole
 directory: D1 "does not yet allow you to clone or fork an existing database to a new copy".
+
+Fix the cause first. Deploy a version without the bug, and without the bad migration if that was it: a Worker applies
+any migration the directory lacks the first time it touches it (`worker/migrate.ts`), so one still deployed would run
+again on the restored directory. Then restore, then deploy once more (`pnpm run deploy`), so that no running Worker goes
+on assuming the migrations it saw before the restore.
 
 ```sh
 npx wrangler d1 time-travel info magnus-directory --timestamp=2026-10-14T09:00:00Z     # the bookmark for that time
