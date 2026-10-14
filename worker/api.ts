@@ -435,7 +435,8 @@ const mb = new Hono<AppEnv>()
 
 		// Freeze the revision before queueing. A crash leaves a recoverable send intent, retried with the same id.
 		if (req.draft) {
-			saved = await claimDraft(db, userId, req.draft.id, req.draft.revision, `draft-${req.draft.id}`);
+			// One id per revision: a retry of this send keeps it, while a draft changed since (by a restore, say) is a new send.
+			saved = await claimDraft(db, userId, req.draft.id, req.draft.revision, `draft-${req.draft.id}-${req.draft.revision}`);
 			if (!saved) return c.json({ error: "This draft changed on another device or was discarded" }, 409);
 		}
 		const queued = await c.var.mailbox.enqueueSend({

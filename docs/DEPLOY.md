@@ -154,6 +154,8 @@ migrations apply themselves when the updated Worker first runs.
 
 ## Operations cheat sheet
 
+Restoring a mailbox or the directory to an earlier time, and practising it: [RESTORE.md](RESTORE.md).
+
 ```sh
 npx wrangler tail magnus                                      # live logs: accepted/rejected/ingested, sends
 npx wrangler d1 execute DIRECTORY --remote --command "SELECT address, domain FROM addresses"

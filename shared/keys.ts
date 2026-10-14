@@ -15,9 +15,13 @@
  */
 export const r2Keys = {
 	raw(ingestId: string, receivedAt: number): string {
+		return `${r2Keys.rawDay(receivedAt)}${ingestId}.eml`;
+	},
+	/** Every original received on that UTC day. */
+	rawDay(receivedAt: number): string {
 		const d = new Date(receivedAt);
 		const pad = (n: number) => String(n).padStart(2, "0");
-		return `raw/${d.getUTCFullYear()}/${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())}/${ingestId}.eml`;
+		return `raw/${d.getUTCFullYear()}/${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())}/`;
 	},
 	mailbox(mailboxId: string): string {
 		return `m/${mailboxId}/`;

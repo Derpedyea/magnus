@@ -44,7 +44,7 @@ import {
 	withForward,
 } from "#shared";
 import { noteBody } from "#shared/markdown";
-import { hasMember, mailboxInUse } from "../directory";
+import { hasMember, mailboxInUse, mailboxState } from "../directory";
 import { retryAddressing } from "./retry";
 import { MIGRATIONS } from "./schema";
 
@@ -60,7 +60,7 @@ const MAX_PARTICIPANTS = 12;
  * Longer than the inbound queue keeps a message: 10 tries to parse it, then up to 10 more to list it under Failed, at
  * most an hour apart (worker/mail/inbound.ts, wrangler.jsonc).
  */
-const INGEST_WINDOW_MS = 24 * 3600 * 1000;
+export const INGEST_WINDOW_MS = 24 * 3600 * 1000;
 /** Failed mail listed at once. counts() has the total. */
 const FAILED_LIMIT = 200;
 /** Threads a release of held mail names in its live event, at most (judgeAddresses()). */
@@ -72,6 +72,12 @@ const SOCKET_MS = 5 * 60 * 1000;
 
 /** Error codes worth retrying: Email Sending's, and R2 failing to keep an upload (E_STORAGE). Everything else is a permanent failure. */
 const TRANSIENT_SEND_ERRORS = new Set(["E_RATE_LIMIT_EXCEEDED", "E_DAILY_LIMIT_EXCEEDED", "E_INTERNAL_SERVER_ERROR", "E_DELIVERY_FAILED", "E_STORAGE"]);
+
+/** What applying a restore did: outbox messages it failed, and links it stopped. */
+export interface RestoreApplied {
+	held: number;
+	linksStopped: number;
+}
 
 interface OutboxPayload {
 	from: Address;
@@ -298,6 +304,96 @@ export class Mailbox extends DurableObject<Env> {
 			await this.ctx.storage.setAlarm(Date.now() + TRASH_RETRY_MS);
 			return undefined;
 		}
+	}
+
+	/**
+	 * Applies the directory's latest restore of this mailbox, if it hasn't been (applyRestore()). Asked here, by the
+	 * object itself, so the answer comes after any restart into a restore. Throws if the directory can't say.
+	 */
+	private async applyLatestRestore(): Promise<void> {
+		const state = await mailboxState(this.env.DIRECTORY, this.mailboxId());
+		if (state?.restoreId) this.applyRestore(state.restoreId);
+	}
+
+	// ─── Restoring to an earlier time ───────────────────────────────────────
+	// Cloudflare keeps 30 days of this object's storage and can put it back as it was at any moment in them (point-in-time
+	// recovery). worker/restore.ts calls these in turn. The directory names the restore (mailboxes.restore_id) before
+	// it happens, and this object marks its state as from before it (restore_pending:<id>), so a restarted object can tell
+	// which state it's in: anything still pending is from before, and anything not is restored. A restored state is
+	// applied (applyRestore()) before it sends, queues a send, or serves a file by link, whichever comes first.
+
+	/**
+	 * Checks the moment can be restored to, and marks the state as from before this restore. Returns the bookmark to
+	 * restore: Cloudflare's name for that moment, which compares as a string, earlier first. `bookmark` is one a restore
+	 * returned for undoing it; otherwise it's the one for `at`.
+	 */
+	async prepareRestore(at: number, bookmark: string | null, restoreId: string): Promise<string> {
+		// One that rewound but failed before it was applied is applied now, or this attempt's mark would make its state look
+		// like one from before a restore, never to be applied.
+		await this.applyLatestRestore();
+		// Throws for a time over 30 days ago.
+		const target = bookmark ?? (await this.pointInTime().getBookmarkForTime(at));
+		// The mark has to come after the state restored, or the restored state would carry it and seem unrestored.
+		if (target > (await this.pointInTime().getCurrentBookmark())) throw new Error("A restore can't go forward in time");
+		// One mark per attempt, so a retry leaves the mark of one that failed before rewinding, which D1 may still name.
+		this.sql.exec(`INSERT OR REPLACE INTO _meta (key, value) VALUES (?1, '1')`, `restore_pending:${restoreId}`);
+		return target;
+	}
+
+	/**
+	 * Sets the bookmark to come back to on the next start. Returns one for undoing it: the moment just before. Nothing
+	 * changes until the object restarts, which restart() does at once (and Cloudflare could at any time).
+	 */
+	async armRestore(bookmark: string): Promise<string> {
+		return this.pointInTime().onNextSessionRestoreBookmark(bookmark);
+	}
+
+	/** Cloudflare's recovery API. Local development has none ("not supported in local development"); tests stand one in. */
+	protected pointInTime(): Pick<DurableObjectStorage, "getBookmarkForTime" | "getCurrentBookmark" | "onNextSessionRestoreBookmark"> {
+		return this.ctx.storage;
+	}
+
+	/** Restarts the object, so a restore armed takes effect. Its caller sees an error: the object resets mid-call. */
+	async restart(): Promise<void> {
+		this.ctx.abort("Restarting into a restore");
+	}
+
+	/**
+	 * In the restarted object: applies the restore and sets the alarm again for what's left. Null if this is still the
+	 * state from before (it didn't restart, or the restore didn't take).
+	 */
+	async finishRestore(restoreId: string): Promise<RestoreApplied | null> {
+		if (this.meta(`restore_pending:${restoreId}`)) return null;
+		const applied = this.applyRestore(restoreId);
+		await this.scheduleOutbox();
+		return applied;
+	}
+
+	/**
+	 * Fails every outbox message a restore brought back and stops every file it shares by link, once per restore: since
+	 * the moment restored to, each message may have gone out, and each link may have been stopped, and nothing here can
+	 * tell which. A state from before the restore (still pending) is left alone. Returns what it did, or did before.
+	 */
+	private applyRestore(restoreId: string): RestoreApplied {
+		if (this.meta("restore_applied") === restoreId) {
+			return { held: Number(this.meta("restore_held") ?? 0), linksStopped: Number(this.meta("restore_links_stopped") ?? 0) };
+		}
+		if (this.meta(`restore_pending:${restoreId}`)) return { held: 0, linksStopped: 0 };
+		const rows = this.sql.exec<{ message_id: string; thread_id: string }>(`SELECT o.message_id, m.thread_id FROM outbox o JOIN messages m ON m.id = o.message_id`).toArray();
+		const detail = "Not sent: the mailbox was restored to before it went out, so it may have gone already. Send it again only if it didn't.";
+		for (const row of rows) this.finishSend(row.message_id, row.thread_id, { status: "failed", detail });
+		const linksStopped = this.sql.exec(`UPDATE attachments SET link_stopped = 1 WHERE link_token IS NOT NULL AND link_stopped = 0 RETURNING id`).toArray().length;
+		this.sql.exec(
+			`INSERT OR REPLACE INTO _meta (key, value) VALUES ('restore_applied', ?1), ('restore_held', ?2), ('restore_links_stopped', ?3)`,
+			restoreId,
+			String(rows.length),
+			String(linksStopped),
+		);
+		return { held: rows.length, linksStopped };
+	}
+
+	private meta(key: string): string | undefined {
+		return this.sql.exec<{ value: string }>(`SELECT value FROM _meta WHERE key = ?1`, key).toArray()[0]?.value;
 	}
 
 	/**
@@ -969,6 +1065,7 @@ export class Mailbox extends DurableObject<Env> {
 
 	/** A file sent as a link, found by its token for the public download route, which checks it's still shared. */
 	async getLinkedFile(token: string): Promise<{ file: StoredAttachment; from: Address } | null> {
+		await this.applyLatestRestore();
 		const row = this.sql
 			.exec<AttachmentRow & { from_json: string }>(
 				`SELECT a.*, m.from_json FROM attachments a JOIN messages m ON m.id = a.message_id WHERE a.link_token = ?1`,
@@ -1345,6 +1442,8 @@ export class Mailbox extends DurableObject<Env> {
 
 	private async enqueueSendOnce(input: SendInput): Promise<SendQueued | null> {
 		this.bindMailboxId(input.mailboxId);
+		// Before it joins the outbox, so applying a restore later can't take it for one the restore brought back.
+		await this.applyLatestRestore();
 		if (input.id) {
 			const queued = await this.queuedSend(input.id);
 			if (queued) return queued;
@@ -1527,6 +1626,7 @@ export class Mailbox extends DurableObject<Env> {
 	 * either send still land on it (the `sends` table).
 	 */
 	async retrySend(messageId: string, local: LocalRecipient[], senderId: string): Promise<boolean> {
+		await this.applyLatestRestore();
 		const htmlKey = this.sql.exec<{ html_key: string | null }>(`SELECT html_key FROM messages WHERE id = ?1`, messageId).toArray()[0]?.html_key;
 		const html = htmlKey ? await (await this.env.MAIL.get(htmlKey))?.text() : undefined;
 		// Checked after reading R2, since other calls can run while it waits.
@@ -1628,12 +1728,17 @@ export class Mailbox extends DurableObject<Env> {
 		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) return this.destroy();
 		await this.emptyTrash();
 		await this.deleteTrashedOriginals();
+		// Before anything due goes, in case the restore's own finishRestore() hasn't run yet.
+		// One cutoff for both, so nothing comes due between asking and choosing what to send.
+		const cutoff = Date.now();
+		const anyDue = this.sql.exec(`SELECT 1 FROM outbox WHERE send_at <= ?1 LIMIT 1`, cutoff).toArray().length > 0;
+		if (anyDue && !(await this.askDirectory(() => this.applyLatestRestore()))) return;
 		const due = this.sql
 			.exec<{ message_id: string; attempts: number; payload: string; delivery_status: DeliveryStatus; thread_id: string }>(
 				`SELECT o.message_id, o.attempts, o.payload, m.delivery_status, m.thread_id
 				 FROM outbox o JOIN messages m ON m.id = o.message_id
 				 WHERE o.send_at <= ?1 ORDER BY o.send_at LIMIT ?2`,
-				Date.now(),
+				cutoff,
 				OUTBOX_BATCH,
 			)
 			.toArray();

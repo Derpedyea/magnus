@@ -30,7 +30,7 @@ links.get("/f/:mailboxId/:token/:filename", async (c) => {
 
 async function findShared(env: Env, mailboxId: string, token: string): Promise<{ file: StoredAttachment; from: Address } | Response> {
 	// Checked before getByName, which would create a Durable Object for any name it's given. A removed person's mailbox
-	// shares nothing, as if it were already deleted.
+	// shares nothing, as if it were already deleted. One restored stops its links before it looks (getLinkedFile()).
 	const found = isLinkToken(token) && (await mailboxInUse(env.DIRECTORY, mailboxId)) ? await env.MAILBOX.getByName(mailboxId).getLinkedFile(token) : null;
 	if (!found) return notFound();
 	if (!found.file.link?.shared) {

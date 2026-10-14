@@ -12,7 +12,7 @@ import { type Exporter, ProtonImport as ProductionProtonImport } from "../../wor
 import type { ExporterState, ProtonImportJob } from "#shared/proton-export";
 import { cleanDraftFiles } from "../../worker/drafts";
 import { forgetExpiredDevices } from "../../worker/push";
-import { purgePerson, purgeRemoved, REMOVAL_MS } from "../../worker/removals";
+import { purgePerson, purgeRemoved } from "../../worker/removals";
 import { NOW } from "./clock";
 
 export { Vault } from "../../worker/vault";
@@ -174,8 +174,41 @@ function controlled(env: Env): Env {
 	return { ...env, MAIL, DIRECTORY, INBOUND, EMAIL };
 }
 
+/**
+ * Restores armed per mailbox, taken up when its object next starts. Local development has no point-in-time recovery,
+ * so a restore here goes back only to just before it was prepared: all that changes is the mark that tells the states
+ * apart (Mailbox.prepareRestore()). Whether the next restore takes at all is up to the test.
+ */
+const armed = new Map<string, string>();
+let restoresTake = true;
+const restored: string[] = [];
+
 export class Mailbox extends ProductionMailbox {
-	constructor(ctx: DurableObjectState, env: Env) { super(ctx, controlled(env)); }
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, controlled(env));
+		const bookmark = ctx.id.name === undefined ? undefined : armed.get(ctx.id.name);
+		if (ctx.id.name === undefined || bookmark === undefined) return;
+		armed.delete(ctx.id.name);
+		ctx.storage.sql.exec(`DELETE FROM _meta WHERE key LIKE 'restore_pending:%'`);
+		restored.push(bookmark);
+	}
+
+	protected override pointInTime() {
+		const name = this.ctx.id.name ?? "";
+		// Shaped like Cloudflare's, and like them, later ones sort after earlier ones.
+		const bookmark = (ms: number) => {
+			const hex = ms.toString(16).padStart(16, "0");
+			return `${hex.slice(0, 8)}-${hex.slice(8)}-00000000-0`;
+		};
+		return {
+			getBookmarkForTime: async (at: number | Date) => bookmark(Number(at)),
+			getCurrentBookmark: async () => bookmark(Date.now()),
+			onNextSessionRestoreBookmark: async (target: string) => {
+				if (restoresTake) armed.set(name, target);
+				return bookmark(Date.now());
+			},
+		};
+	}
 
 	override enqueueSend(input: SendInput) { return atTestTime(() => super.enqueueSend(input)); }
 	override recordFailed(job: InboundJob, error: string | null) { return atTestTime(() => super.recordFailed(job, error)); }
@@ -322,7 +355,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	forgetExpiredDevices() { return forgetExpiredDevices(this.env.DIRECTORY, Date.now()); }
 	purgeRemoved() { return atTestTime(() => purgeRemoved(controlled(this.env), now)); }
 	/** One person's purge, as if they'd been picked as due before whatever the test did since. */
-	purgePerson(userId: string) { return purgePerson(controlled(this.env).DIRECTORY, userId, now - REMOVAL_MS); }
+	purgePerson(userId: string) { return purgePerson(controlled(this.env).DIRECTORY, userId, now); }
 	parse(job: InboundJob) { return withPushService(() => ingest(controlled(this.env), job, models)); }
 	setModels(next: Partial<ModelAnswers>) { answers = { ...answers, ...next }; }
 	cleanDrafts() { return cleanDraftFiles(controlled(this.env), now); }
@@ -344,6 +377,10 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	failNext(operation: Operation, prefix = "", count = 1) { failures.push({ operation, prefix, remaining: count }); }
 	stallDeletes(prefix: string) { stalls.push(prefix); }
 	afterIO(action: Hook) { hook = action; }
+	/** Makes the next restores fail to take, as if the object never restarted into them. */
+	setRestoresTake(take: boolean) { restoresTake = take; }
+	/** The bookmarks restored, in order. */
+	restored() { return restored; }
 	state() {
 		return { jobs, modelCalls, sends: sends.map((message) => ({
 			from: message.from, to: message.to, cc: message.cc, bcc: message.bcc, subject: message.subject, text: message.text, html: message.html,
@@ -353,7 +390,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 			})),
 		})) };
 	}
-	reset() { exported = freshExport(); now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; answers = { quick: 0, deep: "personal" }; modelCalls = []; }
+	reset() { armed.clear(); restoresTake = true; restored.length = 0; exported = freshExport(); now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; answers = { quick: 0, deep: "personal" }; modelCalls = []; }
 
 	async consume(bodies: unknown[], attempts = 1) {
 		const acks: string[] = [];

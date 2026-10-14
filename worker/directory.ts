@@ -166,13 +166,20 @@ export async function mailboxExists(db: D1Database, mailboxId: string): Promise<
 }
 
 /**
- * In the directory and not hidden by its person's removal (worker/removals.ts). Asks for every column rather than
- * naming removed_with, so it answers before D1 is migrated: a mailbox's alarm can be the first thing to run after a
- * deploy, and until then the column's missing and nobody can have been removed.
+ * What the directory says of a mailbox: whether it's in use (not hidden by its person's removal: worker/removals.ts),
+ * and its latest restore to an earlier time (worker/restore.ts). Null if it isn't in the directory. Asks for every
+ * column rather than naming them, so it answers before D1 is migrated: a mailbox's alarm can be the first thing to run
+ * after a deploy, and until then a missing column means nobody was removed and nothing restored.
  */
-export async function mailboxInUse(db: D1Database, mailboxId: string): Promise<boolean> {
+export async function mailboxState(db: D1Database, mailboxId: string): Promise<{ inUse: boolean; restoreId: string | null } | null> {
 	const row = await db.prepare(`SELECT * FROM mailboxes WHERE id = ?1`).bind(mailboxId).first<Record<string, unknown>>();
-	return row !== null && row.removed_with == null;
+	if (!row) return null;
+	return { inUse: row.removed_with == null, restoreId: typeof row.restore_id === "string" ? row.restore_id : null };
+}
+
+/** In the directory and not hidden by its person's removal. */
+export async function mailboxInUse(db: D1Database, mailboxId: string): Promise<boolean> {
+	return (await mailboxState(db, mailboxId))?.inUse === true;
 }
 
 /** One of this install's addresses (normalized, no +tag), enabled or not. */
