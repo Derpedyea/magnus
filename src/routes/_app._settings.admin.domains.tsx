@@ -196,7 +196,13 @@ function DomainRow(props: { domain: DirectoryDomain; mailboxes: DirectoryMailbox
 		mutationFn: () => adminApi.removeDomain(domain.name),
 		onSuccess: () => Promise.all([qc.invalidateQueries({ queryKey: ["admin"] }), qc.invalidateQueries({ queryKey: ["me"] })]),
 	});
-	const items = [{ value: REJECT, label: "Reject" }, ...props.mailboxes.map((m) => ({ value: m.id, label: `Deliver to ${m.name}` }))];
+	// A removed person's mailbox is offered only while it's the one chosen, and refuses mail until they're restored.
+	const items = [
+		{ value: REJECT, label: "Reject" },
+		...props.mailboxes
+			.filter((m) => !m.removedWith || m.id === domain.catchAllMailboxId)
+			.map((m) => ({ value: m.id, label: m.removedWith ? `Reject while ${m.name} is removed` : `Deliver to ${m.name}` })),
+	];
 
 	return (
 		<TableRow>

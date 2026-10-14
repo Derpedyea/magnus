@@ -21,12 +21,13 @@ describe("shared draft files", () => {
 		await f.env.DIRECTORY.prepare("INSERT INTO draft_files (r2_key, mailbox_id, user_id, created_at) VALUES (?1, ?2, 'alice', ?3)")
 			.bind(file.r2Key, ids.alice, NOW - DAY - 1).run();
 		const content: Draft = { mailboxId: ids.alice, from: "alice@example.com", to: [{ address: "recipient@outside.test" }], cc: [], bcc: [], subject: "Original", text: "Hello", attachments: [file] };
+		const alice = await f.reader("alice");
 		async function save(subject: string) {
-			const saved = await saveDraft(f.env.DIRECTORY, "alice", crypto.randomUUID(), { revision: 0, changeId: crypto.randomUUID(), content: { ...content, subject } }, NOW);
+			const saved = await saveDraft(f.env.DIRECTORY, alice, crypto.randomUUID(), { revision: 0, changeId: crypto.randomUUID(), content: { ...content, subject } }, NOW);
 			if (!saved) throw new Error("Could not save fixture draft");
 			return saved;
 		}
-		return { file, original: await save("Original"), copy: await save("Conflict copy") };
+		return { file, alice, original: await save("Original"), copy: await save("Conflict copy") };
 	}
 
 	async function queue(draft: SavedDraft, mode: "attachments" | "links" = "attachments") {
@@ -63,7 +64,7 @@ describe("shared draft files", () => {
 	});
 
 	it("keeps another draft's source when a failed send is permanently deleted", async () => {
-		const { file, original, copy } = await copies();
+		const { file, alice, original, copy } = await copies();
 		const queued = await queue(original);
 		await f.control.failNext("get", file.r2Key, 8);
 		let at = NOW;
@@ -77,17 +78,17 @@ describe("shared draft files", () => {
 		expect(await mailbox().deleteTrash({ threadId: queued.threadId })).toEqual({ blocked: false, deleted: 1 });
 		await f.control.cleanDrafts();
 		expect(await (await f.env.MAIL.get(file.r2Key))?.text()).toBe("%PDF");
-		expect(await discardDraft(f.env.DIRECTORY, "alice", copy.id, copy.revision)).toBe(true);
+		expect(await discardDraft(f.env.DIRECTORY, alice, copy.id, copy.revision)).toBe(true);
 		await f.control.cleanDrafts();
 		expect(await f.env.MAIL.head(file.r2Key)).toBeNull();
 	});
 
 	it("retries a failed source cleanup after restart once the last draft is discarded", async () => {
-		const { file, original, copy } = await copies();
-		expect(await discardDraft(f.env.DIRECTORY, "alice", original.id, original.revision)).toBe(true);
+		const { file, alice, original, copy } = await copies();
+		expect(await discardDraft(f.env.DIRECTORY, alice, original.id, original.revision)).toBe(true);
 		await f.control.cleanDrafts();
 		expect(await f.env.MAIL.head(file.r2Key)).not.toBeNull();
-		expect(await discardDraft(f.env.DIRECTORY, "alice", copy.id, copy.revision)).toBe(true);
+		expect(await discardDraft(f.env.DIRECTORY, alice, copy.id, copy.revision)).toBe(true);
 		await f.control.failNext("delete", file.r2Key);
 		await expect(async () => f.control.cleanDrafts()).rejects.toThrow("Injected delete failure");
 		expect(await f.env.MAIL.head(file.r2Key)).not.toBeNull();

@@ -44,6 +44,7 @@ import {
 	withForward,
 } from "#shared";
 import { noteBody } from "#shared/markdown";
+import { mailboxInUse } from "../directory";
 import { retryAddressing } from "./retry";
 import { MIGRATIONS } from "./schema";
 
@@ -280,6 +281,26 @@ export class Mailbox extends DurableObject<Env> {
 				// Socket already closing; the runtime cleans it up.
 			}
 		}
+	}
+
+	/**
+	 * Asks the directory something the outbox needs to know before it sends. Undefined if it can't answer: nothing may
+	 * send, and the alarm asks again in a minute, since Cloudflare stops retrying an alarm that keeps failing and nothing
+	 * else would wake the outbox.
+	 */
+	private async askDirectory<T>(question: () => Promise<T>): Promise<{ answer: T } | undefined> {
+		try {
+			return { answer: await question() };
+		} catch (error) {
+			console.error(JSON.stringify({ msg: "outbox waiting on the directory", error: String(error) }));
+			await this.ctx.storage.setAlarm(Date.now() + TRASH_RETRY_MS);
+			return undefined;
+		}
+	}
+
+	/** Closes every open tab's live updates, as when its person is removed. Reconnecting checks who may read it again. */
+	async disconnect(): Promise<void> {
+		for (const ws of this.ctx.getWebSockets()) ws.close(1000, "mailbox removed");
 	}
 
 	/** Deletes everything this mailbox holds: its R2 objects, then its own storage. The directory rows go first. */
@@ -1608,6 +1629,15 @@ export class Mailbox extends DurableObject<Env> {
 				// A previous attempt was interrupted after handing off to Email Sending.
 				// Don't risk a duplicate: surface it to the user instead.
 				this.finishSend(row.message_id, row.thread_id, { status: "failed", detail: "Interrupted mid-send; check Sent logs before retrying." });
+				continue;
+			}
+			// A removed person's mailbox sends nothing (worker/removals.ts): what comes due meanwhile fails, for them to send
+			// again if they're restored. Asked for each message, as a removal can land while an earlier one goes, so none starts
+			// after it.
+			const inUse = await this.askDirectory(() => mailboxInUse(this.env.DIRECTORY, this.mailboxId()));
+			if (!inUse) return;
+			if (!inUse.answer) {
+				this.finishSend(row.message_id, row.thread_id, { status: "failed", detail: "Not sent: this mailbox was removed from Magnus when it was due." });
 				continue;
 			}
 			this.sql.exec(`UPDATE outbox SET attempts = attempts + 1 WHERE message_id = ?1`, row.message_id);

@@ -30,7 +30,7 @@ export const Route = createFileRoute("/_app/_settings/admin/addresses")({ compon
 function Addresses() {
 	const { addresses, mailboxes, domains } = useSuspenseQuery(directoryQuery).data;
 	const [adding, setAdding] = useState(false);
-	const names = new Map(mailboxes.map((m) => [m.id, m.name]));
+	const names = new Map(mailboxes.map((m) => [m.id, m.removedWith ? `${m.name} (removed)` : m.name]));
 
 	return (
 		<SettingsPage
@@ -60,7 +60,7 @@ function Addresses() {
 					</TableBody>
 				</Table>
 			)}
-			<AddAddressDialog open={adding} onOpenChange={setAdding} domains={domains} mailboxes={mailboxes} />
+			<AddAddressDialog open={adding} onOpenChange={setAdding} domains={domains} mailboxes={mailboxes.filter((m) => !m.removedWith)} />
 		</SettingsPage>
 	);
 }
@@ -106,6 +106,8 @@ function AddAddressDialog(props: { open: boolean; onOpenChange: (open: boolean) 
 	const [address, setAddress] = useState({ localPart: "", domain: props.domains[0]?.name ?? "" });
 	const [displayName, setDisplayName] = useState("");
 	const [mailboxIds, setMailboxIds] = useState<string[]>([]);
+	// Only those still listed: someone removed meanwhile drops off the list, and out of what's sent.
+	const listed = mailboxIds.filter((id) => props.mailboxes.some((m) => m.id === id));
 	const add = useMutation({
 		mutationFn: adminApi.addAddress,
 		onSuccess: async () => {
@@ -125,7 +127,7 @@ function AddAddressDialog(props: { open: boolean; onOpenChange: (open: boolean) 
 					className="flex flex-col gap-6"
 					onSubmit={(e) => {
 						e.preventDefault();
-						add.mutate({ ...address, localPart: address.localPart.trim(), displayName: displayName.trim() || undefined, mailboxIds });
+						add.mutate({ ...address, localPart: address.localPart.trim(), displayName: displayName.trim() || undefined, mailboxIds: listed });
 					}}
 				>
 					<DialogHeader>
@@ -157,7 +159,7 @@ function AddAddressDialog(props: { open: boolean; onOpenChange: (open: boolean) 
 						{add.error ? <FieldError>{errorMessage(add.error)}</FieldError> : null}
 					</FieldGroup>
 					<DialogFooter>
-						<Button type="submit" disabled={add.isPending || mailboxIds.length === 0}>
+						<Button type="submit" disabled={add.isPending || listed.length === 0}>
 							{add.isPending ? <Spinner data-icon="inline-start" /> : null}
 							Add address
 						</Button>

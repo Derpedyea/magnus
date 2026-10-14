@@ -85,7 +85,8 @@ describe("sign-in", () => {
 		expect(signsIn(again)).toBe(false);
 	});
 
-	it.each(["the passkey", "its person"])("stops a passkey signing in once %s is removed", async (removed) => {
+	// A removed person keeps their passkeys for a restore, but is refused a session.
+	it.each([["the passkey", 401], ["its person", 403]])("stops a passkey signing in once %s is removed", async (removed, status) => {
 		const key = await authenticator();
 		const id = await register(await f.login("alice"), key);
 		const removal = removed === "the passkey"
@@ -93,7 +94,7 @@ describe("sign-in", () => {
 			: await f.worker.fetch(`${ORIGIN}/api/admin/people/alice`, { method: "DELETE", headers: { Cookie: await f.login("admin"), Origin: ORIGIN } });
 		expect(removal.ok).toBe(true);
 		const { response } = await signIn(key);
-		expect(response.status).toBe(401);
+		expect(response.status).toBe(status);
 		expect(signsIn(response)).toBe(false);
 	});
 

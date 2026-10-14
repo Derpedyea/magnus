@@ -17,6 +17,9 @@ export const MAX_SIGNATURE = 2000;
 /** Adding a passkey needs a sign-in from this many minutes ago at most. */
 export const FRESH_SIGN_IN_MINUTES = 15;
 
+/** A removed person, and their mail, are deleted for good this many days after their removal. Until then they can be restored. */
+export const REMOVAL_DAYS = 30;
+
 export interface MailboxAddress {
 	address: string;
 	displayName: string | null;
@@ -68,12 +71,16 @@ export interface Person {
 	isAdmin: boolean;
 	/** Suspended: can't sign in, but their addresses keep receiving. */
 	banned: boolean;
+	/** Removed: when they and their mail are deleted for good, unless they're restored first. Null while they're here. */
+	deletesAt: number | null;
 }
 
 export interface DirectoryMailbox {
 	id: string;
 	name: string;
 	memberIds: string[];
+	/** The removed person it belonged to: it refuses mail, and goes when they do. Null while it's in use. */
+	removedWith: string | null;
 }
 
 export interface DirectoryAddress {

@@ -8,6 +8,7 @@ import {
 	ulid,
 	type User,
 } from "#shared";
+import { REMOVAL_MS } from "./removals";
 import { hasCloudflareToken } from "./settings";
 
 // Typed queries over the D1 directory (migrations/0001_init.sql): who can sign in, which domains and addresses
@@ -30,24 +31,35 @@ export async function resolveRecipient(db: D1Database, senders: string[], envelo
 	// Each sender, and everyone at its domain. A bounce's envelope sender is empty.
 	const blocks = senders.map(normalizeAddress).filter((s) => s.includes("@")).flatMap((s) => [s, `*@${splitAddress(s).domain}`]);
 
+	// A removed person's mailboxes (worker/removals.ts) take nothing.
 	const [routes, dom, blocked] = await Promise.all([
 		db
 			.prepare(
-				`SELECT r.mailbox_id FROM addresses a
+				`SELECT r.mailbox_id, m.removed_with IS NOT NULL AS removed FROM addresses a
 				 JOIN address_routes r ON r.address = a.address
+				 JOIN mailboxes m ON m.id = r.mailbox_id
 				 WHERE a.address = ?1 AND a.enabled = 1`,
 			)
 			.bind(base)
-			.all<{ mailbox_id: string }>(),
-		db.prepare(`SELECT receiving, catch_all_mailbox_id FROM domains WHERE name = ?1`).bind(domain).first<{ receiving: number; catch_all_mailbox_id: string | null }>(),
+			.all<{ mailbox_id: string; removed: number }>(),
+		db
+			.prepare(
+				`SELECT d.receiving, m.id AS catch_all_mailbox_id FROM domains d
+				 LEFT JOIN mailboxes m ON m.id = d.catch_all_mailbox_id AND m.removed_with IS NULL
+				 WHERE d.name = ?1`,
+			)
+			.bind(domain)
+			.first<{ receiving: number; catch_all_mailbox_id: string | null }>(),
 		db.prepare(`SELECT 1 AS hit FROM sender_blocks WHERE pattern IN (SELECT value FROM json_each(?1)) LIMIT 1`).bind(JSON.stringify(blocks)).first(),
 	]);
 
 	if (blocked) return { kind: "reject", reason: "5.7.1 Sender blocked" };
 	if (!dom || dom.receiving !== 1) return { kind: "reject", reason: "5.1.2 Domain not handled here" };
 
-	const mailboxIds = routes.results.map((r) => r.mailbox_id);
+	const mailboxIds = routes.results.filter((r) => r.removed === 0).map((r) => r.mailbox_id);
 	if (mailboxIds.length > 0) return { kind: "deliver", mailboxIds, subaddress: tag };
+	// Theirs alone: refused rather than left to the catch-all, so nobody else gets their mail while they can be restored.
+	if (routes.results.length > 0) return { kind: "reject", reason: "5.1.1 Mailbox unavailable" };
 	if (dom.catch_all_mailbox_id) return { kind: "deliver", mailboxIds: [dom.catch_all_mailbox_id], subaddress: tag };
 	return { kind: "reject", reason: "5.1.1 Mailbox unavailable" };
 }
@@ -61,15 +73,30 @@ export async function findUserByEmail(db: D1Database, email: string): Promise<Us
 	return row ? { id: row.id, email: row.email, name: row.name, isAdmin: row.role === "admin" } : null;
 }
 
-export async function getUserMailboxes(db: D1Database, userId: string): Promise<MailboxMembership[]> {
+/**
+ * Who a request is from: the person, and the session it came with. A session cookie vouches for itself for a while
+ * without asking D1, and Better Auth renews it from that alone (get-session), so a session that's been ended (signed
+ * out elsewhere, suspended, removed) can stay signed in. Reading mail asks D1 too: every query of a request's mailboxes
+ * checks its session still exists.
+ */
+export interface Reader {
+	userId: string;
+	sessionId: string;
+}
+
+/** SQL: the session in parameter `session` still exists, belongs to the person in `user`, and hasn't expired. */
+export const live = (session: string, user: string) =>
+	`EXISTS (SELECT 1 FROM auth_sessions s WHERE s.id = ${session} AND s.userId = ${user} AND s.expiresAt > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
+
+export async function getUserMailboxes(db: D1Database, reader: Reader): Promise<MailboxMembership[]> {
 	const [mailboxes, addresses] = await Promise.all([
 		db
 			.prepare(
 				`SELECT m.id, m.name, mm.role FROM mailbox_members mm
 				 JOIN mailboxes m ON m.id = mm.mailbox_id
-				 WHERE mm.user_id = ?1 ORDER BY m.created_at`,
+				 WHERE mm.user_id = ?1 AND ${live("?2", "?1")} ORDER BY m.created_at`,
 			)
-			.bind(userId)
+			.bind(reader.userId, reader.sessionId)
 			.all<Omit<MailboxMembership, "addresses">>(),
 		db
 			.prepare(
@@ -79,9 +106,9 @@ export async function getUserMailboxes(db: D1Database, userId: string): Promise<
 				 JOIN addresses a ON a.address = r.address
 				 JOIN domains d ON d.name = a.domain
 				 LEFT JOIN signatures s ON s.user_id = mm.user_id AND s.address = a.address
-				 WHERE mm.user_id = ?1 ORDER BY a.created_at, a.rowid`,
+				 WHERE mm.user_id = ?1 AND ${live("?2", "?1")} ORDER BY a.created_at, a.rowid`,
 			)
-			.bind(userId)
+			.bind(reader.userId, reader.sessionId)
 			.all<{ mailbox_id: string; address: string; display_name: string | null; enabled: number; can_send: number; signature: string | null; markdown: number | null }>(),
 	]);
 	return mailboxes.results.map((m) => ({
@@ -99,30 +126,53 @@ export async function getUserMailboxes(db: D1Database, userId: string): Promise<
 	}));
 }
 
-/** Blank clears it. Returns what was saved. */
-export async function setSignature(db: D1Database, userId: string, address: string, text: string): Promise<string | null> {
+/**
+ * Blank clears it. Returns what was saved. Written only while the request's session exists, since checking it before
+ * the write proves nothing by the time it lands.
+ */
+export async function setSignature(db: D1Database, reader: Reader, address: string, text: string): Promise<string | null> {
 	// The composer adds the "-- " delimiter itself, so one pasted from another client would show twice. The editor
 	// writes it as markdown, escaped (`\--`).
 	const signature = text.trim().replace(/^\\?--[ \t]*\n/, "").trim() || null;
 	await (signature
 		? db
 				.prepare(
-					`INSERT INTO signatures (user_id, address, text, markdown) VALUES (?1, ?2, ?3, 1)
+					`INSERT INTO signatures (user_id, address, text, markdown) SELECT ?1, ?2, ?3, 1 WHERE ${live("?4", "?1")}
 					 ON CONFLICT (user_id, address) DO UPDATE SET text = excluded.text, markdown = 1`,
 				)
-				.bind(userId, address, signature)
-		: db.prepare(`DELETE FROM signatures WHERE user_id = ?1 AND address = ?2`).bind(userId, address)
+				.bind(reader.userId, address, signature, reader.sessionId)
+		: db.prepare(`DELETE FROM signatures WHERE user_id = ?1 AND address = ?2 AND ${live("?3", "?1")}`).bind(reader.userId, address, reader.sessionId)
 	).run();
 	return signature;
 }
 
-export async function isMailboxMember(db: D1Database, userId: string, mailboxId: string): Promise<boolean> {
-	const row = await db.prepare(`SELECT 1 AS ok FROM mailbox_members WHERE user_id = ?1 AND mailbox_id = ?2`).bind(userId, mailboxId).first();
+/** For a request: whether its person may read the mailbox, with a session that still exists. */
+export async function isMailboxMember(db: D1Database, reader: Reader, mailboxId: string): Promise<boolean> {
+	const row = await db
+		.prepare(`SELECT 1 AS ok FROM mailbox_members WHERE user_id = ?1 AND mailbox_id = ?2 AND ${live("?3", "?1")}`)
+		.bind(reader.userId, mailboxId, reader.sessionId)
+		.first();
 	return row !== null;
 }
 
+/** For work no request is behind (an import running on): whether the person is still in the mailbox. */
+export async function hasMember(db: D1Database, mailboxId: string, userId: string): Promise<boolean> {
+	return (await db.prepare(`SELECT 1 AS ok FROM mailbox_members WHERE user_id = ?1 AND mailbox_id = ?2`).bind(userId, mailboxId).first()) !== null;
+}
+
+/** Still in the directory, its person removed or not: mail queued for it is delivered, so a restore loses none. */
 export async function mailboxExists(db: D1Database, mailboxId: string): Promise<boolean> {
 	return (await db.prepare(`SELECT 1 AS ok FROM mailboxes WHERE id = ?1`).bind(mailboxId).first()) !== null;
+}
+
+/**
+ * In the directory and not hidden by its person's removal (worker/removals.ts). Asks for every column rather than
+ * naming removed_with, so it answers before D1 is migrated: a mailbox's alarm can be the first thing to run after a
+ * deploy, and until then the column's missing and nobody can have been removed.
+ */
+export async function mailboxInUse(db: D1Database, mailboxId: string): Promise<boolean> {
+	const row = await db.prepare(`SELECT * FROM mailboxes WHERE id = ?1`).bind(mailboxId).first<Record<string, unknown>>();
+	return row !== null && row.removed_with == null;
 }
 
 /** One of this install's addresses (normalized, no +tag), enabled or not. */
@@ -173,8 +223,13 @@ export async function getDirectory(db: D1Database): Promise<Directory> {
 		db
 			.prepare(`SELECT name, zone_id, receiving, sending, catch_all_mailbox_id FROM domains ORDER BY created_at`)
 			.all<{ name: string; zone_id: string | null; receiving: number; sending: number; catch_all_mailbox_id: string | null }>(),
-		db.prepare(`SELECT id, name, email, role, banned FROM auth_users ORDER BY createdAt`).all<{ id: string; name: string; email: string; role: string | null; banned: number | null }>(),
-		db.prepare(`SELECT id, name FROM mailboxes ORDER BY created_at`).all<{ id: string; name: string }>(),
+		db
+			.prepare(
+				`SELECT u.id, u.name, u.email, u.role, u.banned, r.removed_at FROM auth_users u
+				 LEFT JOIN removed_people r ON r.user_id = u.id ORDER BY u.createdAt`,
+			)
+			.all<{ id: string; name: string; email: string; role: string | null; banned: number | null; removed_at: number | null }>(),
+		db.prepare(`SELECT id, name, removed_with FROM mailboxes ORDER BY created_at`).all<{ id: string; name: string; removed_with: string | null }>(),
 		db.prepare(`SELECT mailbox_id, user_id FROM mailbox_members`).all<{ mailbox_id: string; user_id: string }>(),
 		db.prepare(`SELECT address, domain, display_name FROM addresses ORDER BY domain, address`).all<{ address: string; domain: string; display_name: string | null }>(),
 		db.prepare(`SELECT address, mailbox_id FROM address_routes`).all<{ address: string; mailbox_id: string }>(),
@@ -185,10 +240,20 @@ export async function getDirectory(db: D1Database): Promise<Directory> {
 		domains: domains.results.map(
 			(d) => ({ name: d.name, zoneId: d.zone_id, receiving: d.receiving === 1, sending: d.sending === 1, catchAllMailboxId: d.catch_all_mailbox_id }),
 		),
-		people: people.results.map((p) => ({ id: p.id, name: p.name, email: p.email, isAdmin: p.role === "admin", banned: p.banned === 1 })),
-		mailboxes: mailboxes.results.map(
-			(m) => ({ id: m.id, name: m.name, memberIds: members.results.filter((r) => r.mailbox_id === m.id).map((r) => r.user_id) }),
-		),
+		people: people.results.map((p) => ({
+			id: p.id,
+			name: p.name,
+			email: p.email,
+			isAdmin: p.role === "admin",
+			banned: p.banned === 1,
+			deletesAt: p.removed_at === null ? null : p.removed_at + REMOVAL_MS,
+		})),
+		mailboxes: mailboxes.results.map((m) => ({
+			id: m.id,
+			name: m.name,
+			memberIds: members.results.filter((r) => r.mailbox_id === m.id).map((r) => r.user_id),
+			removedWith: m.removed_with,
+		})),
 		addresses: addresses.results.map(
 			(a) => ({
 				address: a.address,
@@ -224,8 +289,16 @@ export async function setDomainFlag(db: D1Database, name: string, flag: "receivi
 	await db.prepare(`UPDATE domains SET ${flag} = ?2 WHERE name = ?1`).bind(name, on ? 1 : 0).run();
 }
 
-export async function setCatchAll(db: D1Database, name: string, mailboxId: string | null): Promise<void> {
-	await db.prepare(`UPDATE domains SET catch_all_mailbox_id = ?2 WHERE name = ?1`).bind(name, mailboxId).run();
+/** False if there's no such domain, or the mailbox is gone or its person removed. */
+export async function setCatchAll(db: D1Database, name: string, mailboxId: string | null): Promise<boolean> {
+	const { meta } = await db
+		.prepare(
+			`UPDATE domains SET catch_all_mailbox_id = ?2 WHERE name = ?1
+			 AND (?2 IS NULL OR EXISTS (SELECT 1 FROM mailboxes WHERE id = ?2 AND removed_with IS NULL))`,
+		)
+		.bind(name, mailboxId)
+		.run();
+	return meta.changes === 1;
 }
 
 /** Its addresses go with it. Cloudflare keeps routing mail here, which is then rejected at SMTP time. */
@@ -240,18 +313,39 @@ export function createMailbox(db: D1Database, ownerId: string, name: string): { 
 		id,
 		statements: [
 			db.prepare(`INSERT INTO mailboxes (id, name) VALUES (?1, ?2)`).bind(id, name),
-			db.prepare(`INSERT INTO mailbox_members (mailbox_id, user_id, role) VALUES (?1, ?2, 'owner')`).bind(id, ownerId),
+			// Nobody if they were removed meanwhile, which fails the batch (user_id is NOT NULL): a removed person gets no
+			// mailbox that their deletion would leave behind.
+			db
+				.prepare(
+					`INSERT INTO mailbox_members (mailbox_id, user_id, role)
+					 VALUES (?1, (SELECT id FROM auth_users WHERE id = ?2 AND id NOT IN (SELECT user_id FROM removed_people)), 'owner')`,
+				)
+				.bind(id, ownerId),
 		],
 	};
 }
 
-/** Delivers to every listed mailbox (a group alias when there's more than one), and each may send as it. */
+/**
+ * Delivers to every listed mailbox (a group alias when there's more than one), and each may send as it. A mailbox
+ * that's gone or whose person was removed fails the batch (mailbox_id is NOT NULL).
+ */
 export function addAddress(db: D1Database, address: string, displayName: string | null, mailboxIds: string[]): D1PreparedStatement[] {
 	const { domain } = splitAddress(address);
 	return [
 		db.prepare(`INSERT INTO addresses (address, domain, display_name) VALUES (?1, ?2, ?3)`).bind(address, domain, displayName),
-		...mailboxIds.map((id) => db.prepare(`INSERT INTO address_routes (address, mailbox_id) VALUES (?1, ?2)`).bind(address, id)),
+		...mailboxIds.map((id) =>
+			db.prepare(`INSERT INTO address_routes (address, mailbox_id) VALUES (?1, (SELECT id FROM mailboxes WHERE id = ?2 AND removed_with IS NULL))`).bind(address, id),
+		),
 	];
+}
+
+/** Whether every one of these mailboxes is in the directory and in use. */
+export async function mailboxesInUse(db: D1Database, ids: string[]): Promise<boolean> {
+	const row = await db
+		.prepare(`SELECT count(*) AS n FROM mailboxes WHERE id IN (SELECT value FROM json_each(?1)) AND removed_with IS NULL`)
+		.bind(JSON.stringify([...new Set(ids)]))
+		.first<{ n: number }>();
+	return row?.n === new Set(ids).size;
 }
 
 export async function addressExists(db: D1Database, address: string): Promise<boolean> {
@@ -271,24 +365,10 @@ export async function unblockSender(db: D1Database, pattern: string): Promise<vo
 	await db.prepare(`DELETE FROM sender_blocks WHERE pattern = ?1`).bind(pattern).run();
 }
 
-/** Mailboxes only this person can read: they go when the person does. */
-export async function soleMailboxes(db: D1Database, userId: string): Promise<string[]> {
-	const { results } = await db
-		.prepare(
-			`SELECT mailbox_id FROM mailbox_members WHERE user_id = ?1
-			 AND mailbox_id NOT IN (SELECT mailbox_id FROM mailbox_members WHERE user_id != ?1)`,
-		)
-		.bind(userId)
-		.all<{ mailbox_id: string }>();
-	return results.map((r) => r.mailbox_id);
-}
-
-/** Addresses that delivered only to these mailboxes are removed too, so they start bouncing instead. */
-export async function deleteMailboxes(db: D1Database, ids: string[]): Promise<void> {
-	if (ids.length > 0) await db.batch(deleteMailboxStatements(db, ids));
-}
-
-/** deleteMailboxes as statements, for a batch that has to undo more along with them. */
+/**
+ * Deletes mailboxes from the directory, and the addresses that delivered only to them, so those start bouncing. For a
+ * batch that also records the mailboxes in mailbox_deletions, so their mail goes too (worker/removals.ts).
+ */
 export function deleteMailboxStatements(db: D1Database, ids: string[]): D1PreparedStatement[] {
 	const list = JSON.stringify(ids);
 	return [

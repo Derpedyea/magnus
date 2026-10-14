@@ -13,16 +13,16 @@ import {
 	blockSender,
 	codesWouldLandHere,
 	createMailbox,
-	deleteMailboxes,
 	deleteMailboxStatements,
 	getDirectory,
 	getDomain,
+	mailboxesInUse,
 	removeAddress,
 	removeDomain,
 	setCatchAll,
-	soleMailboxes,
 	unblockSender,
 } from "./directory";
+import { deleteMailboxObjects, removePerson, restorePerson } from "./removals";
 import { forgetCloudflareToken, getInstall, loadCloudflareToken, saveCloudflareToken } from "./settings";
 import { LocalPartSchema, NOT_THIS_INSTALL, TokenSchema } from "./setup";
 
@@ -109,8 +109,8 @@ export const admin = new Hono<AppEnv>()
 	)
 
 	.patch("/domains/:domain", zValidator("json", z.object({ catchAllMailboxId: z.string().nullable() })), async (c) => {
-		await setCatchAll(c.env.DIRECTORY, c.req.param("domain"), c.req.valid("json").catchAllMailboxId);
-		return c.body(null, 204);
+		const set = await setCatchAll(c.env.DIRECTORY, c.req.param("domain"), c.req.valid("json").catchAllMailboxId);
+		return set ? c.body(null, 204) : c.json({ error: "That domain or mailbox isn't in use." }, 400);
 	})
 
 	.delete("/domains/:domain", async (c) => {
@@ -153,9 +153,13 @@ export const admin = new Hono<AppEnv>()
 				// Another admin just took the address, or D1 failed. Undo both sides so nothing blocks a retry: D1 can report
 				// a failure for writes it applied, and if the batch did roll back, removing the mailbox finds nothing. One batch,
 				// so a failure here can't leave the person without the rest.
-				await db.batch([...deleteMailboxStatements(db, [mailbox.id]), db.prepare(`DELETE FROM auth_users WHERE id = ?1`).bind(user.id)]);
-				// Mail its address took in the meantime may have reached the mailbox already (see ingest).
-				c.executionCtx.waitUntil(c.env.MAILBOX.getByName(mailbox.id).destroy());
+				await db.batch([
+					...deleteMailboxStatements(db, [mailbox.id]),
+					db.prepare(`DELETE FROM auth_users WHERE id = ?1`).bind(user.id),
+					// Mail its address took in the meantime may have reached the mailbox already (see ingest).
+					db.prepare(`INSERT INTO mailbox_deletions (mailbox_id) VALUES (?1) ON CONFLICT DO NOTHING`).bind(mailbox.id),
+				]);
+				c.executionCtx.waitUntil(deleteMailboxObjects(c.env));
 				if (address && (await addressExists(db, address))) return c.json({ error: "That address is already taken." }, 409);
 				throw error;
 			}
@@ -163,17 +167,19 @@ export const admin = new Hono<AppEnv>()
 		},
 	)
 
-	/** Their own mailboxes go too, mail and all, along with addresses that delivered only there. */
+	/**
+	 * Shuts them out and stops their mail at once. They, their own mailboxes, and addresses that delivered only there are
+	 * deleted REMOVAL_DAYS later unless they're restored first (worker/removals.ts).
+	 */
 	.delete("/people/:id", async (c) => {
 		const id = c.req.param("id");
 		if (id === c.var.user.id) return c.json({ error: "You can't remove yourself." }, 400);
-		const db = c.env.DIRECTORY;
-		const mailboxIds = await soleMailboxes(db, id);
-		// Cascades to their sessions, sign-in methods, and memberships.
-		await db.prepare(`DELETE FROM auth_users WHERE id = ?1`).bind(id).run();
-		await deleteMailboxes(db, mailboxIds);
-		c.executionCtx.waitUntil(Promise.all(mailboxIds.map((mailboxId) => c.env.MAILBOX.getByName(mailboxId).destroy())));
-		return c.body(null, 204);
+		return (await removePerson(c.env, id, Date.now())) ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
+	})
+
+	.post("/people/:id/restore", async (c) => {
+		const restored = await restorePerson(c.env.DIRECTORY, c.req.param("id"));
+		return restored ? c.body(null, 204) : c.json({ error: "They've already been deleted for good." }, 404);
 	})
 
 	// ─── Addresses ────────────────────────────────────────────────────────────────
@@ -191,6 +197,7 @@ export const admin = new Hono<AppEnv>()
 		async (c) => {
 			const body = c.req.valid("json");
 			const address = `${body.localPart}@${body.domain}`;
+			if (!(await mailboxesInUse(c.env.DIRECTORY, body.mailboxIds))) return c.json({ error: "Someone you picked was removed. Pick again." }, 400);
 			await c.env.DIRECTORY.batch(addAddress(c.env.DIRECTORY, address, body.displayName || null, body.mailboxIds));
 			return c.json({ address }, 201);
 		},
