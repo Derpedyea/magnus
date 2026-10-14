@@ -265,9 +265,10 @@ describe("restoring a mailbox", () => {
 			letGo: async () => { await bob().destroy().then(() => undefined, () => undefined); },
 		},
 	])("keeps the originals it takes mail in again from, though another mailbox they were for $other", async ({ setup, letGo }) => {
-		// Other mailboxes' cleanup on the restore's clock.
-		await f.control.setNow(Date.now());
-		const at = Date.now() - 2 * DAY;
+		// Other mailboxes' cleanup on the restore's clock, as it was when the test began.
+		const clock = Date.now();
+		await f.control.setNow(clock);
+		const at = clock - 2 * DAY;
 		const id = ulid(at + 1000);
 		const rawKey = r2Keys.raw(id, at + 1000);
 		await f.env.MAIL.put(rawKey, RAW, { customMetadata: { envelopeFrom: "sender@outside.test", envelopeTo: "family@example.com", mailboxes: `${ids.alice},${ids.bob}` } });
@@ -278,7 +279,7 @@ describe("restoring a mailbox", () => {
 		expect(await f.env.MAIL.head(rawKey)).not.toBeNull();
 		expect(await bob().alarmAt()).toBe(ulidTime(await latestRestore()) + LEASE_MS + DAY);
 		// Once she can have taken it in again (here she never did), it goes as usual.
-		await restoreId(ulid(Date.now() - DAY - LEASE_MS - 1000));
+		await restoreId(ulid(clock - DAY - LEASE_MS - 1000));
 		await letGo();
 		expect(await f.env.MAIL.head(rawKey)).toBeNull();
 	});
