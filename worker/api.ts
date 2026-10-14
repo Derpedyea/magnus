@@ -441,6 +441,7 @@ const mb = new Hono<AppEnv>()
 		const queued = await c.var.mailbox.enqueueSend({
 			id: saved?.send_id ?? undefined,
 			mailboxId: c.var.mailboxId,
+			senderId: userId,
 			from: { address: identity.address, name: identity.displayName ?? c.var.user.name },
 			to: req.to,
 			cc: req.cc,
@@ -477,7 +478,7 @@ const mb = new Hono<AppEnv>()
 		const identity = await sendIdentity(c, target.from);
 		if (!identity) return c.json({ error: `This mailbox can't send as ${target.from}` }, 403);
 		const local = await localTo(c, identity.address, target.recipients);
-		return (await c.var.mailbox.retrySend(messageId, local)) ? c.body(null, 204) : c.json({ error: "Nothing to retry" }, 409);
+		return (await c.var.mailbox.retrySend(messageId, local, c.var.user.id)) ? c.body(null, 204) : c.json({ error: "Nothing to retry" }, 409);
 	})
 
 	/** Live updates: the WebSocket terminates in the Mailbox DO (hibernatable). */

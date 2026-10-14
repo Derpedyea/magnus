@@ -45,10 +45,13 @@ export async function removePerson(env: Env, userId: string, now: number): Promi
 		// directory.ts). Their browsers' push subscriptions go with the sessions.
 		db.prepare(`DELETE FROM auth_sessions WHERE userId = ?1`).bind(userId),
 	]);
-	const hidden = await db.prepare(`SELECT id FROM mailboxes WHERE removed_with = ?1`).bind(userId).all<{ id: string }>();
-	// Open tabs would otherwise hear about new mail until their socket's next sign-in check (SOCKET_MS). Done again by a
-	// repeated removal, so a failure here can be retried.
-	await Promise.all(hidden.results.map((m) => env.MAILBOX.getByName(m.id).disconnect()));
+	// Their open tabs would otherwise hear about changes until their socket's next sign-in check, in every mailbox they
+	// were in, shared ones too. Done again by a repeated removal, so a failure here can be retried.
+	const wereIn = await db
+		.prepare(`SELECT json_extract(m.value, '$.mailbox') AS id FROM removed_people r, json_each(r.memberships) m WHERE r.user_id = ?1`)
+		.bind(userId)
+		.all<{ id: string }>();
+	await Promise.all(wereIn.results.map((m) => env.MAILBOX.getByName(m.id).recheckSockets()));
 	return isRemoved(db, userId);
 }
 

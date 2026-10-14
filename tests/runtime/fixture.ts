@@ -92,7 +92,7 @@ export function inbound(mailboxId: string, id = "inbound-1"): IngestInput {
 
 export function sendInput(mailboxId: string, overrides: Partial<SendInput> = {}): SendInput {
 	return {
-		mailboxId, from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "recipient@outside.test" }], cc: [], bcc: [],
+		mailboxId, senderId: "alice", from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "recipient@outside.test" }], cc: [], bcc: [],
 		subject: "Hello", markdown: "Hello **world**", attachments: [], links: [], linkBase: `https://magnus.test/f/${mailboxId}/`, delayMs: 0, localRecipients: [], localOnly: false, ...overrides,
 	};
 }

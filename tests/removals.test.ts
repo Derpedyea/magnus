@@ -1,6 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { r2Keys, REMOVAL_DAYS } from "#shared";
+import { LIVE_RECHECK, r2Keys, REMOVAL_DAYS } from "#shared";
 import { addAddress, createMailbox, setSignature } from "../worker/directory";
 import { discardDraft, saveDraft } from "../worker/drafts";
 import { fixture, type Fixture, inbound, type Mailboxes, MIME, NOW, sendInput } from "./runtime/fixture";
@@ -309,6 +309,45 @@ describe("removing a person", () => {
 			await f.env.DIRECTORY.prepare("ALTER TABLE mailboxes ADD COLUMN removed_with TEXT").run();
 		}
 		expect((await f.control.state()).sends).toHaveLength(1);
+	});
+
+	it("makes their open tabs check their sign-in at once, in mailboxes they shared too", async () => {
+		const listen = async (mailboxId: string, cookie: string) => {
+			const res = await f.worker.fetch(`${ORIGIN}/api/mailboxes/${mailboxId}/live`, { headers: { Cookie: cookie, Origin: ORIGIN, Upgrade: "websocket" } });
+			if (!res.webSocket) throw new Error(`No socket: ${res.status}`);
+			const heard: string[] = [];
+			res.webSocket.addEventListener("message", (e) => heard.push(String(e.data)));
+			res.webSocket.accept();
+			return heard;
+		};
+		const alice = await f.login("alice");
+		const own = await listen(ids.alice, alice);
+		const shared = await listen(ids.shared, alice);
+		await remove();
+		await vi.waitFor(() => expect([own, shared]).toEqual([[LIVE_RECHECK], [LIVE_RECHECK]]));
+		// Bob, still in the shared mailbox, reconnects; Alice's tab can't.
+		await listen(ids.shared, await f.login("bob"));
+		await expect(listen(ids.shared, alice)).rejects.toThrow("No socket: 404");
+	});
+
+	it("sends nothing they queued in a mailbox they shared, and what the others queued still goes", async () => {
+		const mailbox = f.env.MAILBOX.getByName(ids.shared);
+		await mailbox.enqueueSend(sendInput(ids.shared, { senderId: "alice", subject: "Alice's", delayMs: 10_000 }));
+		await mailbox.enqueueSend(sendInput(ids.shared, { senderId: "bob", subject: "Bob's", delayMs: 10_000 }));
+		await remove();
+		await f.control.setNow(NOW + 10_000);
+		// A directory that can't say sends nothing, and the outbox asks again in a minute.
+		await f.control.failNext("directory", "SELECT 1 AS ok FROM mailbox_members WHERE user_id = ?1 AND mailbox_id = ?2");
+		await mailbox.drain();
+		expect((await f.control.state()).sends).toEqual([]);
+		expect(await mailbox.alarmAt()).toBe(NOW + 10_000 + 60_000);
+
+		await mailbox.drain();
+		expect((await f.control.state()).sends.map((s) => s.subject)).toEqual(["Bob's"]);
+		const storage = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.shared });
+		expect(await storage.exec("SELECT subject, delivery_detail FROM messages WHERE delivery_status = 'failed'")).toEqual([
+			{ subject: "Alice's", delivery_detail: "Not sent: whoever sent it had left this mailbox when it was due." },
+		]);
 	});
 
 	it("sends nothing of theirs that comes due while they're removed", async () => {
