@@ -75,7 +75,7 @@ async function restoreClaimed(env: Env, mailboxId: string, restoreId: string, ta
 	// restarts it before restart() does. The state from before still works as usual: it's marked pending.
 	const named = await env.DIRECTORY.prepare(`UPDATE mailboxes SET restore_id = ?2 WHERE id = ?1 AND restoring = ?2`).bind(mailboxId, restoreId).run();
 	if (named.meta.changes !== 1) throw new Error("Lost hold of the mailbox before restoring it. Restore again.");
-	const undo = { at: undoAt, bookmark: await mailbox().armRestore(bookmark) };
+	const undo = { at: undoAt, bookmark: await mailbox().armRestore(bookmark, restoreId) };
 	// From here the mailbox may be rewound, so a failure still answers with the way back (RestoreIncomplete).
 	try {
 		// The reset makes this call fail. finishRestore() checks the restore took, and gives this error if it didn't.
@@ -83,15 +83,23 @@ async function restoreClaimed(env: Env, mailboxId: string, restoreId: string, ta
 			() => null,
 			(error: unknown) => error,
 		);
-		const applied = await mailbox().finishRestore(restoreId);
+		const applied = await mailbox().finishRestore(restoreId, until);
 		if (!applied) throw new Error("The mailbox didn't restart into the restore. Restore again.", { cause: restart });
 		// A draft caught mid-send still says so in D1, but the restore took away the mailbox's record of that send, so
-		// retrying it would send it again. It goes back to being a draft, with a new revision: the retry fails, and its
-		// sender decides.
-		await env.DIRECTORY.prepare(`UPDATE drafts SET state = 'active', revision = revision + 1, send_id = NULL WHERE mailbox_id = ?1 AND state = 'sending'`)
-			.bind(mailboxId)
-			.run();
-		return { kind: "done", undo, ...applied, ...(await replayMail(env, mailboxId, target.at)) };
+		// retrying it would send it again. It goes back to being a draft, with a new revision, for its sender to decide, and
+		// the mailbox refuses its old send for good (endRestore()). One read and write, while this restore holds the mailbox.
+		const lease = `EXISTS (SELECT 1 FROM mailboxes WHERE id = ?1 AND restoring = ?2)`;
+		const [caught] = await env.DIRECTORY.batch<{ send_id: string }>([
+			env.DIRECTORY.prepare(`SELECT send_id FROM drafts WHERE mailbox_id = ?1 AND state = 'sending' AND send_id IS NOT NULL AND ${lease}`).bind(mailboxId, restoreId),
+			env.DIRECTORY.prepare(`UPDATE drafts SET state = 'active', revision = revision + 1, send_id = NULL WHERE mailbox_id = ?1 AND state = 'sending' AND ${lease}`).bind(
+				mailboxId,
+				restoreId,
+			),
+		]);
+		const replayed = await replayMail(env, mailboxId, target.at);
+		// Sends go again only now, so none can be one of those drafts, nor happen before a retry rewinds again.
+		await mailbox().endRestore(restoreId, (caught?.results ?? []).map((r) => r.send_id));
+		return { kind: "done", undo, ...applied, ...replayed };
 	} catch (error) {
 		throw new RestoreIncomplete(undo, error);
 	}

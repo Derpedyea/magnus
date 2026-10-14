@@ -2,7 +2,8 @@ import { createTestHarness } from "wrangler";
 import type { TestEnv } from "./worker";
 import { NOW } from "./clock";
 import type * as WorkerModule from "./worker";
-import { type InboundJob, type IngestInput, r2Keys, type SendInput } from "#shared";
+import { type InboundJob, type IngestInput, r2Keys, type SendInput, type SendQueued } from "#shared";
+import type { SendRefused } from "../../worker/mailbox/mailbox";
 
 export { NOW };
 
@@ -98,8 +99,8 @@ export function sendInput(mailboxId: string, overrides: Partial<SendInput> = {})
 }
 
 /** A send the mailbox queued, for a test that needs it to have been: not refused, by a restore or otherwise. */
-export function asQueued<T extends object>(result: T | null | "restoring"): T {
-	if (result === null || result === "restoring") throw new Error(`Not queued: ${result}`);
+export function asQueued(result: SendQueued | SendRefused): SendQueued {
+	if ("refused" in result) throw new Error(`Not queued: ${result.refused}`);
 	return result;
 }
 

@@ -16,9 +16,8 @@ Cloudflare's own words: Durable Objects can be restored "to any point in time in
 ## Restoring a mailbox
 
 For when a bug or a bad deploy has spoiled one mailbox, or all of them. A restore puts the whole mailbox back as it
-was at that moment. Single threads can't be restored. Restore while nobody is using the mailbox (suspend its person
-first in Admin › People if need be): what they do in it meanwhile is undone, and it refuses to send until the restore
-is done.
+was at that moment. Single threads can't be restored. While it restores, usually seconds, the mailbox is out of use:
+its people see "being restored" and can try again shortly. Mail sent to it meanwhile still arrives.
 
 1. Find the mailbox's id. It's in the address bar when you open mail (`/inbox/<mailboxId>/…`), and every mailbox is
    listed at `/api/admin/directory`.
@@ -69,8 +68,8 @@ for (const m of mailboxes) {
 ```
 
 A restore that fails partway (a 500 answer) is finished by running it again with the same time. Until then the mailbox
-refuses to send, for at most 10 minutes. A mailbox restores one at a time: another restore of it while one runs
-answers 409.
+refuses to send: for at most 10 minutes, or, if the answer says it didn't restart into the restore, until it does. A
+mailbox restores one at a time: another restore of it while one runs answers 409.
 
 ## Restoring the directory
 

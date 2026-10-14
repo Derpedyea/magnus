@@ -155,6 +155,21 @@ export async function isMailboxMember(db: D1Database, reader: Reader, mailboxId:
 	return row !== null;
 }
 
+/**
+ * Whether the reader may use this mailbox now: "restoring" while an admin restores it to an earlier time
+ * (worker/restore.ts), when it's out of use. Null if they aren't in it, or their session has ended.
+ */
+export async function mailboxAccess(db: D1Database, reader: Reader, mailboxId: string, now: number): Promise<"member" | "restoring" | null> {
+	const row = await db
+		.prepare(
+			`SELECT coalesce(b.restoring_until, 0) > ?4 AS restoring FROM mailbox_members mm JOIN mailboxes b ON b.id = mm.mailbox_id
+			 WHERE mm.user_id = ?1 AND mm.mailbox_id = ?2 AND ${live("?3", "?1")}`,
+		)
+		.bind(reader.userId, mailboxId, reader.sessionId, now)
+		.first<{ restoring: number }>();
+	return row === null ? null : row.restoring ? "restoring" : "member";
+}
+
 /** For work no request is behind (an import running on): whether the person is still in the mailbox. */
 export async function hasMember(db: D1Database, mailboxId: string, userId: string): Promise<boolean> {
 	return (await db.prepare(`SELECT 1 AS ok FROM mailbox_members WHERE user_id = ?1 AND mailbox_id = ?2`).bind(userId, mailboxId).first()) !== null;
@@ -171,10 +186,17 @@ export async function mailboxExists(db: D1Database, mailboxId: string): Promise<
  * column rather than naming them, so it answers before D1 is migrated: a mailbox's alarm can be the first thing to run
  * after a deploy, and until then a missing column means nobody was removed and nothing restored.
  */
-export async function mailboxState(db: D1Database, mailboxId: string): Promise<{ inUse: boolean; restoreId: string | null } | null> {
+export async function mailboxState(
+	db: D1Database,
+	mailboxId: string,
+): Promise<{ inUse: boolean; restoreId: string | null; restoringUntil: number | null } | null> {
 	const row = await db.prepare(`SELECT * FROM mailboxes WHERE id = ?1`).bind(mailboxId).first<Record<string, unknown>>();
 	if (!row) return null;
-	return { inUse: row.removed_with == null, restoreId: typeof row.restore_id === "string" ? row.restore_id : null };
+	return {
+		inUse: row.removed_with == null,
+		restoreId: typeof row.restore_id === "string" ? row.restore_id : null,
+		restoringUntil: typeof row.restoring_until === "number" ? row.restoring_until : null,
+	};
 }
 
 /** In the directory and not hidden by its person's removal. */

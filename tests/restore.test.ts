@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { r2Keys, ulid, ulidTime } from "#shared";
-import { claimDraft } from "../worker/drafts";
+import { claimDraft, finishDraftSend, releaseDraft } from "../worker/drafts";
 import { asQueued, fixture, type Fixture, inbound, type Mailboxes, NOW, sendInput } from "./runtime/fixture";
 
 const ORIGIN = "https://magnus.test";
@@ -89,19 +89,31 @@ describe("restoring a mailbox", () => {
 		expect((await f.control.state()).sends).toHaveLength(1);
 	});
 
-	it("refuses sends from when it begins, so none is lost to it, till it finishes or its hold runs out", async () => {
+	const send = async () => f.worker.fetch(`${ORIGIN}/api/mailboxes/${ids.alice}/send`, {
+		method: "POST", headers: { Cookie: await f.login("alice"), Origin: ORIGIN, "Content-Type": "application/json" },
+		body: JSON.stringify({ from: "alice@example.com", to: [{ address: "friend@outside.test" }], subject: "Hi", text: "Hi", delaySeconds: 0 }),
+	});
+	const hold = (until: number) => f.env.DIRECTORY.prepare("UPDATE mailboxes SET restoring = 'other', restoring_until = ?2 WHERE id = ?1").bind(ids.alice, until).run();
+
+	it("is out of use while it restores", async () => {
+		await hold(Date.now() + 60_000);
+		const busy = await f.worker.fetch(`${ORIGIN}/api/mailboxes/${ids.alice}/threads/none`, { headers: { Cookie: await f.login("alice"), Origin: ORIGIN } });
+		expect(busy.status).toBe(503);
+		expect(busy.headers.get("Retry-After")).toBe("60");
+		expect(await busy.json()).toEqual({ error: expect.stringContaining("being restored") });
+		await hold(Date.now() - 1);
+		expect((await f.worker.fetch(`${ORIGIN}/api/mailboxes/${ids.alice}/threads/none`, { headers: { Cookie: await f.login("alice"), Origin: ORIGIN } })).status).toBe(404);
+	});
+
+	it("refuses sends from when it begins, so none is lost to it, till its hold runs out if it never armed", async () => {
 		// On the restore's clock, as the hold is.
 		await f.control.setNow(Date.now());
 		await f.control.setSendErrors(["E_REFUSED"]);
 		const failed = asQueued(await mailbox().enqueueSend(sendInput(ids.alice)));
 		await mailbox().drain();
-		// It doesn't restart into the restore, so the restore fails and is armed for the next start.
-		await f.control.setRestoresTake(false);
+		// Prepared, then it fails before the restore is armed.
+		await f.control.failNext("directory", "UPDATE mailboxes SET restore_id");
 		expect((await restore(hourAgo())).status).toBe(500);
-		const send = async () => f.worker.fetch(`${ORIGIN}/api/mailboxes/${ids.alice}/send`, {
-			method: "POST", headers: { Cookie: await f.login("alice"), Origin: ORIGIN, "Content-Type": "application/json" },
-			body: JSON.stringify({ from: "alice@example.com", to: [{ address: "friend@outside.test" }], subject: "Hi", text: "Hi", delaySeconds: 0 }),
-		});
 		const refused = await send();
 		expect(refused.status).toBe(409);
 		expect(await refused.json()).toEqual({ error: expect.stringContaining("being restored") });
@@ -109,11 +121,30 @@ describe("restoring a mailbox", () => {
 
 		await f.control.setNow(Date.now() + LEASE_MS + 1000);
 		expect((await send()).status).toBe(202);
-		await f.control.setSendErrors([]);
-		await mailbox().drain();
-		// Tried again, it finishes.
-		await f.control.setRestoresTake(true);
-		expect((await restore(hourAgo())).status).toBe(200);
+	});
+
+	it("refuses sends while armed, past its hold, till the mailbox restarts into it", async () => {
+		await f.control.setNow(Date.now());
+		await f.control.setRestartsReach(false);
+		const response = await restore(hourAgo());
+		expect(response.status).toBe(500);
+		expect(await response.json()).toMatchObject({ error: expect.stringContaining("Restore again"), undo: { bookmark: expect.any(String) } });
+		await f.control.setNow(Date.now() + LEASE_MS + 1000);
+		expect(await mailbox().enqueueSend(sendInput(ids.alice))).toEqual({ refused: "restoring" });
+		// Cloudflare restarts it, into the restore.
+		await Promise.resolve().then(() => mailbox().abortNow()).catch(() => undefined);
+		asQueued(await mailbox().enqueueSend(sendInput(ids.alice)));
+		expect(await f.control.restored()).toHaveLength(1);
+	});
+
+	it("refuses sends in the restored state till the restore is done", async () => {
+		// Restarted into it, but the restore hasn't finished: it still holds the mailbox.
+		await f.control.setNow(Date.now());
+		await restoreId(ulid());
+		await hold(Date.now() + 60_000);
+		expect(await mailbox().enqueueSend(sendInput(ids.alice))).toEqual({ refused: "restoring" });
+		await f.control.setNow(Date.now() + 120_000);
+		asQueued(await mailbox().enqueueSend(sendInput(ids.alice)));
 	});
 
 	it("stops every file the mailbox shares by link, before serving one", async () => {
@@ -148,7 +179,7 @@ describe("restoring a mailbox", () => {
 		// Rewound by attempt 1 (no mark of it), which failed before applying; attempt 2 then fails before rewinding.
 		await mailbox().enqueueSend(sendInput(ids.alice));
 		await restoreId("attempt-1");
-		await f.control.setRestoresTake(false);
+		await f.control.setRestartsReach(false);
 		expect((await restore(hourAgo())).status).toBe(500);
 		await mailbox().drain();
 		expect((await f.control.state()).sends).toEqual([]);
@@ -183,12 +214,36 @@ describe("restoring a mailbox", () => {
 	});
 
 	it("turns a draft caught mid-send back into a draft, so retrying its send can't send it again", async () => {
+		// On the restore's clock, as its hold on sends is.
+		await f.control.setNow(Date.now());
 		await f.env.DIRECTORY.prepare(
 			"INSERT INTO drafts (id, user_id, mailbox_id, content, revision, change_id, updated_at, state, send_id) VALUES ('d1', 'alice', ?1, '{}', 3, 'c', 1, 'sending', 'draft-d1')",
 		).bind(ids.alice).run();
 		expect((await restore(hourAgo())).status).toBe(200);
 		expect(await f.env.DIRECTORY.prepare("SELECT state, revision, send_id FROM drafts WHERE id = 'd1'").first()).toEqual({ state: "active", revision: 4, send_id: null });
 		expect(await claimDraft(f.env.DIRECTORY, "alice", "d1", 3, "draft-d1")).toBeNull();
+		// A request that claimed it before the restore, and reaches the mailbox only now, is refused for good. Others go.
+		expect(await mailbox().enqueueSend(sendInput(ids.alice, { id: "draft-d1" }))).toEqual({ refused: "revoked" });
+		asQueued(await mailbox().enqueueSend(sendInput(ids.alice)));
+	});
+
+	it("leaves the drafts to another restore that took the mailbox over", async () => {
+		await f.env.DIRECTORY.prepare(
+			"INSERT INTO drafts (id, user_id, mailbox_id, content, revision, change_id, updated_at, state, send_id) VALUES ('d1', 'alice', ?1, '{}', 3, 'c', 1, 'sending', 'draft-d1')",
+		).bind(ids.alice).run();
+		await f.control.loseHoldAfterFinish(ids.alice);
+		await restore(hourAgo());
+		expect(await f.env.DIRECTORY.prepare("SELECT state, revision FROM drafts WHERE id = 'd1'").first()).toEqual({ state: "sending", revision: 3 });
+	});
+
+	it("lets a send mark its draft sent, or a draft again, only while the draft is still that send's", async () => {
+		// Put back by a restore, then claimed by a send from another device: the first send's last steps change nothing.
+		await f.env.DIRECTORY.prepare(
+			"INSERT INTO drafts (id, user_id, mailbox_id, content, revision, change_id, updated_at, state, send_id) VALUES ('d1', 'alice', ?1, '{\"subject\":\"Hi\"}', 4, 'c', 1, 'sending', 'draft-d1-4')",
+		).bind(ids.alice).run();
+		await releaseDraft(f.env.DIRECTORY, "alice", "d1", "draft-d1-3");
+		await finishDraftSend(f.env.DIRECTORY, "alice", "d1", "draft-d1-3", { id: "draft-d1-3", threadId: "t", sendAt: 0 });
+		expect(await f.env.DIRECTORY.prepare("SELECT state, send_id, content FROM drafts WHERE id = 'd1'").first()).toEqual({ state: "sending", send_id: "draft-d1-4", content: '{"subject":"Hi"}' });
 	});
 
 	it("answers with the way back when it fails after rewinding", async () => {
@@ -212,7 +267,6 @@ describe("restoring a mailbox", () => {
 	});
 
 	it("restores one at a time, and takes over from one that died", async () => {
-		const hold = (until: number) => f.env.DIRECTORY.prepare("UPDATE mailboxes SET restoring = 'other', restoring_until = ?2 WHERE id = ?1").bind(ids.alice, until).run();
 		await hold(Date.now() + 60_000);
 		expect((await restore(hourAgo())).status).toBe(409);
 		expect(await f.control.restored()).toEqual([]);
@@ -246,7 +300,7 @@ describe("restoring a mailbox", () => {
 	});
 
 	const bob = () => f.env.MAILBOX.getByName(ids.bob);
-	it.each([
+	const others = [
 		{
 			other: "let its copy go",
 			setup: async (id: string, rawKey: string, at: number) => {
@@ -264,7 +318,9 @@ describe("restoring a mailbox", () => {
 			},
 			letGo: async () => { await bob().destroy().then(() => undefined, () => undefined); },
 		},
-	])("keeps the originals it takes mail in again from, though another mailbox they were for $other", async ({ setup, letGo }) => {
+	];
+	it.each(others.flatMap((other) => [{ ...other, when: "before it asks" }, { ...other, when: "while it asks" }]))(
+		"keeps the originals it takes mail in again from, though another mailbox they were for $other, restored $when", async ({ setup, letGo, when }) => {
 		// Other mailboxes' cleanup on the restore's clock, as it was when the test began.
 		const clock = Date.now();
 		await f.control.setNow(clock);
@@ -273,7 +329,9 @@ describe("restoring a mailbox", () => {
 		const rawKey = r2Keys.raw(id, at + 1000);
 		await f.env.MAIL.put(rawKey, RAW, { customMetadata: { envelopeFrom: "sender@outside.test", envelopeTo: "family@example.com", mailboxes: `${ids.alice},${ids.bob}` } });
 		await setup(id, rawKey, at + 1000);
-		expect(await (await restore(new Date(at).toISOString())).json()).toMatchObject({ replayed: 1 });
+		if (when === "before it asks") expect(await (await restore(new Date(at).toISOString())).json()).toMatchObject({ replayed: 1 });
+		// Or as Bob's cleanup asks her what she holds: her answer comes from the restored state.
+		else await f.control.restoreAsItAnswers(ids.alice);
 		// Till Alice has it again, she doesn't hold it. Bob's cleanup comes back once she can have.
 		await letGo();
 		expect(await f.env.MAIL.head(rawKey)).not.toBeNull();

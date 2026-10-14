@@ -76,9 +76,16 @@ export async function claimDraft(db: D1Database, userId: string, id: string, rev
 	return row?.revision === revision && (row.state === "sending" || row.state === "sent") ? row : null;
 }
 
-export async function finishDraftSend(db: D1Database, userId: string, id: string, queued: SendQueued) {
-	await db.prepare(`UPDATE drafts SET state = 'sent', content = '{}', queued = ?3 WHERE id = ?1 AND user_id = ?2 AND state = 'sending'`)
-		.bind(id, userId, JSON.stringify(queued)).run();
+/** Marks a draft sent, if it's still claimed by this send: a restore can have put it back since (worker/restore.ts). */
+export async function finishDraftSend(db: D1Database, userId: string, id: string, sendId: string, queued: SendQueued) {
+	await db.prepare(`UPDATE drafts SET state = 'sent', content = '{}', queued = ?3 WHERE id = ?1 AND user_id = ?2 AND state = 'sending' AND send_id = ?4`)
+		.bind(id, userId, JSON.stringify(queued), sendId).run();
+}
+
+/** Makes a draft whose send was refused a draft again, if it's still claimed by that send and not another since. */
+export async function releaseDraft(db: D1Database, userId: string, id: string, sendId: string) {
+	await db.prepare(`UPDATE drafts SET state = 'active', send_id = NULL WHERE id = ?1 AND user_id = ?2 AND state = 'sending' AND send_id = ?3`)
+		.bind(id, userId, sendId).run();
 }
 
 /** Hourly, bounded cleanup. Failed deletions retain their row and are retried on the next run. */

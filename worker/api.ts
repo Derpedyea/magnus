@@ -36,14 +36,14 @@ import { ProtonAnswerSchema, ProtonJobRefSchema, ProtonStartSchema } from "#shar
 import { admin } from "./admin";
 import { auth, currentUser, endReplacedSession, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
-import { getSendIdentities, getUserMailboxes, isMailboxMember, type Reader, resolveRecipient, setSignature } from "./directory";
+import { getSendIdentities, getUserMailboxes, mailboxAccess, type Reader, resolveRecipient, setSignature } from "./directory";
 import { fileHeaders, renderEmailHtml, serveFile } from "./html";
 import type { Mailbox } from "./mailbox/mailbox";
 import { getInstall } from "./settings";
 import { setup } from "./setup";
 import { draftRoutes } from "./draft-api";
 import { pushRoutes } from "./push-api";
-import { claimDraft, finishDraftSend, readDraft } from "./drafts";
+import { claimDraft, finishDraftSend, readDraft, releaseDraft } from "./drafts";
 import { importMessage } from "./mail/import";
 
 type MailboxStub = DurableObjectStub<Mailbox>;
@@ -82,8 +82,8 @@ app.on(["GET", "POST"], "/auth/*", async (c) => {
 // narrows them to some of the user's addresses. Everything else stays mailbox-scoped below.
 
 const PAGE = 50;
-/** A send refused while an admin restores the mailbox (Mailbox.prepareRestore()), which would lose it. */
-const RESTORING = "This mailbox is being restored to an earlier time. Send again in a few minutes.";
+/** While an admin restores the mailbox to an earlier time (worker/restore.ts), it's out of use. */
+const RESTORING = "This mailbox is being restored to an earlier time. Try again in a few minutes.";
 /** Enough to find anyone by typing, small enough to send whole so matching needs no round trip. */
 const CONTACTS = 1000;
 
@@ -200,8 +200,13 @@ const protonImport = (c: Context<AppEnv>) => c.env.PROTON_IMPORT.getByName(c.var
 const mb = new Hono<AppEnv>()
 	.use("*", async (c, next) => {
 		const mailboxId = c.req.param("mailboxId");
-		if (!mailboxId || !(await isMailboxMember(c.env.DIRECTORY, c.var.reader, mailboxId))) {
-			return c.json({ error: "Not found" }, 404);
+		const access = mailboxId ? await mailboxAccess(c.env.DIRECTORY, c.var.reader, mailboxId, Date.now()) : null;
+		if (!mailboxId || !access) return c.json({ error: "Not found" }, 404);
+		// So nothing done in it meanwhile is lost to the rewind. A request already past here meets the mailbox's own hold
+		// on sends (Mailbox.prepareRestore()).
+		if (access === "restoring") {
+			c.header("Retry-After", "60");
+			return c.json({ error: RESTORING }, 503);
 		}
 		c.set("mailboxId", mailboxId);
 		c.set("mailbox", c.env.MAILBOX.getByName(mailboxId));
@@ -370,7 +375,7 @@ const mb = new Hono<AppEnv>()
 			if (saved.state === "sending" && saved.send_id) {
 				const queued = await c.var.mailbox.queuedSend(saved.send_id);
 				if (queued) {
-					await finishDraftSend(db, userId, saved.id, queued);
+					await finishDraftSend(db, userId, saved.id, saved.send_id, queued);
 					return c.json(queued, 202);
 				}
 			}
@@ -460,11 +465,12 @@ const mb = new Hono<AppEnv>()
 			localRecipients: local,
 			localOnly: local.length === recipients.length,
 		});
-		if (!queued || queued === "restoring") {
-			if (saved) await db.prepare(`UPDATE drafts SET state = 'active', send_id = NULL WHERE id = ?1 AND user_id = ?2 AND state = 'sending'`).bind(saved.id, userId).run();
-			return queued === "restoring" ? c.json({ error: RESTORING }, 409) : c.json({ error: "The message to forward is gone" }, 404);
+		if ("refused" in queued) {
+			if (saved?.send_id) await releaseDraft(db, userId, saved.id, saved.send_id);
+			if (queued.refused === "gone") return c.json({ error: "The message to forward is gone" }, 404);
+			return c.json({ error: queued.refused === "restoring" ? RESTORING : "A restore put this draft back. Check it, then send it again." }, 409);
 		}
-		if (saved) await finishDraftSend(db, userId, saved.id, queued);
+		if (saved?.send_id) await finishDraftSend(db, userId, saved.id, saved.send_id, queued);
 		return c.json(queued, 202);
 	})
 

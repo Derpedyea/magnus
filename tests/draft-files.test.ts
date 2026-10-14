@@ -35,7 +35,7 @@ describe("shared draft files", () => {
 		const claim = await claimDraft(f.env.DIRECTORY, "alice", draft.id, draft.revision, id);
 		if (!claim) throw new Error("Could not claim fixture draft");
 		const queued = asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { id, subject: draft.content.subject, markdown: draft.content.text, [mode]: draft.content.attachments })));
-		await finishDraftSend(f.env.DIRECTORY, "alice", draft.id, queued);
+		await finishDraftSend(f.env.DIRECTORY, "alice", draft.id, id, queued);
 		return queued;
 	}
 
