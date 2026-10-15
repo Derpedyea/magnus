@@ -204,7 +204,8 @@ export const admin = new Hono<AppEnv>()
 			const { at, bookmark } = c.req.valid("json");
 			const now = Date.now();
 			if (at > now || at < now - RESTORE_WINDOW_MS) return c.json({ error: "Pick a time in the last 30 days." }, 400);
-			const result = await restoreMailbox(c.env, c.req.param("id"), { at, bookmark: bookmark ?? null }).catch((error: unknown) => {
+			// The admin is checked again as the restore claims the mailbox: the body can arrive after the check above.
+			const result = await restoreMailbox(c.env, c.req.param("id"), { at, bookmark: bookmark ?? null }, c.var.reader).catch((error: unknown) => {
 				// Answered rather than lost: the way back from a mailbox that may already be rewound.
 				if (error instanceof RestoreIncomplete) return error;
 				throw error;
@@ -214,6 +215,7 @@ export const admin = new Hono<AppEnv>()
 				return c.json({ error: result.message, undo: { at: new Date(result.undo.at).toISOString(), bookmark: result.undo.bookmark } }, 500);
 			}
 			if (result.kind === "missing") return c.json({ error: "Not found" }, 404);
+			if (result.kind === "forbidden") return c.json({ error: "Only admins can do that." }, 403);
 			if (result.kind === "busy") return c.json({ error: "This mailbox is being restored already. Try again once that's done." }, 409);
 			if (result.kind === "waiting") {
 				const waiting = result.waiting.map((w) => ({ ...w, sendAt: new Date(w.sendAt).toISOString() }));

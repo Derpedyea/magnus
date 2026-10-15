@@ -417,6 +417,18 @@ describe("restoring a mailbox", () => {
 		expect(await f.control.restored()).toEqual([]);
 	});
 
+	it.each([
+		["demoted", () => f.env.DIRECTORY.prepare("UPDATE auth_users SET role = 'user' WHERE id = 'admin'").run()],
+		["signed out", () => f.env.DIRECTORY.prepare("DELETE FROM auth_sessions WHERE userId = 'admin'").run()],
+		// Marked before their sessions go.
+		["suspended", () => f.env.DIRECTORY.prepare("UPDATE auth_users SET banned = 1 WHERE id = 'admin'").run()],
+	])("restores nothing for an admin %s as the request came in", async (_, since) => {
+		const admin = await f.reader("admin");
+		await since();
+		expect(await f.control.restoreMailbox(ids.alice, Date.now() - 3600_000, admin)).toEqual({ kind: "forbidden" });
+		expect(await f.control.restored()).toEqual([]);
+	});
+
 	it("finds no mailbox that isn't there, and lets only admins restore", async () => {
 		expect((await restore(hourAgo(), "nobody")).status).toBe(404);
 		expect((await restore(hourAgo(), ids.alice, "alice")).status).toBe(403);

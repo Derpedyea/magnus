@@ -3,6 +3,7 @@ import { type AddressFilter, type InboundJob, type MailCategory, type SendInput,
 import { z } from "zod";
 import { app } from "../../worker/api";
 import { links } from "../../worker/links";
+import { restoreMailbox } from "../../worker/restore";
 import { auth, signInWithoutCode } from "../../worker/auth";
 import { email, queue } from "../../worker/mail/inbound";
 import { DEEP_MODEL, type Models, QUICK_MODEL } from "../../worker/mail/checks";
@@ -402,6 +403,8 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	failNext(operation: Operation, prefix = "", count = 1) { failures.push({ operation, prefix, remaining: count }); }
 	stallDeletes(prefix: string) { stalls.push(prefix); }
 	afterIO(action: Hook) { hook = action; }
+	/** A restore as the admin route makes it, by `admin`, checked when it claims the mailbox. */
+	restoreMailbox(mailboxId: string, at: number, admin: { userId: string; sessionId: string }) { return restoreMailbox(controlled(this.env), mailboxId, { at, bookmark: null }, admin); }
 	/** Makes restart() not reach the object, so restores stay armed till it next starts. */
 	setRestartsReach(reach: boolean) { restartsReach = reach; }
 	/** Names a restore of this mailbox, and rewinds it, just before it next answers holding(). */

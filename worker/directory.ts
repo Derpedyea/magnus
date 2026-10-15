@@ -88,6 +88,13 @@ export interface Reader {
 export const live = (session: string, user: string) =>
 	`EXISTS (SELECT 1 FROM auth_sessions s WHERE s.id = ${session} AND s.userId = ${user} AND s.expiresAt > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
 
+/**
+ * SQL: the person in parameter `user` is an admin now, not suspended, and signed in with the session in parameter
+ * `session`. Suspending marks them before their sessions go, so both are asked.
+ */
+export const liveAdmin = (session: string, user: string) =>
+	`EXISTS (SELECT 1 FROM auth_users a WHERE a.id = ${user} AND a.role = 'admin' AND coalesce(a.banned, 0) = 0 AND ${live(session, user)})`;
+
 export async function getUserMailboxes(db: D1Database, reader: Reader): Promise<MailboxMembership[]> {
 	const [mailboxes, addresses] = await Promise.all([
 		db

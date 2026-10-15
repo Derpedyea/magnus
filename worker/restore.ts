@@ -1,4 +1,5 @@
 import { type InboundJob, r2Keys, stripSubaddress, ulid, ulidTime } from "#shared";
+import { liveAdmin, type Reader } from "./directory";
 import { INGEST_WINDOW_MS, RESTORE_LEASE_MS, type Waiting } from "./mailbox/mailbox";
 
 // Restores one mailbox to how it was at an earlier moment, with Cloudflare's point-in-time recovery of its Durable Object
@@ -17,6 +18,8 @@ export interface RestoreTarget {
 export type RestoreResult =
 	| { kind: "missing" }
 	| { kind: "busy" }
+	/** `admin` no longer is one: demoted or signed out after the request was let in, before its body arrived. */
+	| { kind: "forbidden" }
 	/** Mail waiting to send, which the restore would take away or hold. Nothing changed. */
 	| { kind: "waiting"; waiting: Waiting[] }
 	| {
@@ -37,15 +40,16 @@ export type RestoreResult =
  * Restores the mailbox to the target, one restore at a time. Running it again with the same target ends the same way,
  * so a failure partway is retried by restoring again.
  */
-export async function restoreMailbox(env: Env, mailboxId: string, target: RestoreTarget): Promise<RestoreResult> {
+export async function restoreMailbox(env: Env, mailboxId: string, target: RestoreTarget, admin: Reader): Promise<RestoreResult> {
 	const db = env.DIRECTORY;
 	const restoreId = ulid();
 	const now = Date.now();
 	const claimed = await db
-		.prepare(`UPDATE mailboxes SET restoring = ?2, restoring_until = ?3 WHERE id = ?1 AND coalesce(restoring_until, 0) < ?4`)
-		.bind(mailboxId, restoreId, now + RESTORE_LEASE_MS, now)
+		.prepare(`UPDATE mailboxes SET restoring = ?2, restoring_until = ?3 WHERE id = ?1 AND coalesce(restoring_until, 0) < ?4 AND ${liveAdmin("?6", "?5")}`)
+		.bind(mailboxId, restoreId, now + RESTORE_LEASE_MS, now, admin.userId, admin.sessionId)
 		.run();
 	if (claimed.meta.changes !== 1) {
+		if ((await db.prepare(`SELECT 1 AS ok WHERE ${liveAdmin("?2", "?1")}`).bind(admin.userId, admin.sessionId).first()) === null) return { kind: "forbidden" };
 		const exists = await db.prepare(`SELECT 1 AS ok FROM mailboxes WHERE id = ?1`).bind(mailboxId).first();
 		return { kind: exists ? "busy" : "missing" };
 	}
