@@ -6,7 +6,7 @@ import { migrate } from "./migrate";
 import { mtaStsPolicy, POLICY_PATH } from "./mta-sts";
 import { cleanDraftFiles } from "./drafts";
 import { forgetExpiredDevices } from "./push";
-import { purgeRemoved } from "./removals";
+import { deleteMailboxObjects } from "./removals";
 
 export { Mailbox } from "./mailbox/mailbox";
 export { ProtonImport } from "./proton-import";
@@ -35,10 +35,10 @@ export default {
 		await migrate(env.DIRECTORY);
 		const now = Date.now();
 		// Independent, so one failing doesn't hold the others up. All run again next hour.
-		const [drafts, devices, removals] = await Promise.allSettled([cleanDraftFiles(env, now), forgetExpiredDevices(env.DIRECTORY, now), purgeRemoved(env, now)]);
+		const [drafts, devices, mailboxes] = await Promise.allSettled([cleanDraftFiles(env, now), forgetExpiredDevices(env.DIRECTORY, now), deleteMailboxObjects(env)]);
 		if (drafts.status === "rejected") console.error(JSON.stringify({ msg: "draft cleanup failed", error: String(drafts.reason) }));
 		if (devices.status === "rejected") console.error(JSON.stringify({ msg: "push cleanup failed", error: String(devices.reason) }));
-		if (removals.status === "rejected") console.error(JSON.stringify({ msg: "removal purge failed", error: String(removals.reason) }));
-		if ([drafts, devices, removals].some((r) => r.status === "rejected")) throw new Error("Hourly cleanup failed");
+		if (mailboxes.status === "rejected") console.error(JSON.stringify({ msg: "mailbox deletion failed", error: String(mailboxes.reason) }));
+		if ([drafts, devices, mailboxes].some((r) => r.status === "rejected")) throw new Error("Hourly cleanup failed");
 	},
 } satisfies ExportedHandler<Env>;

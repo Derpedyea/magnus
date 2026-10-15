@@ -1,12 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { LIVE_RECHECK, r2Keys, REMOVAL_DAYS } from "#shared";
+import { LIVE_RECHECK, r2Keys } from "#shared";
 import { addAddress, createMailbox, setSignature } from "../worker/directory";
 import { discardDraft, saveDraft } from "../worker/drafts";
 import { fixture, type Fixture, inbound, type Mailboxes, MIME, NOW, sendInput } from "./runtime/fixture";
 
 const ORIGIN = "https://magnus.test";
-const REMOVAL_MS = REMOVAL_DAYS * 24 * 3600_000;
 const TOKEN = "removal-link-token-abc";
 
 describe("removing a person", () => {
@@ -44,6 +43,10 @@ describe("removing a person", () => {
 	const mailboxIdsOf = async (cookie: string) => z.object({ mailboxes: z.array(z.object({ id: z.string() })) }).parse(await (await call("/api/me", cookie)).json()).mailboxes.map((m) => m.id);
 	const removedAt = (at: number) => f.env.DIRECTORY.prepare("UPDATE removed_people SET removed_at = ?1").bind(at).run();
 	const exists = async (sql: string, ...bindings: unknown[]) => (await f.env.DIRECTORY.prepare(sql).bind(...bindings).first()) !== null;
+	/** Their archive's id, as the admin's page has it. */
+	const archiveId = async (id = "alice") => z.object({ archive_id: z.string() }).parse(await f.env.DIRECTORY.prepare("SELECT archive_id FROM removed_people WHERE user_id = ?1").bind(id).first()).archive_id;
+	/** Deletes someone for good as an admin, the mail left to the cron. */
+	const deleteForGood = async (id: string, archive: string) => f.control.deletePerson(id, archive, await f.reader("admin"));
 
 	it("shuts them out and stops their mail at once, but deletes nothing", async () => {
 		const cookie = await f.login("alice");
@@ -205,8 +208,8 @@ describe("removing a person", () => {
 
 		// Even one left hidden isn't deleted while someone's in it.
 		await f.env.DIRECTORY.prepare("UPDATE mailboxes SET removed_with = 'bob' WHERE id = ?1").bind(ids.shared).run();
-		await removedAt(NOW - REMOVAL_MS);
-		await f.control.purgeRemoved();
+		expect(await deleteForGood("bob", await archiveId("bob"))).toBe("deleted");
+		await f.control.deleteMailboxObjects();
 		expect(await exists("SELECT 1 FROM auth_users WHERE id = 'bob'")).toBe(false);
 		expect(await exists("SELECT 1 FROM mailboxes WHERE id = ?1", ids.bob)).toBe(false);
 		expect(await exists("SELECT 1 FROM mailboxes WHERE id = ?1", ids.shared)).toBe(true);
@@ -236,62 +239,121 @@ describe("removing a person", () => {
 		expect((await restore("nobody")).status).toBe(404);
 	});
 
-	it("deletes them and their mail once the time is up, as removal used to at once", async () => {
-		await remove();
-		await removedAt(NOW - REMOVAL_MS + 1);
-		await f.control.purgeRemoved();
+	it("deletes them and their mail for good when an admin says so, but only once they're archived", async () => {
+		const request = async (archive: string, id = "alice") => call(`/api/admin/people/${id}/delete`, await f.login("admin"), "POST", { archiveId: archive });
+		expect((await request("none")).status).toBe(409);
 		expect(await exists("SELECT 1 FROM auth_users WHERE id = 'alice'")).toBe(true);
 
-		await removedAt(NOW - REMOVAL_MS);
-		await f.control.purgeRemoved();
+		await remove();
+		const archive = await archiveId();
+		expect((await request(archive)).status).toBe(204);
 		expect(await exists("SELECT 1 FROM auth_users WHERE id = 'alice'")).toBe(false);
 		expect(await exists("SELECT 1 FROM mailboxes WHERE id = ?1", ids.alice)).toBe(false);
 		// Addresses only they received go; a group's stays for Bob, and the shared mailbox stays with him.
 		expect(await exists("SELECT 1 FROM addresses WHERE address = 'alice@example.com'")).toBe(false);
 		expect(await f.env.DIRECTORY.prepare("SELECT mailbox_id FROM address_routes WHERE address = 'family@example.com'").all()).toMatchObject({ results: [{ mailbox_id: ids.bob }] });
 		expect(await exists("SELECT 1 FROM mailboxes WHERE id = ?1", ids.shared)).toBe(true);
+		// Their mail goes right after.
+		await vi.waitFor(async () => expect(await exists("SELECT 1 FROM mailbox_deletions")).toBe(false), { timeout: 10_000 });
 		expect((await f.env.MAIL.list({ prefix: r2Keys.mailbox(ids.alice) })).objects).toEqual([]);
-		expect(await exists("SELECT 1 FROM mailbox_deletions")).toBe(false);
 		expect((await restore()).status).toBe(404);
+		expect((await request(archive)).status).toBe(404);
+		expect((await request(archive, "nobody")).status).toBe(404);
+	});
+
+	it("keeps a mailbox they shared with someone else archived, for that person to have back", async () => {
+		// Archiving Alice leaves it to Bob; archiving Bob hides it with him.
+		await remove("alice");
+		await remove("bob");
+		expect(await deleteForGood("bob", await archiveId("bob"))).toBe("deleted");
+		expect(await f.env.DIRECTORY.prepare("SELECT removed_with FROM mailboxes WHERE id = ?1").bind(ids.shared).first()).toEqual({ removed_with: "alice" });
+		expect(await exists("SELECT 1 FROM mailbox_deletions WHERE mailbox_id = ?1", ids.shared)).toBe(false);
+		await restore("alice");
+		expect(await exists("SELECT 1 FROM mailbox_members WHERE mailbox_id = ?1 AND user_id = 'alice'", ids.shared)).toBe(true);
+		// Or, deleted for good herself, it goes with her.
+		await remove("alice");
+		expect(await deleteForGood("alice", await archiveId("alice"))).toBe("deleted");
+		expect(await exists("SELECT 1 FROM mailbox_deletions WHERE mailbox_id = ?1", ids.shared)).toBe(true);
+	});
+
+	it.each([
+		["demoted", () => f.env.DIRECTORY.prepare("UPDATE auth_users SET role = 'user' WHERE id = 'admin'").run()],
+		["signed out", () => f.env.DIRECTORY.prepare("DELETE FROM auth_sessions WHERE userId = 'admin'").run()],
+		// Marked before their sessions go.
+		["suspended", () => f.env.DIRECTORY.prepare("UPDATE auth_users SET banned = 1 WHERE id = 'admin'").run()],
+	])("deletes nobody for good for an admin %s as the request came in", async (_, since) => {
+		await remove();
+		const admin = await f.reader("admin");
+		await since();
+		expect(await f.control.deletePerson("alice", await archiveId(), admin)).toBe("forbidden");
+		expect(await exists("SELECT 1 FROM auth_users WHERE id = 'alice'")).toBe(true);
+	});
+
+	it("clears the sign-in codes sent to an email when someone's added with it", async () => {
+		await f.control.code("alice@login.test");
+		await remove();
+		expect(await deleteForGood("alice", await archiveId())).toBe("deleted");
+		const added = await call("/api/admin/people", await f.login("admin"), "POST", { name: "Alice again", email: "alice@login.test", isAdmin: false });
+		expect(added.status).toBe(201);
+		expect(await exists("SELECT 1 FROM auth_verifications WHERE identifier LIKE '%alice@login.test'")).toBe(false);
+	});
+
+	it("gives an archive an older Worker wrote without an id a random one, unlike any later archive's", async () => {
+		const Directory = z.object({ people: z.array(z.object({ id: z.string(), archived: z.object({ at: z.number(), id: z.string() }).nullable() })) });
+		const shown = async () => Directory.parse(await (await call("/api/admin/directory", await f.login("admin"))).json()).people.find((p) => p.id === "alice")?.archived?.id;
+		const byOlderWorker = () => f.env.DIRECTORY.prepare("UPDATE removed_people SET archive_id = NULL, removed_at = 1000").run();
+		await remove();
+		await byOlderWorker();
+		const first = await shown();
+		expect(first).toMatch(/^[0-9a-f]{32}$/);
+		// Restored and archived again by the older Worker, in the same millisecond.
+		await restore();
+		await remove();
+		await byOlderWorker();
+		const second = await shown();
+		expect(second).toMatch(/^[0-9a-f]{32}$/);
+		expect(second).not.toBe(first);
+		expect(await deleteForGood("alice", first ?? "")).toBe("changed");
+		expect(await deleteForGood("alice", second ?? "")).toBe("deleted");
 	});
 
 	it.each([
 		["being restored", "UPDATE mailboxes SET restoring = 'restore-1', restoring_until = ?2 WHERE id = ?1"],
 		["left unfinished by a restore", "UPDATE mailboxes SET restore_incomplete = 1 WHERE id = ?1 AND ?2 > 0"],
-	])("waits to delete someone whose mailbox is %s", async (_, hold) => {
+	])("waits to delete for good someone whose mailbox is %s", async (_, hold) => {
 		await remove();
-		await removedAt(NOW - REMOVAL_MS);
-		await f.env.DIRECTORY.prepare(hold).bind(ids.alice, NOW + 60_000).run();
-		await f.control.purgeRemoved();
-		expect(await exists("SELECT 1 FROM auth_users WHERE id = 'alice'")).toBe(true);
+		await f.env.DIRECTORY.prepare(hold).bind(ids.alice, Date.now() + 60_000).run();
+		expect(await deleteForGood("alice", await archiveId())).toBe("restoring");
 		expect(await exists("SELECT 1 FROM mailboxes WHERE id = ?1", ids.alice)).toBe(true);
+		expect(await exists("SELECT 1 FROM mailbox_deletions")).toBe(false);
 		await f.env.DIRECTORY.prepare("UPDATE mailboxes SET restoring = NULL, restoring_until = NULL, restore_incomplete = 0 WHERE id = ?1").bind(ids.alice).run();
-		await f.control.purgeRemoved();
-		expect(await exists("SELECT 1 FROM auth_users WHERE id = 'alice'")).toBe(false);
+		expect(await deleteForGood("alice", await archiveId())).toBe("deleted");
 	});
 
 	it("tries a mailbox's deletion again next hour when it fails", async () => {
 		await remove();
-		await removedAt(NOW - REMOVAL_MS);
+		await deleteForGood("alice", await archiveId());
 		await f.control.failNext("delete", r2Keys.mailbox(ids.alice));
-		await expect(async () => f.control.purgeRemoved()).rejects.toThrow("1 mailbox deletions failed; retried next hour");
+		await expect(async () => f.control.deleteMailboxObjects()).rejects.toThrow("1 mailbox deletions failed; retried next hour");
 		expect(await exists("SELECT 1 FROM auth_users WHERE id = 'alice'")).toBe(false);
 		expect(await exists("SELECT 1 FROM mailbox_deletions WHERE mailbox_id = ?1", ids.alice)).toBe(true);
 		expect((await f.env.MAIL.list({ prefix: r2Keys.mailbox(ids.alice) })).objects).not.toEqual([]);
 
-		await f.control.purgeRemoved();
+		await f.control.deleteMailboxObjects();
 		expect(await exists("SELECT 1 FROM mailbox_deletions")).toBe(false);
 		expect((await f.env.MAIL.list({ prefix: r2Keys.mailbox(ids.alice) })).objects).toEqual([]);
 	});
 
 	it.each([
 		["restored", () => restore()],
-		["removed again since", async () => { await restore(); await remove(); await removedAt(NOW - REMOVAL_MS + 1); }],
-	])("leaves someone %s alone though the purge already picked them", async (_, since) => {
+		// In the same millisecond, too.
+		["restored and archived again", async () => { await restore(); await remove(); await removedAt(1000); }],
+	])("leaves someone %s alone, though deleting them for good was confirmed before", async (_, since) => {
 		await remove();
-		await removedAt(NOW - REMOVAL_MS);
+		await removedAt(1000);
+		const confirmed = await archiveId();
 		await since();
-		await f.control.purgePerson("alice");
+		expect(await deleteForGood("alice", confirmed)).toBe("changed");
 		expect(await exists("SELECT 1 FROM auth_users WHERE id = 'alice'")).toBe(true);
 		expect(await exists("SELECT 1 FROM mailboxes WHERE id = ?1", ids.alice)).toBe(true);
 		expect(await exists("SELECT 1 FROM addresses WHERE address = 'alice@example.com'")).toBe(true);

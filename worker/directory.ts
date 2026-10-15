@@ -8,7 +8,6 @@ import {
 	ulid,
 	type User,
 } from "#shared";
-import { REMOVAL_MS } from "./removals";
 import { hasCloudflareToken } from "./settings";
 
 // Typed queries over the D1 directory (migrations/0001_init.sql): who can sign in, which domains and addresses
@@ -84,16 +83,23 @@ export interface Reader {
 	sessionId: string;
 }
 
-/** SQL: the session in parameter `session` still exists, belongs to the person in `user`, and hasn't expired. */
-export const live = (session: string, user: string) =>
-	`EXISTS (SELECT 1 FROM auth_sessions s WHERE s.id = ${session} AND s.userId = ${user} AND s.expiresAt > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
+/**
+ * SQL: the session in parameter `session` still exists, belongs to the person in `user`, and hasn't expired by `now`
+ * (an ISO time, like expiresAt; this statement's own clock if not given, which differs between statements of a batch).
+ */
+export const live = (session: string, user: string, now = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')") =>
+	`EXISTS (SELECT 1 FROM auth_sessions s WHERE s.id = ${session} AND s.userId = ${user} AND s.expiresAt > ${now})`;
 
 /**
  * SQL: the person in parameter `user` is an admin now, not suspended, and signed in with the session in parameter
  * `session`. Suspending marks them before their sessions go, so both are asked.
  */
-export const liveAdmin = (session: string, user: string) =>
-	`EXISTS (SELECT 1 FROM auth_users a WHERE a.id = ${user} AND a.role = 'admin' AND coalesce(a.banned, 0) = 0 AND ${live(session, user)})`;
+export const liveAdmin = (session: string, user: string, now?: string) =>
+	`EXISTS (SELECT 1 FROM auth_users a WHERE a.id = ${user} AND a.role = 'admin' AND coalesce(a.banned, 0) = 0 AND ${live(session, user, now)})`;
+
+/** SQL: Better Auth's identifiers for one-time codes sent to the email in parameter `email` (its toOTPIdentifier()). */
+export const codeIdentifiers = (email: string) =>
+	`SELECT t.type || '-otp-' || lower(${email}) FROM (SELECT 'sign-in' AS type UNION ALL SELECT 'email-verification' UNION ALL SELECT 'forget-password' UNION ALL SELECT 'change-email') t`;
 
 export async function getUserMailboxes(db: D1Database, reader: Reader): Promise<MailboxMembership[]> {
 	const [mailboxes, addresses] = await Promise.all([
@@ -272,16 +278,19 @@ export async function loginCodeSender(db: D1Database): Promise<string | null> {
 
 /** Everything the admin pages show. Small enough to read whole. */
 export async function getDirectory(db: D1Database): Promise<Directory> {
+	// An archive an older Worker wrote, still running as this one deployed, has no id yet (migrations/0009_archive_ids.sql).
+	// A random one, so the id an admin confirms deleting is never one a later archive could share.
+	await db.prepare(`UPDATE removed_people SET archive_id = lower(hex(randomblob(16))) WHERE archive_id IS NULL`).run();
 	const [domains, people, mailboxes, members, addresses, routes, blocks, cloudflareTokenSaved] = await Promise.all([
 		db
 			.prepare(`SELECT name, zone_id, receiving, sending, catch_all_mailbox_id FROM domains ORDER BY created_at`)
 			.all<{ name: string; zone_id: string | null; receiving: number; sending: number; catch_all_mailbox_id: string | null }>(),
 		db
 			.prepare(
-				`SELECT u.id, u.name, u.email, u.role, u.banned, r.removed_at FROM auth_users u
+				`SELECT u.id, u.name, u.email, u.role, u.banned, r.removed_at, r.archive_id FROM auth_users u
 				 LEFT JOIN removed_people r ON r.user_id = u.id ORDER BY u.createdAt`,
 			)
-			.all<{ id: string; name: string; email: string; role: string | null; banned: number | null; removed_at: number | null }>(),
+			.all<{ id: string; name: string; email: string; role: string | null; banned: number | null; removed_at: number | null; archive_id: string | null }>(),
 		db.prepare(`SELECT id, name, removed_with FROM mailboxes ORDER BY created_at`).all<{ id: string; name: string; removed_with: string | null }>(),
 		db.prepare(`SELECT mailbox_id, user_id FROM mailbox_members`).all<{ mailbox_id: string; user_id: string }>(),
 		db.prepare(`SELECT address, domain, display_name FROM addresses ORDER BY domain, address`).all<{ address: string; domain: string; display_name: string | null }>(),
@@ -299,7 +308,7 @@ export async function getDirectory(db: D1Database): Promise<Directory> {
 			email: p.email,
 			isAdmin: p.role === "admin",
 			banned: p.banned === 1,
-			deletesAt: p.removed_at === null ? null : p.removed_at + REMOVAL_MS,
+			archived: p.removed_at === null || p.archive_id === null ? null : { at: p.removed_at, id: p.archive_id },
 		})),
 		mailboxes: mailboxes.results.map((m) => ({
 			id: m.id,

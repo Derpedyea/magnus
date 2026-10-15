@@ -94,9 +94,9 @@ new token and give it to *Use a different token*.
   addresses that don't exist: reject it (the default), or deliver it to someone.
 - **People.** Add someone with their own mailbox and address; they sign in with a code sent to their sign-in
   email (which can't be at one of your Magnus domains), and can add a passkey after that. Make them an admin,
-  suspend them (they can't sign in, but their mail keeps arriving), or remove them (they're signed out and
-  their mail is refused at once; their mailbox and its mail are deleted 30 days later, and until then **Restore**
-  under Removed brings them back as they were).
+  suspend them (they can't sign in, but their mail keeps arriving), or archive them (they're signed out and
+  their mail is refused at once, but their mailbox and its mail are kept: **Restore** under Archived brings them back
+  as they were, and **Delete for good** erases them).
 - **Addresses.** Add addresses and choose who receives them. Several people makes a shared address like
   `family@`: each gets a copy and can reply from it.
 

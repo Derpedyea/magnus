@@ -5,7 +5,7 @@ so none of it helps if that account is lost.
 
 | What | Kept | Put back with |
 | --- | --- | --- |
-| A removed person and their mail | 30 days | Admin › People › Removed › **Restore** |
+| An archived person and their mail | Until deleted for good | Admin › People › Archived › **Restore** |
 | One mailbox: threads, labels, read state, contacts, Failed, the outbox | Any moment in the last 30 days | [Restoring a mailbox](#restoring-a-mailbox) |
 | The directory (D1): people, sign-in, domains, addresses, drafts, settings | Any minute in the last 30 days | [Restoring the directory](#restoring-the-directory) |
 | Bodies, attachments, and originals (R2) | Until deleted. Not versioned: deleted for good is gone | — |
@@ -91,8 +91,8 @@ goes back, including:
 
 - Sessions: people who signed in since are signed out, and anyone who signed out since is signed in again.
 - Drafts and signatures.
-- Removals: someone removed since is back, and someone deleted for good since is back in the directory without their
-  mail, which can't come back. Remove them again.
+- Archives: someone archived since is back, and someone deleted for good since is back in the directory without their
+  mail, which can't come back. Archive them and delete them for good again.
 - Domains' settings in Magnus, but not Cloudflare's routing or DNS: check each domain in Admin › Domains afterwards.
 
 ## Practising
@@ -105,4 +105,4 @@ Do this once after deploying, then every few months, on a test person rather tha
 3. Restore their mailbox to the time you noted.
 4. Expect both first messages back in the inbox, unread and unstarred; the third arriving again; and
    `{ held: 0, replayed: 1, unknown: 0 }`.
-5. Remove the drill person.
+5. Archive the drill person, then delete them for good.

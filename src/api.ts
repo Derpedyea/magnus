@@ -169,6 +169,7 @@ export const adminApi = {
 	addPerson: (json: Json<typeof admin.people.$post>) => parseResponse(admin.people.$post({ json })),
 	removePerson: (id: string) => parseResponse(admin.people[":id"].$delete({ param: { id } })),
 	restorePerson: (id: string) => parseResponse(admin.people[":id"].restore.$post({ param: { id } })),
+	deletePerson: (id: string, archiveId: string) => parseResponse(admin.people[":id"].delete.$post({ param: { id }, json: { archiveId } })),
 	addAddress: (json: Json<typeof admin.addresses.$post>) => parseResponse(admin.addresses.$post({ json })),
 	// hc puts params into the path as given.
 	removeAddress: (address: string) => parseResponse(admin.addresses[":address"].$delete({ param: { address: encodeURIComponent(address) } })),
