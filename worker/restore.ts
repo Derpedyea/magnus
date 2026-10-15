@@ -53,17 +53,29 @@ export async function restoreMailbox(env: Env, mailboxId: string, target: Restor
 		const exists = await db.prepare(`SELECT 1 AS ok FROM mailboxes WHERE id = ?1`).bind(mailboxId).first();
 		return { kind: exists ? "busy" : "missing" };
 	}
-	const release = async () => db.prepare(`UPDATE mailboxes SET restoring = NULL, restoring_until = NULL WHERE id = ?1 AND restoring = ?2`).bind(mailboxId, restoreId).run();
-	// Should letting go fail, the claim runs out by itself (RESTORE_LEASE_MS), so what the restore did (its undo above all) is
-	// answered either way.
-	const letGo = () =>
-		release().catch((error: unknown) => console.error(JSON.stringify({ msg: "restore lease kept until it runs out", mailboxId, error: String(error) })));
+	// Lets go of the mailbox, marking whether a restore is left unfinished (restore_incomplete): one that finished clears
+	// it; one that may have rewound the mailbox, then failed, sets it; and one that failed before then leaves it as it was,
+	// as an earlier attempt can still be armed. Should this fail, the claim runs out by itself (RESTORE_LEASE_MS), so what
+	// the restore did (its undo above all) is answered either way.
+	const release = async (incomplete: "clear" | "set" | "keep") =>
+		db
+			.prepare(
+				`UPDATE mailboxes SET restoring = NULL, restoring_until = NULL,
+					restore_incomplete = CASE ?3 WHEN 'clear' THEN 0 WHEN 'set' THEN 1 ELSE restore_incomplete END
+				 WHERE id = ?1 AND restoring = ?2`,
+			)
+			.bind(mailboxId, restoreId, incomplete)
+			.run();
+	const letGo = (incomplete: "clear" | "set" | "keep") =>
+		release(incomplete).catch((error: unknown) =>
+			console.error(JSON.stringify({ msg: "restore lease kept until it runs out", mailboxId, incomplete, error: String(error) })),
+		);
 	try {
 		const result = await restoreClaimed(env, mailboxId, restoreId, target, now + RESTORE_LEASE_MS);
-		await letGo();
+		await letGo(result.kind === "done" ? "clear" : "keep");
 		return result;
 	} catch (error) {
-		await letGo();
+		await letGo(error instanceof RestoreIncomplete ? "set" : "keep");
 		throw error;
 	}
 }
@@ -136,14 +148,16 @@ const HOLDING_BATCH = 500;
  * back.
  */
 async function replayMail(env: Env, mailboxId: string, since: number): Promise<{ replayed: number; unknown: number }> {
-	const candidates: InboundJob[] = [];
+	let replayed = 0;
 	let unknown = 0;
 	const from = since - INGEST_WINDOW_MS;
 	for (let day = new Date(from).setUTCHours(0, 0, 0, 0); day <= Date.now(); day += 24 * 3600_000) {
 		let cursor: string | undefined;
 		do {
-			// "If include is set, you may receive fewer than limit results", so it's read to the end by cursor.
+			// "If include is set, you may receive fewer than limit results", so it's read to the end by cursor. Each page is
+			// queued before the next is read, so a busy month never sits in memory at once.
 			const page = await env.MAIL.list({ prefix: r2Keys.rawDay(day), cursor, include: ["customMetadata"] });
+			const candidates: InboundJob[] = [];
 			for (const obj of page.objects) {
 				const ingestId = obj.key.slice(obj.key.lastIndexOf("/") + 1, -".eml".length);
 				const receivedAt = ulidTime(ingestId);
@@ -166,15 +180,20 @@ async function replayMail(env: Env, mailboxId: string, since: number): Promise<{
 					receivedAt,
 				});
 			}
+			replayed += await queueMissing(env, mailboxId, candidates);
 			cursor = page.truncated ? page.cursor : undefined;
 		} while (cursor);
 	}
-	// Only what it doesn't have (or hasn't listed under Failed), so nothing it has is parsed or checked again.
+	return { replayed, unknown };
+}
+
+/** Queues the jobs whose mail the mailbox doesn't have (or hasn't listed under Failed), so nothing it has is parsed or checked again. */
+async function queueMissing(env: Env, mailboxId: string, candidates: InboundJob[]): Promise<number> {
 	const held = new Set<string>();
 	for (let i = 0; i < candidates.length; i += HOLDING_BATCH) {
 		for (const id of await env.MAILBOX.getByName(mailboxId).holding(candidates.slice(i, i + HOLDING_BATCH).map((j) => j.ingestId))) held.add(id);
 	}
 	const jobs = candidates.filter((j) => !held.has(j.ingestId));
 	for (let i = 0; i < jobs.length; i += QUEUE_BATCH) await env.INBOUND.sendBatch(jobs.slice(i, i + QUEUE_BATCH).map((body) => ({ body })));
-	return { replayed: jobs.length, unknown };
+	return jobs.length;
 }

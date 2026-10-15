@@ -67,9 +67,9 @@ for (const m of mailboxes) {
 }
 ```
 
-A restore that fails partway (a 500 answer) is finished by running it again with the same time. Until then the mailbox
-refuses to send: for at most 10 minutes, or, if the answer says it didn't restart into the restore, until it does. A
-mailbox restores one at a time: another restore of it while one runs answers 409.
+A restore that fails partway (a 500 answer) is finished by running it again with the same time, or undone with its
+`undo`. Until one of those finishes, the mailbox stays out of use, since restoring again rewinds again and would erase
+anything done in between. A mailbox restores one at a time: another restore of it while one runs answers 409.
 
 ## Restoring the directory
 

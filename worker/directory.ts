@@ -169,7 +169,7 @@ export async function isMailboxMember(db: D1Database, reader: Reader, mailboxId:
 export async function mailboxAccess(db: D1Database, reader: Reader, mailboxId: string, now: number): Promise<"member" | "restoring" | null> {
 	const row = await db
 		.prepare(
-			`SELECT coalesce(b.restoring_until, 0) > ?4 AS restoring FROM mailbox_members mm JOIN mailboxes b ON b.id = mm.mailbox_id
+			`SELECT (coalesce(b.restoring_until, 0) > ?4 OR b.restore_incomplete = 1) AS restoring FROM mailbox_members mm JOIN mailboxes b ON b.id = mm.mailbox_id
 			 WHERE mm.user_id = ?1 AND mm.mailbox_id = ?2 AND ${live("?3", "?1")}`,
 		)
 		.bind(reader.userId, mailboxId, reader.sessionId, now)

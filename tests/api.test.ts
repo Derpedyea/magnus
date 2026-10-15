@@ -138,7 +138,7 @@ describe("API permissions", () => {
 		expect(await response.json()).toEqual({ error: "Unknown attachment" });
 	});
 
-	it.each(["SELECT coalesce(b.restoring_until, 0) > ?4 AS restoring FROM mailbox_members", "SELECT a.address, a.display_name"])("fails closed when the permission query fails: %s", async (query) => {
+	it.each(["SELECT (coalesce(b.restoring_until, 0) > ?4 OR b.restore_incomplete = 1) AS restoring FROM mailbox_members", "SELECT a.address, a.display_name"])("fails closed when the permission query fails: %s", async (query) => {
 		await f.control.failNext("directory", query);
 		expect((await request(`/mailboxes/${ids.alice}/send`, "POST", compose())).status).toBe(500);
 		expect((await f.control.state()).sends).toEqual([]);

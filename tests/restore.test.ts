@@ -94,6 +94,8 @@ describe("restoring a mailbox", () => {
 		body: JSON.stringify({ from: "alice@example.com", to: [{ address: "friend@outside.test" }], subject: "Hi", text: "Hi", delaySeconds: 0 }),
 	});
 	const hold = (until: number) => f.env.DIRECTORY.prepare("UPDATE mailboxes SET restoring = 'other', restoring_until = ?2 WHERE id = ?1").bind(ids.alice, until).run();
+	/** A member's request to the mailbox: 404 for a thread that isn't there while it's in use, 503 while it isn't. */
+	const thread = async () => f.worker.fetch(`${ORIGIN}/api/mailboxes/${ids.alice}/threads/none`, { headers: { Cookie: await f.login("alice"), Origin: ORIGIN } });
 
 	it("is out of use while it restores", async () => {
 		await hold(Date.now() + 60_000);
@@ -147,6 +149,8 @@ describe("restoring a mailbox", () => {
 		expect((await restore(hourAgo())).status).toBe(500);
 		await f.control.setNow(Date.now() + LEASE_MS + 1000);
 		expect(await mailbox().enqueueSend(sendInput(ids.alice))).toEqual({ refused: "restoring" });
+		// Still out of use: the first attempt is unfinished, though the retry failed earlier on.
+		expect((await thread()).status).toBe(503);
 		await Promise.resolve().then(() => mailbox().abortNow()).catch(() => undefined);
 		asQueued(await mailbox().enqueueSend(sendInput(ids.alice)));
 	});
@@ -291,8 +295,11 @@ describe("restoring a mailbox", () => {
 		const response = await restore(new Date(at).toISOString());
 		expect(response.status).toBe(500);
 		expect(await response.json()).toMatchObject({ error: expect.stringContaining("Restore again"), undo: { at: expect.any(String), bookmark: expect.any(String) } });
+		// Out of use till then, though the restore let go: restoring again rewinds again, and would erase what's done meanwhile.
+		expect((await thread()).status).toBe(503);
 		// And the mailbox is free for that.
 		expect((await restore(new Date(at).toISOString())).status).toBe(200);
+		expect((await thread()).status).toBe(404);
 	});
 
 	it("still answers with what it did when letting go of the mailbox fails, and the hold runs out", async () => {
