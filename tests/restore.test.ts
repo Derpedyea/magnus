@@ -302,12 +302,15 @@ describe("restoring a mailbox", () => {
 		expect((await thread()).status).toBe(404);
 	});
 
-	it("stays out of use when putting the mailbox back in use fails, till it's restored again", async () => {
+	it("stays out of use, sends held, when putting the mailbox back in use fails, till it's restored again", async () => {
+		await f.control.setNow(Date.now());
 		await f.control.failNext("directory", "UPDATE mailboxes SET restoring = NULL, restoring_until = NULL, restore_incomplete = 0");
 		const response = await restore(hourAgo());
 		expect(response.status).toBe(500);
 		expect(await response.json()).toMatchObject({ error: expect.stringContaining("Restore again"), undo: { bookmark: expect.any(String) } });
 		expect((await thread()).status).toBe(503);
+		// A send already past the API's check meets the mailbox's: nothing joins the outbox for the retry to wait on.
+		expect(await mailbox().enqueueSend(sendInput(ids.alice))).toEqual({ refused: "restoring" });
 		expect((await restore(hourAgo())).status).toBe(200);
 		expect((await thread()).status).toBe(404);
 	});

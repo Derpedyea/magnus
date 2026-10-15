@@ -61,18 +61,8 @@ export async function restoreMailbox(env: Env, mailboxId: string, target: Restor
 		release().catch((error: unknown) => console.error(JSON.stringify({ msg: "restore lease kept until it runs out", mailboxId, error: String(error) })));
 	try {
 		const result = await restoreClaimed(env, mailboxId, restoreId, target, now + RESTORE_LEASE_MS);
-		// Finished: back in use only now. Should this fail, it stays out of use, and restoring again finishes it.
-		if (result.kind === "done") {
-			const finish = async () =>
-				db.prepare(`UPDATE mailboxes SET restoring = NULL, restoring_until = NULL, restore_incomplete = 0 WHERE id = ?1 AND restoring = ?2`).bind(mailboxId, restoreId).run();
-			const done = await finish().then(
-				(r) => r.meta.changes === 1,
-				(error: unknown) => error,
-			);
-			if (done !== true) throw new RestoreIncomplete(result.undo, done === false ? new Error("Lost hold of the mailbox.") : done);
-			return result;
-		}
-		await letGo();
+		// One that finished let go of the mailbox as it put it back in use.
+		if (result.kind !== "done") await letGo();
 		return result;
 	} catch (error) {
 		await letGo();
@@ -122,8 +112,22 @@ async function restoreClaimed(env: Env, mailboxId: string, restoreId: string, ta
 			env.DIRECTORY.prepare(`SELECT send_id FROM revoked_sends WHERE mailbox_id = ?1`).bind(mailboxId),
 		]);
 		const replayed = await replayMail(env, mailboxId, target.at);
-		// Sends go again only now, so none can be one of those drafts, nor happen before a retry rewinds again.
-		await mailbox().endRestore(restoreId, (revoked?.results ?? []).map((r) => r.send_id));
+		// Back in use, while this restore still holds the mailbox. Should this fail, it stays out of use with sends held, so
+		// nothing joins the outbox that would make restoring again, which finishes it, wait on a send nobody can cancel.
+		const finish = async () =>
+			env.DIRECTORY.prepare(`UPDATE mailboxes SET restoring = NULL, restoring_until = NULL, restore_incomplete = 0 WHERE id = ?1 AND restoring = ?2`)
+				.bind(mailboxId, restoreId)
+				.run();
+		const finished = await finish().then(
+			(r) => r.meta.changes === 1,
+			(error: unknown) => error,
+		);
+		if (finished !== true) throw finished === false ? new Error("Lost hold of the mailbox before finishing.") : finished;
+		// Sends go again only now, so none can be one of those drafts, nor happen before a retry rewinds again. Should this
+		// fail, the hold runs out with the lease, and the directory's revocations stand meanwhile.
+		await mailbox()
+			.endRestore(restoreId, (revoked?.results ?? []).map((r) => r.send_id))
+			.catch((error: unknown) => console.error(JSON.stringify({ msg: "restore hold kept until it runs out", mailboxId, error: String(error) })));
 		return { kind: "done", undo, ...applied, ...replayed };
 	} catch (error) {
 		throw new RestoreIncomplete(undo, error);
