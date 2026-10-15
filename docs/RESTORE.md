@@ -47,7 +47,7 @@ What else changes:
 - Whatever was waiting to send at that moment fails with a note instead of sending (`held`), since it may have gone
   out already. Its sender sends it again if it didn't.
 - Every file the mailbox shared by link stops (`linksStopped`), since a link stopped since then would otherwise work
-  again. Its sender shares again any that should be.
+  again. Its sender shares again any that should be. Undoing a restore stops them too, for the same reason.
 - A draft that was being sent as the restore happened goes back to being a draft, for its sender to send again if it
   didn't go.
 - Mail imported since then (Settings › Import mail) is gone. Import it again; anything already there is skipped.

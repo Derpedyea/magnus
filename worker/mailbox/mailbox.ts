@@ -481,8 +481,13 @@ export class Mailbox extends DurableObject<Env> {
 	 */
 	private async replayingUntil(): Promise<number> {
 		const { results } = await this.env.DIRECTORY.prepare(`SELECT * FROM mailboxes`).all<Record<string, unknown>>();
-		const restored = results.flatMap((m) => (typeof m.restore_id === "string" ? [ulidTime(m.restore_id)] : []));
-		return restored.length > 0 ? Math.max(...restored) + RESTORE_LEASE_MS + INGEST_WINDOW_MS : 0;
+		const now = Date.now();
+		const until = results.flatMap((m) => [
+			typeof m.restore_id === "string" ? ulidTime(m.restore_id) + RESTORE_LEASE_MS + INGEST_WINDOW_MS : 0,
+			// Claimed but not yet named: it may rewind, then take its mail in again, by a day after its lease at the latest.
+			typeof m.restoring_until === "number" && m.restoring_until > now ? m.restoring_until + INGEST_WINDOW_MS : 0,
+		]);
+		return Math.max(0, ...until);
 	}
 
 	private meta(key: string): string | undefined {
@@ -565,6 +570,22 @@ export class Mailbox extends DurableObject<Env> {
 			orphans.push(row.raw_key);
 		}
 		for (let i = 0; i < orphans.length; i += 1000) await this.env.MAIL.delete(orphans.slice(i, i + 1000));
+	}
+
+	/**
+	 * Which of these messages this mailbox has, under Failed, or deleted for good: what a restore's replay mustn't queue
+	 * again (ingest() would drop one deleted for good anyway, but only after the queue and a parse).
+	 */
+	async known(messageIds: string[]): Promise<string[]> {
+		return this.sql
+			.exec<{ id: string }>(
+				`SELECT id FROM messages WHERE id IN (SELECT value FROM json_each(?1))
+				 UNION SELECT id FROM failed WHERE id IN (SELECT value FROM json_each(?1))
+				 UNION SELECT id FROM deleted_messages WHERE id IN (SELECT value FROM json_each(?1))`,
+				JSON.stringify(messageIds),
+			)
+			.toArray()
+			.map((r) => r.id);
 	}
 
 	/**

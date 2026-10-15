@@ -201,11 +201,14 @@ async function replayMail(env: Env, mailboxId: string, since: number): Promise<{
 	return { replayed, unknown };
 }
 
-/** Queues the jobs whose mail the mailbox doesn't have (or hasn't listed under Failed), so nothing it has is parsed or checked again. */
+/**
+ * Queues the jobs whose mail the mailbox doesn't know: doesn't have, hasn't listed under Failed, and hasn't deleted for
+ * good. So nothing it has is parsed or checked again.
+ */
 async function queueMissing(env: Env, mailboxId: string, candidates: InboundJob[]): Promise<number> {
 	const held = new Set<string>();
 	for (let i = 0; i < candidates.length; i += HOLDING_BATCH) {
-		for (const id of await env.MAILBOX.getByName(mailboxId).holding(candidates.slice(i, i + HOLDING_BATCH).map((j) => j.ingestId))) held.add(id);
+		for (const id of await env.MAILBOX.getByName(mailboxId).known(candidates.slice(i, i + HOLDING_BATCH).map((j) => j.ingestId))) held.add(id);
 	}
 	const jobs = candidates.filter((j) => !held.has(j.ingestId));
 	for (let i = 0; i < jobs.length; i += QUEUE_BATCH) await env.INBOUND.sendBatch(jobs.slice(i, i + QUEUE_BATCH).map((body) => ({ body })));

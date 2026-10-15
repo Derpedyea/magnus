@@ -408,6 +408,20 @@ describe("restoring a mailbox", () => {
 		expect(await f.env.MAIL.head(rawKey)).toBeNull();
 	});
 
+	it("keeps the originals another mailbox's restore may need from the moment it claims the mailbox", async () => {
+		await f.control.setNow(Date.now());
+		const at = Date.now() - 2 * DAY;
+		const id = ulid(at + 1000);
+		const rawKey = r2Keys.raw(id, at + 1000);
+		await f.env.MAIL.put(rawKey, RAW, { customMetadata: { envelopeFrom: "sender@outside.test", envelopeTo: "family@example.com", mailboxes: `${ids.alice},${ids.bob}` } });
+		await bob().holding([]);
+		await (await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.bob })).exec(`INSERT INTO deleted_messages (id, raw_key, received_at) VALUES ('${id}', '${rawKey}', ${at + 1000})`);
+		// Alice's restore has claimed her mailbox but not named itself yet.
+		await hold(Date.now() + 60_000);
+		await bob().drain();
+		expect(await f.env.MAIL.head(rawKey)).not.toBeNull();
+	});
+
 	it("queues again the mail this mailbox should have and doesn't, from the day before the moment restored to on", async () => {
 		const since = Date.now() - 2 * DAY;
 		const original = async (at: number, mailboxes?: string, to = "alice@example.com") => {
@@ -424,10 +438,12 @@ describe("restoring a mailbox", () => {
 		await original(since + DAY, ids.bob);
 		await original(since + 2000);
 		const latest = await original(Date.now() - 1000, ids.alice);
-		// One it has already, which isn't parsed again.
+		// One it has already, which isn't parsed again, and one it deleted for good, which isn't brought back.
 		const had = await original(since + 3000, ids.alice);
 		const result = await mailbox().ingest({ ...inbound(ids.alice, had), receivedAt: since + 3000, htmlKey: null });
 		expect("deleted" in result).toBe(false);
+		const gone = await original(since + 4000, ids.alice);
+		await (await storage()).exec(`INSERT INTO deleted_messages (id, raw_key, received_at) VALUES ('${gone}', NULL, ${since + 4000})`);
 
 		const response = await restore(new Date(since).toISOString());
 		expect(await response.json()).toMatchObject({ replayed: 3, unknown: 1 });
