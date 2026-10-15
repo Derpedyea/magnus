@@ -486,6 +486,8 @@ export class Mailbox extends DurableObject<Env> {
 			typeof m.restore_id === "string" ? ulidTime(m.restore_id) + RESTORE_LEASE_MS + INGEST_WINDOW_MS : 0,
 			// Claimed but not yet named: it may rewind, then take its mail in again, by a day after its lease at the latest.
 			typeof m.restoring_until === "number" && m.restoring_until > now ? m.restoring_until + INGEST_WINDOW_MS : 0,
+			// Unfinished: restoring again replays, however long it's left. Asked again a day on.
+			m.restore_incomplete === 1 ? now + INGEST_WINDOW_MS : 0,
 		]);
 		return Math.max(0, ...until);
 	}

@@ -222,11 +222,14 @@ describe("restoring a mailbox", () => {
 		await mailbox().drain();
 		// Caught mid-send by a restore: D1 says it's sending, and the draft is a draft again.
 		await f.env.DIRECTORY.prepare("UPDATE drafts SET state = 'sending', send_id = ?2, content = ?3 WHERE id = ?1").bind(id, first.id, JSON.stringify(content)).run();
+		// The moment restored to is before it went out, so the restored mailbox has no record of it.
+		const state = await storage();
+		await state.exec(`DELETE FROM messages_fts WHERE rowid = (SELECT rowid FROM messages WHERE id = '${first.id}')`);
+		await state.exec(`DELETE FROM messages WHERE id = '${first.id}'`);
 		expect((await restore(hourAgo())).status).toBe(200);
 		const again = z.object({ id: z.string() }).parse(await (await send(2)).json());
 		expect(again.id).toBe(`draft-${id}-2`);
 		expect(await (await storage()).exec("SELECT id, delivery_status FROM messages ORDER BY id")).toEqual([
-			{ id: first.id, delivery_status: "sent" },
 			{ id: again.id, delivery_status: "queued" },
 		]);
 	});
@@ -266,6 +269,18 @@ describe("restoring a mailbox", () => {
 		await f.env.DIRECTORY.prepare("INSERT INTO revoked_sends (mailbox_id, send_id) VALUES (?1, 'draft-d1')").bind(ids.alice).run();
 		await (await storage()).exec("DELETE FROM _meta WHERE key LIKE 'revoked_send:%'");
 		expect(await mailbox().enqueueSend(sendInput(ids.alice, { id: "draft-d1" }))).toEqual({ refused: "revoked" });
+	});
+
+	it("leaves claimed a draft whose send the restored mailbox still has, so its retry marks it sent", async () => {
+		await f.env.DIRECTORY.prepare(
+			"INSERT INTO drafts (id, user_id, mailbox_id, content, revision, change_id, updated_at, state, send_id) VALUES ('d1', 'alice', ?1, '{}', 3, 'c', 1, 'sending', 'draft-d1-3')",
+		).bind(ids.alice).run();
+		// Sent, but marking the draft sent failed.
+		asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { id: "draft-d1-3" })));
+		await mailbox().drain();
+		expect((await restore(hourAgo())).status).toBe(200);
+		expect(await f.env.DIRECTORY.prepare("SELECT state, revision, send_id FROM drafts WHERE id = 'd1'").first()).toEqual({ state: "sending", revision: 3, send_id: "draft-d1-3" });
+		expect(await mailbox().enqueueSend(sendInput(ids.alice, { id: "draft-d1-3" }))).toMatchObject({ id: "draft-d1-3" });
 	});
 
 	it("leaves the drafts to another restore that took the mailbox over", async () => {
@@ -408,7 +423,13 @@ describe("restoring a mailbox", () => {
 		expect(await f.env.MAIL.head(rawKey)).toBeNull();
 	});
 
-	it("keeps the originals another mailbox's restore may need from the moment it claims the mailbox", async () => {
+	it.each([
+		["from the moment it claims the mailbox", () => hold(Date.now() + 60_000)],
+		["while it's left unfinished, however long", async () => {
+			await restoreId(ulid(Date.now() - 2 * DAY));
+			await f.env.DIRECTORY.prepare("UPDATE mailboxes SET restore_incomplete = 1 WHERE id = ?1").bind(ids.alice).run();
+		}],
+	])("keeps the originals another mailbox's restore may need %s", async (_, restoring) => {
 		await f.control.setNow(Date.now());
 		const at = Date.now() - 2 * DAY;
 		const id = ulid(at + 1000);
@@ -416,8 +437,7 @@ describe("restoring a mailbox", () => {
 		await f.env.MAIL.put(rawKey, RAW, { customMetadata: { envelopeFrom: "sender@outside.test", envelopeTo: "family@example.com", mailboxes: `${ids.alice},${ids.bob}` } });
 		await bob().holding([]);
 		await (await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.bob })).exec(`INSERT INTO deleted_messages (id, raw_key, received_at) VALUES ('${id}', '${rawKey}', ${at + 1000})`);
-		// Alice's restore has claimed her mailbox but not named itself yet.
-		await hold(Date.now() + 60_000);
+		await restoring();
 		await bob().drain();
 		expect(await f.env.MAIL.head(rawKey)).not.toBeNull();
 	});

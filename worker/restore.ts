@@ -104,16 +104,22 @@ async function restoreClaimed(env: Env, mailboxId: string, restoreId: string, ta
 		// A draft caught mid-send still says so in D1, but the restore took away the mailbox's record of that send, so
 		// retrying it would send it again. It goes back to being a draft, with a new revision, for its sender to decide, and
 		// its old send is revoked for good, in the same batch, while this restore holds the mailbox.
+		// Only those whose send the restored mailbox doesn't have: one that kept it (sent before the moment restored to)
+		// stays claimed, and the send's retry finds it there and marks the draft sent.
+		const sending = await env.DIRECTORY.prepare(`SELECT send_id FROM drafts WHERE mailbox_id = ?1 AND state = 'sending' AND send_id IS NOT NULL`)
+			.bind(mailboxId)
+			.all<{ send_id: string }>();
+		const kept = new Set(await mailbox().holding(sending.results.map((r) => r.send_id)));
+		const erased = JSON.stringify(sending.results.map((r) => r.send_id).filter((id) => !kept.has(id)));
 		const lease = `EXISTS (SELECT 1 FROM mailboxes WHERE id = ?1 AND restoring = ?2)`;
+		const caught = `mailbox_id = ?1 AND state = 'sending' AND send_id IN (SELECT value FROM json_each(?3)) AND ${lease}`;
 		const [, , revoked] = await env.DIRECTORY.batch<{ send_id: string }>([
-			env.DIRECTORY.prepare(
-				`INSERT INTO revoked_sends (mailbox_id, send_id) SELECT mailbox_id, send_id FROM drafts
-				 WHERE mailbox_id = ?1 AND state = 'sending' AND send_id IS NOT NULL AND ${lease} ON CONFLICT DO NOTHING`,
-			).bind(mailboxId, restoreId),
-			env.DIRECTORY.prepare(`UPDATE drafts SET state = 'active', revision = revision + 1, send_id = NULL WHERE mailbox_id = ?1 AND state = 'sending' AND ${lease}`).bind(
+			env.DIRECTORY.prepare(`INSERT INTO revoked_sends (mailbox_id, send_id) SELECT mailbox_id, send_id FROM drafts WHERE ${caught} ON CONFLICT DO NOTHING`).bind(
 				mailboxId,
 				restoreId,
+				erased,
 			),
+			env.DIRECTORY.prepare(`UPDATE drafts SET state = 'active', revision = revision + 1, send_id = NULL WHERE ${caught}`).bind(mailboxId, restoreId, erased),
 			// Every one so far: an earlier attempt that rewound and failed revoked some, and this rewind took the mailbox's copy.
 			env.DIRECTORY.prepare(`SELECT send_id FROM revoked_sends WHERE mailbox_id = ?1`).bind(mailboxId),
 		]);
