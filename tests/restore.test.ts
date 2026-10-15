@@ -118,6 +118,8 @@ describe("restoring a mailbox", () => {
 		expect(refused.status).toBe(409);
 		expect(await refused.json()).toEqual({ error: expect.stringContaining("being restored") });
 		expect(await mailbox().retrySend(failed.id, [], "alice")).toBe("restoring");
+		// Nor does it delete for good what the restore could bring back, from the all-mail view either.
+		expect((await f.worker.fetch(`${ORIGIN}/api/trash`, { method: "DELETE", headers: { Cookie: await f.login("alice"), Origin: ORIGIN } })).status).toBe(503);
 
 		await f.control.setNow(Date.now() + LEASE_MS + 1000);
 		expect((await send()).status).toBe(202);
@@ -135,6 +137,18 @@ describe("restoring a mailbox", () => {
 		await Promise.resolve().then(() => mailbox().abortNow()).catch(() => undefined);
 		asQueued(await mailbox().enqueueSend(sendInput(ids.alice)));
 		expect(await f.control.restored()).toHaveLength(1);
+	});
+
+	it("keeps refusing sends while an earlier attempt is still armed, though a retry fails before arming", async () => {
+		await f.control.setNow(Date.now());
+		await f.control.setRestartsReach(false);
+		expect((await restore(hourAgo())).status).toBe(500);
+		await f.control.failNext("directory", "UPDATE mailboxes SET restore_id");
+		expect((await restore(hourAgo())).status).toBe(500);
+		await f.control.setNow(Date.now() + LEASE_MS + 1000);
+		expect(await mailbox().enqueueSend(sendInput(ids.alice))).toEqual({ refused: "restoring" });
+		await Promise.resolve().then(() => mailbox().abortNow()).catch(() => undefined);
+		asQueued(await mailbox().enqueueSend(sendInput(ids.alice)));
 	});
 
 	it("refuses sends in the restored state till the restore is done", async () => {
@@ -225,6 +239,29 @@ describe("restoring a mailbox", () => {
 		// A request that claimed it before the restore, and reaches the mailbox only now, is refused for good. Others go.
 		expect(await mailbox().enqueueSend(sendInput(ids.alice, { id: "draft-d1" }))).toEqual({ refused: "revoked" });
 		asQueued(await mailbox().enqueueSend(sendInput(ids.alice)));
+	});
+
+	it("keeps refusing the send of a draft it put back, though that attempt failed and a later one rewound again", async () => {
+		await f.control.setNow(Date.now());
+		await f.env.DIRECTORY.prepare(
+			"INSERT INTO drafts (id, user_id, mailbox_id, content, revision, change_id, updated_at, state, send_id) VALUES ('d1', 'alice', ?1, '{}', 3, 'c', 1, 'sending', 'draft-d1')",
+		).bind(ids.alice).run();
+		// It put the draft back, then failed to queue its replay.
+		const at = Date.now() - 3600_000;
+		const id = ulid(at + 1000);
+		await f.env.MAIL.put(r2Keys.raw(id, at + 1000), RAW, { customMetadata: { envelopeFrom: "sender@outside.test", envelopeTo: "alice@example.com", mailboxes: ids.alice } });
+		await f.control.failNext("queue");
+		expect((await restore(new Date(at).toISOString())).status).toBe(500);
+		expect((await restore(new Date(at).toISOString())).status).toBe(200);
+		expect(await mailbox().enqueueSend(sendInput(ids.alice, { id: "draft-d1" }))).toEqual({ refused: "revoked" });
+		// By the mailbox's own copy, checked in the insert's transaction: what a check of the directory's answered just
+		// before the revocation meets.
+		await f.env.DIRECTORY.prepare("DELETE FROM revoked_sends").run();
+		expect(await mailbox().enqueueSend(sendInput(ids.alice, { id: "draft-d1" }))).toEqual({ refused: "revoked" });
+		// And by the directory's list alone, as in a state a later restore rewound to before it was copied.
+		await f.env.DIRECTORY.prepare("INSERT INTO revoked_sends (mailbox_id, send_id) VALUES (?1, 'draft-d1')").bind(ids.alice).run();
+		await (await storage()).exec("DELETE FROM _meta WHERE key LIKE 'revoked_send:%'");
+		expect(await mailbox().enqueueSend(sendInput(ids.alice, { id: "draft-d1" }))).toEqual({ refused: "revoked" });
 	});
 
 	it("leaves the drafts to another restore that took the mailbox over", async () => {

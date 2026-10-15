@@ -170,6 +170,11 @@ export async function mailboxAccess(db: D1Database, reader: Reader, mailboxId: s
 	return row === null ? null : row.restoring ? "restoring" : "member";
 }
 
+/** Whether a restore revoked this send of a draft it put back (worker/restore.ts). */
+export async function isRevokedSend(db: D1Database, mailboxId: string, sendId: string): Promise<boolean> {
+	return (await db.prepare(`SELECT 1 AS hit FROM revoked_sends WHERE mailbox_id = ?1 AND send_id = ?2`).bind(mailboxId, sendId).first()) !== null;
+}
+
 /** For work no request is behind (an import running on): whether the person is still in the mailbox. */
 export async function hasMember(db: D1Database, mailboxId: string, userId: string): Promise<boolean> {
 	return (await db.prepare(`SELECT 1 AS ok FROM mailbox_members WHERE user_id = ?1 AND mailbox_id = ?2`).bind(userId, mailboxId).first()) !== null;

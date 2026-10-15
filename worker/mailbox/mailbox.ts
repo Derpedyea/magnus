@@ -45,7 +45,7 @@ import {
 	withForward,
 } from "#shared";
 import { noteBody } from "#shared/markdown";
-import { hasMember, mailboxInUse, mailboxState } from "../directory";
+import { hasMember, isRevokedSend, mailboxInUse, mailboxState } from "../directory";
 import { retryAddressing } from "./retry";
 import { MIGRATIONS } from "./schema";
 
@@ -369,16 +369,21 @@ export class Mailbox extends DurableObject<Env> {
 		if (waiting.length > 0) return { waiting };
 		// One mark per attempt, so a retry leaves the mark of one that failed before rewinding, which D1 may still name.
 		this.sql.exec(`INSERT OR REPLACE INTO _meta (key, value) VALUES (?1, '1')`, `restore_pending:${restoreId}`);
-		this.fence(restoreId, until);
+		// One armed by an attempt that never restarted takes effect at the next start whatever this one does, so the hold
+		// stays indefinite.
+		this.fence(restoreId, this.hold()?.until === null ? null : until);
 		return { bookmark: target };
 	}
 
-	/** Whether a restore under way refuses new sends (fence()). */
+	/** Whether a restore under way refuses new sends, and R2 deletions it could need back (fence()). */
 	private restoring(): boolean {
+		const hold = this.hold();
+		return hold !== null && (hold.until === null || hold.until > Date.now());
+	}
+
+	private hold(): { id: string; until: number | null } | null {
 		const raw = this.meta("restore_fence");
-		if (raw === undefined) return false;
-		const fence: { until: number | null } = JSON.parse(raw);
-		return fence.until === null || fence.until > Date.now();
+		return raw === undefined ? null : JSON.parse(raw);
 	}
 
 	/**
@@ -423,16 +428,14 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	/**
-	 * In the restored object, once the directory has put back the drafts the restore caught mid-send (`revoked`, their
-	 * sends' ids): refuses those sends for good, since the restore took away this mailbox's record of them and a retry
-	 * could send one twice, then lets sends through again.
+	 * In the restored object, once the directory has put back the drafts the restore caught mid-send: refuses every send
+	 * the directory has revoked (revoked_sends), since this mailbox has no record of them and a retry could send one
+	 * twice, then lets sends through again. Kept here too so the refusal is in the same transaction as the insert.
 	 */
 	async endRestore(restoreId: string, revoked: string[]): Promise<void> {
 		this.ctx.storage.transactionSync(() => {
 			for (const id of revoked) this.sql.exec(`INSERT OR REPLACE INTO _meta (key, value) VALUES (?1, '1')`, `revoked_send:${id}`);
-			const raw = this.meta("restore_fence");
-			const fence: { id: string } | null = raw === undefined ? null : JSON.parse(raw);
-			if (fence?.id === restoreId) this.sql.exec(`DELETE FROM _meta WHERE key = 'restore_fence'`);
+			if (this.hold()?.id === restoreId) this.sql.exec(`DELETE FROM _meta WHERE key = 'restore_fence'`);
 		});
 	}
 
@@ -1321,10 +1324,12 @@ export class Mailbox extends DurableObject<Env> {
 	// ─── Mutations ──────────────────────────────────────────────────────────
 
 	/** Deletes only mail still in Trash at commit time, never an untrashed reply or an active send. Idempotent. */
-	async deleteTrash(input: AddressFilter & { threadId?: string }): Promise<{ blocked: boolean; deleted: number }> {
+	async deleteTrash(input: AddressFilter & { threadId?: string }): Promise<{ blocked: boolean; deleted: number; restoring?: true }> {
 		// This alarm is durable before the transaction. It recovers cleanup after a crash or a lost response.
 		await this.ctx.storage.setAlarm(Date.now());
-		const result = this.ctx.storage.transactionSync(() => {
+		const result = this.ctx.storage.transactionSync((): { blocked: boolean; deleted: number; threadIds: string[]; restoring?: true } => {
+			// The mail a restore under way brings back could need these bodies and files.
+			if (this.restoring()) return { blocked: false, deleted: 0, threadIds: [], restoring: true };
 			const messages = this.sql.exec<{
 				id: string; thread_id: string; html_key: string | null; raw_key: string | null; received_at: number; pending: number;
 			}>(
@@ -1355,7 +1360,7 @@ export class Mailbox extends DurableObject<Env> {
 		await this.emptyTrash();
 		await this.deleteTrashedOriginals();
 		await this.scheduleOutbox();
-		return { blocked: result.blocked, deleted: result.deleted };
+		return result.restoring ? { blocked: false, deleted: 0, restoring: true } : { blocked: result.blocked, deleted: result.deleted };
 	}
 
 	private queueTrash(key: string): void {
@@ -1544,6 +1549,8 @@ export class Mailbox extends DurableObject<Env> {
 		if (input.id) {
 			const queued = await this.queuedSend(input.id);
 			if (queued) return queued;
+			// Revoked by a restore: the directory's list outlives this mailbox's copy, which a later restore rewinds.
+			if (await isRevokedSend(this.env.DIRECTORY, input.mailboxId, input.id)) return { refused: "revoked" };
 		}
 		const now = Date.now();
 		const id = input.id ?? ulid(now);

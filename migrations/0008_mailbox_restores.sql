@@ -5,3 +5,10 @@ ALTER TABLE mailboxes ADD COLUMN restore_id TEXT;
 -- The restore running now, and until when it holds the mailbox: one at a time, so each restores what it asked for.
 ALTER TABLE mailboxes ADD COLUMN restoring TEXT;
 ALTER TABLE mailboxes ADD COLUMN restoring_until INTEGER;
+-- Sends of drafts a restore put back, refused for good: the restore took away the mailbox's record of them, so one
+-- retried could go twice. Here rather than only in the mailbox, which a later restore rewinds.
+CREATE TABLE revoked_sends (
+	mailbox_id TEXT NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
+	send_id TEXT NOT NULL,
+	PRIMARY KEY (mailbox_id, send_id)
+);

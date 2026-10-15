@@ -87,18 +87,23 @@ async function restoreClaimed(env: Env, mailboxId: string, restoreId: string, ta
 		if (!applied) throw new Error("The mailbox didn't restart into the restore. Restore again.", { cause: restart });
 		// A draft caught mid-send still says so in D1, but the restore took away the mailbox's record of that send, so
 		// retrying it would send it again. It goes back to being a draft, with a new revision, for its sender to decide, and
-		// the mailbox refuses its old send for good (endRestore()). One read and write, while this restore holds the mailbox.
+		// its old send is revoked for good, in the same batch, while this restore holds the mailbox.
 		const lease = `EXISTS (SELECT 1 FROM mailboxes WHERE id = ?1 AND restoring = ?2)`;
-		const [caught] = await env.DIRECTORY.batch<{ send_id: string }>([
-			env.DIRECTORY.prepare(`SELECT send_id FROM drafts WHERE mailbox_id = ?1 AND state = 'sending' AND send_id IS NOT NULL AND ${lease}`).bind(mailboxId, restoreId),
+		const [, , revoked] = await env.DIRECTORY.batch<{ send_id: string }>([
+			env.DIRECTORY.prepare(
+				`INSERT INTO revoked_sends (mailbox_id, send_id) SELECT mailbox_id, send_id FROM drafts
+				 WHERE mailbox_id = ?1 AND state = 'sending' AND send_id IS NOT NULL AND ${lease} ON CONFLICT DO NOTHING`,
+			).bind(mailboxId, restoreId),
 			env.DIRECTORY.prepare(`UPDATE drafts SET state = 'active', revision = revision + 1, send_id = NULL WHERE mailbox_id = ?1 AND state = 'sending' AND ${lease}`).bind(
 				mailboxId,
 				restoreId,
 			),
+			// Every one so far: an earlier attempt that rewound and failed revoked some, and this rewind took the mailbox's copy.
+			env.DIRECTORY.prepare(`SELECT send_id FROM revoked_sends WHERE mailbox_id = ?1`).bind(mailboxId),
 		]);
 		const replayed = await replayMail(env, mailboxId, target.at);
 		// Sends go again only now, so none can be one of those drafts, nor happen before a retry rewinds again.
-		await mailbox().endRestore(restoreId, (caught?.results ?? []).map((r) => r.send_id));
+		await mailbox().endRestore(restoreId, (revoked?.results ?? []).map((r) => r.send_id));
 		return { kind: "done", undo, ...applied, ...replayed };
 	} catch (error) {
 		throw new RestoreIncomplete(undo, error);
