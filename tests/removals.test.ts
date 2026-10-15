@@ -255,6 +255,21 @@ describe("removing a person", () => {
 		expect((await restore()).status).toBe(404);
 	});
 
+	it.each([
+		["being restored", "UPDATE mailboxes SET restoring = 'restore-1', restoring_until = ?2 WHERE id = ?1"],
+		["left unfinished by a restore", "UPDATE mailboxes SET restore_incomplete = 1 WHERE id = ?1 AND ?2 > 0"],
+	])("waits to delete someone whose mailbox is %s", async (_, hold) => {
+		await remove();
+		await removedAt(NOW - REMOVAL_MS);
+		await f.env.DIRECTORY.prepare(hold).bind(ids.alice, NOW + 60_000).run();
+		await f.control.purgeRemoved();
+		expect(await exists("SELECT 1 FROM auth_users WHERE id = 'alice'")).toBe(true);
+		expect(await exists("SELECT 1 FROM mailboxes WHERE id = ?1", ids.alice)).toBe(true);
+		await f.env.DIRECTORY.prepare("UPDATE mailboxes SET restoring = NULL, restoring_until = NULL, restore_incomplete = 0 WHERE id = ?1").bind(ids.alice).run();
+		await f.control.purgeRemoved();
+		expect(await exists("SELECT 1 FROM auth_users WHERE id = 'alice'")).toBe(false);
+	});
+
 	it("tries a mailbox's deletion again next hour when it fails", async () => {
 		await remove();
 		await removedAt(NOW - REMOVAL_MS);

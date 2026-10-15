@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { r2Keys } from "#shared";
 import type { Draft, SavedDraft } from "#shared/drafts";
 import { claimDraft, discardDraft, finishDraftSend, saveDraft } from "../worker/drafts";
-import { fixture, type Fixture, type Mailboxes, NOW, sendInput } from "./runtime/fixture";
+import { asQueued, fixture, type Fixture, type Mailboxes, NOW, sendInput } from "./runtime/fixture";
 
 const DAY = 24 * 3600_000;
 
@@ -34,9 +34,8 @@ describe("shared draft files", () => {
 		const id = `draft-${draft.id}`;
 		const claim = await claimDraft(f.env.DIRECTORY, "alice", draft.id, draft.revision, id);
 		if (!claim) throw new Error("Could not claim fixture draft");
-		const queued = await mailbox().enqueueSend(sendInput(ids.alice, { id, subject: draft.content.subject, markdown: draft.content.text, [mode]: draft.content.attachments }));
-		if (!queued) throw new Error("Could not queue fixture draft");
-		await finishDraftSend(f.env.DIRECTORY, "alice", draft.id, queued);
+		const queued = asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { id, subject: draft.content.subject, markdown: draft.content.text, [mode]: draft.content.attachments })));
+		await finishDraftSend(f.env.DIRECTORY, "alice", draft.id, id, queued);
 		return queued;
 	}
 

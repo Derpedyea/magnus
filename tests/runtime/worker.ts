@@ -1,8 +1,9 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { type AddressFilter, type InboundJob, type MailCategory, type SendInput } from "#shared";
+import { type AddressFilter, type InboundJob, type MailCategory, type SendInput, ulid } from "#shared";
 import { z } from "zod";
 import { app } from "../../worker/api";
 import { links } from "../../worker/links";
+import { restoreMailbox } from "../../worker/restore";
 import { auth, signInWithoutCode } from "../../worker/auth";
 import { email, queue } from "../../worker/mail/inbound";
 import { DEEP_MODEL, type Models, QUICK_MODEL } from "../../worker/mail/checks";
@@ -12,7 +13,7 @@ import { type Exporter, ProtonImport as ProductionProtonImport } from "../../wor
 import type { ExporterState, ProtonImportJob } from "#shared/proton-export";
 import { cleanDraftFiles } from "../../worker/drafts";
 import { forgetExpiredDevices } from "../../worker/push";
-import { purgePerson, purgeRemoved, REMOVAL_MS } from "../../worker/removals";
+import { purgePerson, purgeRemoved } from "../../worker/removals";
 import { NOW } from "./clock";
 
 export { Vault } from "../../worker/vault";
@@ -174,8 +175,73 @@ function controlled(env: Env): Env {
 	return { ...env, MAIL, DIRECTORY, INBOUND, EMAIL };
 }
 
+/**
+ * Restores armed per mailbox, taken up when its object next starts, as Cloudflare's are. Local development has no
+ * point-in-time recovery, so a restore here goes back only to just before it was prepared: all that changes is what
+ * prepareRestore() and armRestore() wrote, the mark that tells the states apart and the hold on sends. Whether
+ * restart() reaches the object is up to the test; one that doesn't leaves the restore armed for the next start.
+ */
+const armed = new Map<string, string>();
+let restartsReach = true;
+const restored: string[] = [];
+/** A mailbox whose next holding() answer comes as a restore of it has just named itself and rewound it. */
+let restoreAsAnswering: string | null = null;
+/** The next restore armed fails to say so, as if the object shut down just after arming it. */
+let armThenFail = false;
+/** A mailbox whose restore loses its hold on it once finishRestore() is done, to another restore. */
+let loseHold: string | null = null;
+
 export class Mailbox extends ProductionMailbox {
-	constructor(ctx: DurableObjectState, env: Env) { super(ctx, controlled(env)); }
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, controlled(env));
+		const bookmark = ctx.id.name === undefined ? undefined : armed.get(ctx.id.name);
+		if (ctx.id.name === undefined || bookmark === undefined) return;
+		armed.delete(ctx.id.name);
+		ctx.storage.sql.exec(`DELETE FROM _meta WHERE key LIKE 'restore_pending:%' OR key = 'restore_fence'`);
+		restored.push(bookmark);
+	}
+
+	protected override pointInTime() {
+		const name = this.ctx.id.name ?? "";
+		// Shaped like Cloudflare's, and like them, later ones sort after earlier ones.
+		const bookmark = (ms: number) => {
+			const hex = ms.toString(16).padStart(16, "0");
+			return `${hex.slice(0, 8)}-${hex.slice(8)}-00000000-0`;
+		};
+		return {
+			getBookmarkForTime: async (at: number | Date) => bookmark(Number(at)),
+			getCurrentBookmark: async () => bookmark(Date.now()),
+			onNextSessionRestoreBookmark: async (target: string) => {
+				armed.set(name, target);
+				// Armed, then the object shuts down before answering, as Cloudflare says it can at any time.
+				if (armThenFail) {
+					armThenFail = false;
+					throw new Error("Durable Object reset because its code was updated");
+				}
+				return bookmark(Date.now());
+			},
+		};
+	}
+
+	override async restart() { if (restartsReach) await super.restart(); }
+	override async finishRestore(restoreId: string, until: number) {
+		const applied = await super.finishRestore(restoreId, until);
+		if (loseHold === this.ctx.id.name) {
+			loseHold = null;
+			await this.env.DIRECTORY.prepare("UPDATE mailboxes SET restoring = 'other' WHERE id = ?1").bind(this.ctx.id.name).run();
+		}
+		return applied;
+	}
+	/** Restarts the object, as Cloudflare can at any time. Its caller's call fails. */
+	abortNow() { this.ctx.abort("Restarted by the test"); }
+
+	override async holding(messageIds: string[]) {
+		if (restoreAsAnswering === this.ctx.id.name) {
+			restoreAsAnswering = null;
+			await this.env.DIRECTORY.prepare("UPDATE mailboxes SET restore_id = ?2 WHERE id = ?1").bind(this.ctx.id.name, ulid()).run();
+		}
+		return super.holding(messageIds);
+	}
 
 	override enqueueSend(input: SendInput) { return atTestTime(() => super.enqueueSend(input)); }
 	override recordFailed(job: InboundJob, error: string | null) { return atTestTime(() => super.recordFailed(job, error)); }
@@ -322,7 +388,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	forgetExpiredDevices() { return forgetExpiredDevices(this.env.DIRECTORY, Date.now()); }
 	purgeRemoved() { return atTestTime(() => purgeRemoved(controlled(this.env), now)); }
 	/** One person's purge, as if they'd been picked as due before whatever the test did since. */
-	purgePerson(userId: string) { return purgePerson(controlled(this.env).DIRECTORY, userId, now - REMOVAL_MS); }
+	purgePerson(userId: string) { return purgePerson(controlled(this.env).DIRECTORY, userId, now); }
 	parse(job: InboundJob) { return withPushService(() => ingest(controlled(this.env), job, models)); }
 	setModels(next: Partial<ModelAnswers>) { answers = { ...answers, ...next }; }
 	cleanDrafts() { return cleanDraftFiles(controlled(this.env), now); }
@@ -344,6 +410,18 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	failNext(operation: Operation, prefix = "", count = 1) { failures.push({ operation, prefix, remaining: count }); }
 	stallDeletes(prefix: string) { stalls.push(prefix); }
 	afterIO(action: Hook) { hook = action; }
+	/** A restore as the admin route makes it, by `admin`, checked when it claims the mailbox. */
+	restoreMailbox(mailboxId: string, at: number, admin: { userId: string; sessionId: string }) { return restoreMailbox(controlled(this.env), mailboxId, { at, bookmark: null }, admin); }
+	/** Makes restart() not reach the object, so restores stay armed till it next starts. */
+	setRestartsReach(reach: boolean) { restartsReach = reach; }
+	/** Names a restore of this mailbox, and rewinds it, just before it next answers holding(). */
+	restoreAsItAnswers(mailboxId: string) { restoreAsAnswering = mailboxId; }
+	/** Makes the next arming of a restore take, then fail to answer. */
+	armThenFail() { armThenFail = true; }
+	/** Hands this mailbox's hold to another restore once the current one has finished rewinding it. */
+	loseHoldAfterFinish(mailboxId: string) { loseHold = mailboxId; }
+	/** The bookmarks restored, in order. */
+	restored() { return restored; }
 	state() {
 		return { jobs, modelCalls, sends: sends.map((message) => ({
 			from: message.from, to: message.to, cc: message.cc, bcc: message.bcc, subject: message.subject, text: message.text, html: message.html,
@@ -353,7 +431,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 			})),
 		})) };
 	}
-	reset() { exported = freshExport(); now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; answers = { quick: 0, deep: "personal" }; modelCalls = []; }
+	reset() { armed.clear(); armThenFail = false; restartsReach = true; restoreAsAnswering = null; loseHold = null; restored.length = 0; exported = freshExport(); now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; answers = { quick: 0, deep: "personal" }; modelCalls = []; }
 
 	async consume(bodies: unknown[], attempts = 1) {
 		const acks: string[] = [];

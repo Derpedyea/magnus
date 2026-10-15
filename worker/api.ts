@@ -36,14 +36,14 @@ import { ProtonAnswerSchema, ProtonJobRefSchema, ProtonStartSchema } from "#shar
 import { admin } from "./admin";
 import { auth, currentUser, endReplacedSession, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
-import { getSendIdentities, getUserMailboxes, isMailboxMember, type Reader, resolveRecipient, setSignature } from "./directory";
+import { getSendIdentities, getUserMailboxes, mailboxAccess, mailboxesRestoring, type Reader, resolveRecipient, setSignature } from "./directory";
 import { fileHeaders, renderEmailHtml, serveFile } from "./html";
 import type { Mailbox } from "./mailbox/mailbox";
 import { getInstall } from "./settings";
 import { setup } from "./setup";
 import { draftRoutes } from "./draft-api";
 import { pushRoutes } from "./push-api";
-import { claimDraft, finishDraftSend, readDraft } from "./drafts";
+import { claimDraft, finishDraftSend, readDraft, releaseDraft } from "./drafts";
 import { importMessage } from "./mail/import";
 
 type MailboxStub = DurableObjectStub<Mailbox>;
@@ -82,6 +82,8 @@ app.on(["GET", "POST"], "/auth/*", async (c) => {
 // narrows them to some of the user's addresses. Everything else stays mailbox-scoped below.
 
 const PAGE = 50;
+/** While an admin restores the mailbox to an earlier time (worker/restore.ts), it's out of use. */
+const RESTORING = "This mailbox is being restored to an earlier time. Try again in a few minutes.";
 /** Enough to find anyone by typing, small enough to send whole so matching needs no round trip. */
 const CONTACTS = 1000;
 
@@ -133,10 +135,13 @@ async function readPage(
 const views = new Hono<AppEnv>()
 	.delete("/trash", zValidator("query", ScopeQuery), async (c) => {
 		const queries = (await planRequest(c, c.req.valid("query").in)).filter(canMatch);
+		// None while one is out of use: the mailbox's own hold covers only a restore under way, not one left unfinished.
+		if ((await mailboxesRestoring(c.env.DIRECTORY, queries.map((q) => q.mailboxId), Date.now())).length > 0) return c.json({ error: RESTORING }, 503);
 		// Each mailbox commits independently. Retrying after a partial failure is safe.
 		let deleted = 0;
 		for (const q of queries) {
 			const result = await c.env.MAILBOX.getByName(q.mailboxId).deleteTrash({ addresses: q.addresses });
+			if (result.restoring) return c.json({ error: RESTORING }, 503);
 			if (result.blocked) return c.json({ error: "Mail is still queued or sending. Undo the send or wait for it to finish, then try again." }, 409);
 			deleted += result.deleted;
 		}
@@ -198,8 +203,13 @@ const protonImport = (c: Context<AppEnv>) => c.env.PROTON_IMPORT.getByName(c.var
 const mb = new Hono<AppEnv>()
 	.use("*", async (c, next) => {
 		const mailboxId = c.req.param("mailboxId");
-		if (!mailboxId || !(await isMailboxMember(c.env.DIRECTORY, c.var.reader, mailboxId))) {
-			return c.json({ error: "Not found" }, 404);
+		const access = mailboxId ? await mailboxAccess(c.env.DIRECTORY, c.var.reader, mailboxId, Date.now()) : null;
+		if (!mailboxId || !access) return c.json({ error: "Not found" }, 404);
+		// So nothing done in it meanwhile is lost to the rewind. A request already past here meets the mailbox's own hold
+		// on sends (Mailbox.prepareRestore()).
+		if (access === "restoring") {
+			c.header("Retry-After", "60");
+			return c.json({ error: RESTORING }, 503);
 		}
 		c.set("mailboxId", mailboxId);
 		c.set("mailbox", c.env.MAILBOX.getByName(mailboxId));
@@ -213,6 +223,7 @@ const mb = new Hono<AppEnv>()
 
 	.delete("/threads/:threadId", async (c) => {
 		const result = await c.var.mailbox.deleteTrash({ threadId: c.req.param("threadId") });
+		if (result.restoring) return c.json({ error: RESTORING }, 503);
 		return result.blocked
 			? c.json({ error: "Mail is still queued or sending. Undo the send or wait for it to finish, then try again." }, 409)
 			: c.json({ deleted: result.deleted });
@@ -368,7 +379,7 @@ const mb = new Hono<AppEnv>()
 			if (saved.state === "sending" && saved.send_id) {
 				const queued = await c.var.mailbox.queuedSend(saved.send_id);
 				if (queued) {
-					await finishDraftSend(db, userId, saved.id, queued);
+					await finishDraftSend(db, userId, saved.id, saved.send_id, queued);
 					return c.json(queued, 202);
 				}
 			}
@@ -435,7 +446,8 @@ const mb = new Hono<AppEnv>()
 
 		// Freeze the revision before queueing. A crash leaves a recoverable send intent, retried with the same id.
 		if (req.draft) {
-			saved = await claimDraft(db, userId, req.draft.id, req.draft.revision, `draft-${req.draft.id}`);
+			// One id per revision: a retry of this send keeps it, while a draft changed since (by a restore, say) is a new send.
+			saved = await claimDraft(db, userId, req.draft.id, req.draft.revision, `draft-${req.draft.id}-${req.draft.revision}`);
 			if (!saved) return c.json({ error: "This draft changed on another device or was discarded" }, 409);
 		}
 		const queued = await c.var.mailbox.enqueueSend({
@@ -457,11 +469,12 @@ const mb = new Hono<AppEnv>()
 			localRecipients: local,
 			localOnly: local.length === recipients.length,
 		});
-		if (!queued) {
-			if (saved) await db.prepare(`UPDATE drafts SET state = 'active', send_id = NULL WHERE id = ?1 AND user_id = ?2 AND state = 'sending'`).bind(saved.id, userId).run();
-			return c.json({ error: "The message to forward is gone" }, 404);
+		if ("refused" in queued) {
+			if (saved?.send_id) await releaseDraft(db, userId, saved.id, saved.send_id);
+			if (queued.refused === "gone") return c.json({ error: "The message to forward is gone" }, 404);
+			return c.json({ error: queued.refused === "restoring" ? RESTORING : "A restore put this draft back. Check it, then send it again." }, 409);
 		}
-		if (saved) await finishDraftSend(db, userId, saved.id, queued);
+		if (saved?.send_id) await finishDraftSend(db, userId, saved.id, saved.send_id, queued);
 		return c.json(queued, 202);
 	})
 
@@ -478,7 +491,9 @@ const mb = new Hono<AppEnv>()
 		const identity = await sendIdentity(c, target.from);
 		if (!identity) return c.json({ error: `This mailbox can't send as ${target.from}` }, 403);
 		const local = await localTo(c, identity.address, target.recipients);
-		return (await c.var.mailbox.retrySend(messageId, local, c.var.user.id)) ? c.body(null, 204) : c.json({ error: "Nothing to retry" }, 409);
+		const queued = await c.var.mailbox.retrySend(messageId, local, c.var.user.id);
+		if (queued === "restoring") return c.json({ error: RESTORING }, 409);
+		return queued ? c.body(null, 204) : c.json({ error: "Nothing to retry" }, 409);
 	})
 
 	/** Live updates: the WebSocket terminates in the Mailbox DO (hibernatable). */

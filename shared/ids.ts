@@ -15,3 +15,14 @@ export function ulid(now: number = Date.now(), bytes: Uint8Array = crypto.getRan
 	for (const b of bytes) rand += CROCKFORD[b % 32];
 	return time + rand;
 }
+
+/** When a ULID was made: the milliseconds its first ten characters encode. */
+export function ulidTime(id: string): number {
+	let t = 0;
+	for (const c of id.slice(0, 10).toUpperCase()) {
+		const digit = CROCKFORD.indexOf(c);
+		if (digit < 0) throw new Error(`Not a ULID: ${id}`);
+		t = t * 32 + digit;
+	}
+	return t;
+}

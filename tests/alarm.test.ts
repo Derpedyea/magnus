@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { fixture, type Fixture, type Mailboxes, NOW, sendInput } from "./runtime/fixture";
+import { asQueued, fixture, type Fixture, type Mailboxes, NOW, sendInput } from "./runtime/fixture";
 import { r2Keys, type SendAttachmentRef } from "#shared";
 
 describe("send alarm", () => {
@@ -17,7 +17,7 @@ describe("send alarm", () => {
 	}
 
 	it("waits for the scheduled time, records the handoff, and doesn't resend on another alarm", async () => {
-		const queued = await mailbox().enqueueSend(sendInput(ids.alice, { delayMs: 10_000 }));
+		const queued = asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { delayMs: 10_000 })));
 		expect(queued?.sendAt).toBe(NOW + 10_000);
 		expect(await mailbox().alarmAt()).toBe(NOW + 10_000);
 		await mailbox().drain();
@@ -60,8 +60,8 @@ describe("send alarm", () => {
 	});
 
 	it.each(["E_INVALID_EMAIL", "E_UNKNOWN"])("fails permanently on %s while letting the next message send", async (code) => {
-		const first = await mailbox().enqueueSend(sendInput(ids.alice));
-		const second = await mailbox().enqueueSend(sendInput(ids.alice, { subject: "Second" }));
+		const first = asQueued(await mailbox().enqueueSend(sendInput(ids.alice)));
+		const second = asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { subject: "Second" })));
 		await f.control.setSendErrors([code]);
 		await mailbox().drain();
 		expect(await (await storage()).exec("SELECT id, delivery_status FROM messages ORDER BY rowid")).toEqual([
@@ -73,7 +73,7 @@ describe("send alarm", () => {
 
 	it("copies uploads before sending, sends from the permanent copy, and removes the upload", async () => {
 		const ref = await upload();
-		const queued = await mailbox().enqueueSend(sendInput(ids.alice, { attachments: [ref] }));
+		const queued = asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { attachments: [ref] })));
 		await mailbox().drain();
 		const blobs = await mailbox().getMessageBlobs(queued!.id);
 		const key = blobs!.attachments[0]!.r2Key;
@@ -86,7 +86,7 @@ describe("send alarm", () => {
 	it("keeps an upload another queued message still needs, then deletes it after both copies are kept", async () => {
 		const ref = await upload();
 		await mailbox().enqueueSend(sendInput(ids.alice, { attachments: [ref] }));
-		const second = await mailbox().enqueueSend(sendInput(ids.alice, { attachments: [ref], delayMs: 60_000 }));
+		const second = asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { attachments: [ref], delayMs: 60_000 })));
 		await mailbox().drain();
 		expect((await f.control.state()).sends).toHaveLength(1);
 		expect(await f.env.MAIL.head(ref.r2Key)).not.toBeNull();
@@ -100,7 +100,7 @@ describe("send alarm", () => {
 
 	it.each(["put", "get"] as const)("retries storage %s failures without losing permanent copies or sending early", async (operation) => {
 		const ref = await upload();
-		const queued = await mailbox().enqueueSend(sendInput(ids.alice, { attachments: [ref] }));
+		const queued = asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { attachments: [ref] })));
 		await f.control.failNext(operation, r2Keys.mailbox(ids.alice));
 		await mailbox().drain();
 		expect((await f.control.state()).sends).toEqual([]);
@@ -124,7 +124,7 @@ describe("send alarm", () => {
 
 	it("keeps linked uploads without attaching them to the provider request", async () => {
 		const ref = await upload();
-		const queued = await mailbox().enqueueSend(sendInput(ids.alice, { links: [ref] }));
+		const queued = asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { links: [ref] })));
 		await mailbox().drain();
 		expect((await f.control.state()).sends[0]?.attachments).toBeUndefined();
 		expect((await f.control.state()).sends[0]?.text).toContain(`https://magnus.test/f/${ids.alice}/`);
@@ -135,7 +135,7 @@ describe("send alarm", () => {
 	});
 
 	it("delivers local-only sends without contacting the provider", async () => {
-		const queued = await mailbox().enqueueSend(sendInput(ids.alice, { to: [{ address: "alice+receipts@example.com" }], localOnly: true, localRecipients: [{ address: "alice+receipts@example.com", labels: ["inbox", "receipts"] }] }));
+		const queued = asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { to: [{ address: "alice+receipts@example.com" }], localOnly: true, localRecipients: [{ address: "alice+receipts@example.com", labels: ["inbox", "receipts"] }] })));
 		await mailbox().drain();
 		expect((await f.control.state()).sends).toEqual([]);
 		expect((await mailbox().getMessage(queued!.id))?.message).toMatchObject({ isRead: false, labels: expect.arrayContaining(["inbox", "receipts", "sent"]) });
@@ -144,7 +144,7 @@ describe("send alarm", () => {
 
 	it("undo before the alarm removes the queued message but preserves uploads for the reopened draft", async () => {
 		const ref = await upload();
-		const queued = await mailbox().enqueueSend(sendInput(ids.alice, { attachments: [ref] }));
+		const queued = asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { attachments: [ref] })));
 		expect(await mailbox().cancelSend(queued!.id)).toBe(true);
 		await mailbox().drain();
 		expect((await f.control.state()).sends).toEqual([]);
@@ -155,7 +155,7 @@ describe("send alarm", () => {
 
 	it.each(["put", "get"] as const)("honors undo during attachment %s and cleans copies made after cancellation", async (operation) => {
 		const ref = await upload();
-		const queued = await mailbox().enqueueSend(sendInput(ids.alice, { attachments: [ref] }));
+		const queued = asQueued(await mailbox().enqueueSend(sendInput(ids.alice, { attachments: [ref] })));
 		await f.control.afterIO({ operation, prefix: r2Keys.mailbox(ids.alice), mailboxId: ids.alice, cancelMessageId: queued!.id });
 		await mailbox().drain();
 		expect((await f.control.state()).sends).toEqual([]);
@@ -175,7 +175,7 @@ describe("send alarm", () => {
 	});
 
 	it("retries failed undo cleanup from durable trash on the next alarm", async () => {
-		const queued = await mailbox().enqueueSend(sendInput(ids.alice));
+		const queued = asQueued(await mailbox().enqueueSend(sendInput(ids.alice)));
 		await f.control.failNext("delete", r2Keys.mailbox(ids.alice));
 		await mailbox().cancelSend(queued!.id);
 		expect(await (await storage()).exec("SELECT * FROM trash")).toEqual([{ r2_key: r2Keys.html(ids.alice, queued!.id) }]);

@@ -67,7 +67,8 @@ function mailbox() {
     };
     const bucket = { delete: vi.fn(async () => {}), list: vi.fn(async () => ({ objects: [], truncated: false })), head: vi.fn(async () => ({ customMetadata: { mailboxes: "mb" } })) };
     const holding = vi.fn(async () => []);
-    const directory = { all: vi.fn(async () => ({ results: [] })) };
+    // No row: the mailbox was never restored (getLinkedFile() asks before serving).
+    const directory = { all: vi.fn(async () => ({ results: [] })), first: vi.fn(async () => null) };
     const env = {
         MAIL: bucket,
         DIRECTORY: { prepare: () => ({ ...directory, bind: () => directory }) },

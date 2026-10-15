@@ -104,33 +104,36 @@ export async function purgeRemoved(env: Env, now: number): Promise<void> {
 	const cutoff = now - REMOVAL_MS;
 	const { results } = await db.prepare(`SELECT user_id FROM removed_people WHERE removed_at <= ?1`).bind(cutoff).all<{ user_id: string }>();
 	// Each independent of the others, and the mail of anyone done before still goes. Whatever fails is due again next hour.
-	const purged = await Promise.allSettled(results.map(({ user_id }) => purgePerson(db, user_id, cutoff)));
+	const purged = await Promise.allSettled(results.map(({ user_id }) => purgePerson(db, user_id, now)));
 	const deleted = await Promise.allSettled([deleteMailboxObjects(env)]);
 	const failed = [...purged, ...deleted].flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
 	if (failed.length > 0) throw new AggregateError(failed, `Removal purge failed: ${failed.map(String).join("; ")}`);
 }
 
 /**
- * Deletes one person removed at `cutoff` or before, leaving their mail for deleteMailboxObjects(). Each statement checks
- * they're still removed and due, so someone restored (or removed again) since they were picked is left alone. The
- * person goes last, since their removal row goes with them.
+ * Deletes one person removed REMOVAL_MS before `now` or earlier, leaving their mail for deleteMailboxObjects(). Each
+ * statement checks they're still removed and due, so someone restored (or removed again) since they were picked is left
+ * alone, as is anyone whose mailbox is being restored to an earlier time (worker/restore.ts): that waits for the next
+ * hour, rather than bring back mail the purge deleted. The person goes last, since their removal row goes with them.
  */
-export async function purgePerson(db: D1Database, userId: string, cutoff: number): Promise<void> {
-	const due = `EXISTS (SELECT 1 FROM removed_people WHERE user_id = ?1 AND removed_at <= ?2)`;
+export async function purgePerson(db: D1Database, userId: string, now: number): Promise<void> {
+	const cutoff = now - REMOVAL_MS;
+	const due = `EXISTS (SELECT 1 FROM removed_people WHERE user_id = ?1 AND removed_at <= ?2)
+		AND NOT EXISTS (SELECT 1 FROM mailboxes WHERE removed_with = ?1 AND (coalesce(restoring_until, 0) > ?3 OR restore_incomplete = 1))`;
 	// Never one somebody's in. A restore takes the mailboxes it gives back out of hiding; this holds even if one didn't.
 	const hidden = `SELECT id FROM mailboxes WHERE removed_with = ?1 AND NOT EXISTS (SELECT 1 FROM mailbox_members WHERE mailbox_id = mailboxes.id)`;
 	await db.batch([
-		db.prepare(`INSERT INTO mailbox_deletions (mailbox_id) ${hidden} AND ${due} ON CONFLICT DO NOTHING`).bind(userId, cutoff),
+		db.prepare(`INSERT INTO mailbox_deletions (mailbox_id) ${hidden} AND ${due} ON CONFLICT DO NOTHING`).bind(userId, cutoff, now),
 		db
 			.prepare(
 				`DELETE FROM addresses WHERE ${due}
 				 AND address IN (SELECT address FROM address_routes WHERE mailbox_id IN (${hidden}))
 				 AND address NOT IN (SELECT address FROM address_routes WHERE mailbox_id NOT IN (${hidden}))`,
 			)
-			.bind(userId, cutoff),
-		db.prepare(`DELETE FROM mailboxes WHERE id IN (${hidden}) AND ${due}`).bind(userId, cutoff),
+			.bind(userId, cutoff, now),
+		db.prepare(`DELETE FROM mailboxes WHERE id IN (${hidden}) AND ${due}`).bind(userId, cutoff, now),
 		// Their sessions, sign-in methods, signatures, and drafts go with them.
-		db.prepare(`DELETE FROM auth_users WHERE id = ?1 AND ${due}`).bind(userId, cutoff),
+		db.prepare(`DELETE FROM auth_users WHERE id = ?1 AND ${due}`).bind(userId, cutoff, now),
 	]);
 }
 

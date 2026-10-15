@@ -88,6 +88,13 @@ export interface Reader {
 export const live = (session: string, user: string) =>
 	`EXISTS (SELECT 1 FROM auth_sessions s WHERE s.id = ${session} AND s.userId = ${user} AND s.expiresAt > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
 
+/**
+ * SQL: the person in parameter `user` is an admin now, not suspended, and signed in with the session in parameter
+ * `session`. Suspending marks them before their sessions go, so both are asked.
+ */
+export const liveAdmin = (session: string, user: string) =>
+	`EXISTS (SELECT 1 FROM auth_users a WHERE a.id = ${user} AND a.role = 'admin' AND coalesce(a.banned, 0) = 0 AND ${live(session, user)})`;
+
 export async function getUserMailboxes(db: D1Database, reader: Reader): Promise<MailboxMembership[]> {
 	const [mailboxes, addresses] = await Promise.all([
 		db
@@ -155,6 +162,38 @@ export async function isMailboxMember(db: D1Database, reader: Reader, mailboxId:
 	return row !== null;
 }
 
+/**
+ * Whether the reader may use this mailbox now: "restoring" while an admin restores it to an earlier time
+ * (worker/restore.ts), when it's out of use. Null if they aren't in it, or their session has ended.
+ */
+export async function mailboxAccess(db: D1Database, reader: Reader, mailboxId: string, now: number): Promise<"member" | "restoring" | null> {
+	const row = await db
+		.prepare(
+			`SELECT (coalesce(b.restoring_until, 0) > ?4 OR b.restore_incomplete = 1) AS restoring FROM mailbox_members mm JOIN mailboxes b ON b.id = mm.mailbox_id
+			 WHERE mm.user_id = ?1 AND mm.mailbox_id = ?2 AND ${live("?3", "?1")}`,
+		)
+		.bind(reader.userId, mailboxId, reader.sessionId, now)
+		.first<{ restoring: number }>();
+	return row === null ? null : row.restoring ? "restoring" : "member";
+}
+
+/**
+ * Which of these mailboxes are out of use, being restored to an earlier time or left unfinished by a restore that
+ * failed (worker/restore.ts), as mailboxAccess() says for one.
+ */
+export async function mailboxesRestoring(db: D1Database, mailboxIds: string[], now: number): Promise<string[]> {
+	const { results } = await db
+		.prepare(`SELECT id FROM mailboxes WHERE id IN (SELECT value FROM json_each(?1)) AND (coalesce(restoring_until, 0) > ?2 OR restore_incomplete = 1)`)
+		.bind(JSON.stringify(mailboxIds), now)
+		.all<{ id: string }>();
+	return results.map((r) => r.id);
+}
+
+/** Whether a restore revoked this send of a draft it put back (worker/restore.ts). */
+export async function isRevokedSend(db: D1Database, mailboxId: string, sendId: string): Promise<boolean> {
+	return (await db.prepare(`SELECT 1 AS hit FROM revoked_sends WHERE mailbox_id = ?1 AND send_id = ?2`).bind(mailboxId, sendId).first()) !== null;
+}
+
 /** For work no request is behind (an import running on): whether the person is still in the mailbox. */
 export async function hasMember(db: D1Database, mailboxId: string, userId: string): Promise<boolean> {
 	return (await db.prepare(`SELECT 1 AS ok FROM mailbox_members WHERE user_id = ?1 AND mailbox_id = ?2`).bind(userId, mailboxId).first()) !== null;
@@ -166,13 +205,27 @@ export async function mailboxExists(db: D1Database, mailboxId: string): Promise<
 }
 
 /**
- * In the directory and not hidden by its person's removal (worker/removals.ts). Asks for every column rather than
- * naming removed_with, so it answers before D1 is migrated: a mailbox's alarm can be the first thing to run after a
- * deploy, and until then the column's missing and nobody can have been removed.
+ * What the directory says of a mailbox: whether it's in use (not hidden by its person's removal: worker/removals.ts),
+ * and its latest restore to an earlier time (worker/restore.ts). Null if it isn't in the directory. Asks for every
+ * column rather than naming them, so it answers before D1 is migrated: a mailbox's alarm can be the first thing to run
+ * after a deploy, and until then a missing column means nobody was removed and nothing restored.
  */
-export async function mailboxInUse(db: D1Database, mailboxId: string): Promise<boolean> {
+export async function mailboxState(
+	db: D1Database,
+	mailboxId: string,
+): Promise<{ inUse: boolean; restoreId: string | null; restoringUntil: number | null } | null> {
 	const row = await db.prepare(`SELECT * FROM mailboxes WHERE id = ?1`).bind(mailboxId).first<Record<string, unknown>>();
-	return row !== null && row.removed_with == null;
+	if (!row) return null;
+	return {
+		inUse: row.removed_with == null,
+		restoreId: typeof row.restore_id === "string" ? row.restore_id : null,
+		restoringUntil: typeof row.restoring_until === "number" ? row.restoring_until : null,
+	};
+}
+
+/** In the directory and not hidden by its person's removal. */
+export async function mailboxInUse(db: D1Database, mailboxId: string): Promise<boolean> {
+	return (await mailboxState(db, mailboxId))?.inUse === true;
 }
 
 /** One of this install's addresses (normalized, no +tag), enabled or not. */

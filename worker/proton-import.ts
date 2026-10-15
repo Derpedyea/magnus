@@ -163,6 +163,12 @@ export class ProtonImport extends DurableObject<Env> {
 		return this.#exporterOf().fetch(path, { ...init, signal: AbortSignal.timeout(ms) });
 	}
 
+	/** Whether an import into this mailbox is under way, which a restore of it waits for (worker/restore.ts). */
+	busy(): boolean {
+		const job = this.#job();
+		return job !== null && (!FINAL.has(job.phase) || Boolean(job.container));
+	}
+
 	status(userId: string): ProtonImportJob | null {
 		const job = this.#job();
 		return job ? this.#view(job, userId) : null;

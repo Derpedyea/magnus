@@ -23,6 +23,7 @@ import {
 	unblockSender,
 } from "./directory";
 import { deleteMailboxObjects, removePerson, restorePerson } from "./removals";
+import { RESTORE_WINDOW_MS, RestoreIncomplete, restoreMailbox } from "./restore";
 import { forgetCloudflareToken, getInstall, loadCloudflareToken, saveCloudflareToken } from "./settings";
 import { LocalPartSchema, NOT_THIS_INSTALL, TokenSchema } from "./setup";
 
@@ -181,6 +182,50 @@ export const admin = new Hono<AppEnv>()
 		const restored = await restorePerson(c.env.DIRECTORY, c.req.param("id"));
 		return restored ? c.body(null, 204) : c.json({ error: "They've already been deleted for good." }, 404);
 	})
+
+	// ─── Mailboxes ────────────────────────────────────────────────────────────────
+
+	/**
+	 * Puts a mailbox back as it was at `at`, then queues again the mail it should have and doesn't (worker/restore.ts). Undoing a
+	 * restore sends back the `undo` it answered with, whose bookmark is exactly the moment before. For the runbook in
+	 * docs/RESTORE.md; nothing in the app calls it.
+	 */
+	.post(
+		"/mailboxes/:id/restore",
+		zValidator(
+			"json",
+			z.object({
+				at: z.iso.datetime({ offset: true }).transform((at) => Date.parse(at)),
+				// Cloudflare's, e.g. 0000007b-0000b26e-00001538-0c3e87bb37b3db5cc52eedb93cd3b96b.
+				bookmark: z.string().regex(/^[0-9a-f]{8}(-[0-9a-f]+){3}$/).optional(),
+			}),
+		),
+		async (c) => {
+			const { at, bookmark } = c.req.valid("json");
+			const now = Date.now();
+			if (at > now || at < now - RESTORE_WINDOW_MS) return c.json({ error: "Pick a time in the last 30 days." }, 400);
+			// The admin is checked again as the restore claims the mailbox: the body can arrive after the check above.
+			const result = await restoreMailbox(c.env, c.req.param("id"), { at, bookmark: bookmark ?? null }, c.var.reader).catch((error: unknown) => {
+				// Answered rather than lost: the way back from a mailbox that may already be rewound.
+				if (error instanceof RestoreIncomplete) return error;
+				throw error;
+			});
+			if (result instanceof RestoreIncomplete) {
+				console.error(JSON.stringify({ msg: "restore incomplete", mailboxId: c.req.param("id"), error: String(result.cause) }));
+				return c.json({ error: result.message, undo: { at: new Date(result.undo.at).toISOString(), bookmark: result.undo.bookmark } }, 500);
+			}
+			if (result.kind === "missing") return c.json({ error: "Not found" }, 404);
+			if (result.kind === "forbidden") return c.json({ error: "Only admins can do that." }, 403);
+			if (result.kind === "importing") return c.json({ error: "An import into this mailbox is running. Restore once it's done or cancelled." }, 409);
+			if (result.kind === "busy") return c.json({ error: "This mailbox is being restored already. Try again once that's done." }, 409);
+			if (result.kind === "waiting") {
+				const waiting = result.waiting.map((w) => ({ ...w, sendAt: new Date(w.sendAt).toISOString() }));
+				return c.json({ error: "Mail is waiting to send from this mailbox, which a restore would lose. Restore once it's gone, or its senders have cancelled it.", waiting }, 409);
+			}
+			const { held, linksStopped, replayed, unknown, undo } = result;
+			return c.json({ held, linksStopped, replayed, unknown, undo: { at: new Date(undo.at).toISOString(), bookmark: undo.bookmark } });
+		},
+	)
 
 	// ─── Addresses ────────────────────────────────────────────────────────────────
 
