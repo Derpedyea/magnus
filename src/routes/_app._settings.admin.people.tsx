@@ -1,4 +1,4 @@
-import { type DirectoryDomain, type Person, REMOVAL_DAYS } from "#shared";
+import { type DirectoryDomain, type Person } from "#shared";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { EllipsisIcon, UserPlusIcon } from "lucide-react";
@@ -30,7 +30,7 @@ import { directoryQuery } from "../queries";
 
 export const Route = createFileRoute("/_app/_settings/admin/people")({ component: People });
 
-// Shared by both tables, so the removed line up under the rest.
+// Shared by both tables, so the archived line up under the rest.
 const PERSON_COLUMN = "sm:w-1/3";
 const ADDRESSES_COLUMN = "hidden sm:table-cell sm:w-2/5";
 
@@ -38,9 +38,9 @@ function People() {
 	const { people, mailboxes, addresses, domains } = useSuspenseQuery(directoryQuery).data;
 	const { user } = useAccount();
 	const [adding, setAdding] = useState(false);
-	const removed = people.filter((p): p is Removed => p.deletesAt !== null);
+	const archived = people.filter((p): p is Archived => p.archived !== null);
 
-	/** Every address that delivers to one of this person's mailboxes, or, once they're removed, to one their removal hid. */
+	/** Every address that delivers to one of this person's mailboxes, or, once they're archived, to one that hid with them. */
 	const addressesOf = (personId: string) => {
 		const theirs = new Set(mailboxes.filter((m) => m.memberIds.includes(personId) || m.removedWith === personId).map((m) => m.id));
 		return addresses.filter((a) => a.mailboxIds.some((id) => theirs.has(id))).map((a) => a.address);
@@ -67,29 +67,29 @@ function People() {
 				</TableHeader>
 				<TableBody>
 					{people
-						.filter((p) => p.deletesAt === null)
+						.filter((p) => p.archived === null)
 						.map((p) => (
 							<PersonRow key={p.id} person={p} addresses={addressesOf(p.id)} self={p.id === user.id} />
 						))}
 				</TableBody>
 			</Table>
-			{removed.length > 0 ? (
-				<section aria-labelledby="removed-people" className="flex flex-col gap-2">
-					<h2 id="removed-people" className="font-medium">
-						Removed
+			{archived.length > 0 ? (
+				<section aria-labelledby="archived-people" className="flex flex-col gap-2">
+					<h2 id="archived-people" className="font-medium">
+						Archived
 					</h2>
 					<Table>
 						<TableHeader>
 							<TableRow>
 								<TableHead className={PERSON_COLUMN}>Person</TableHead>
 								<TableHead className={ADDRESSES_COLUMN}>Addresses</TableHead>
-								<TableHead>Deleted for good</TableHead>
+								<TableHead>Archived</TableHead>
 								<TableHead className="w-0" />
 							</TableRow>
 						</TableHeader>
 						<TableBody>
-							{removed.map((p) => (
-								<RemovedRow key={p.id} person={p} addresses={addressesOf(p.id)} />
+							{archived.map((p) => (
+								<ArchivedRow key={p.id} person={p} addresses={addressesOf(p.id)} />
 							))}
 						</TableBody>
 					</Table>
@@ -103,7 +103,7 @@ function People() {
 function PersonRow(props: { person: Person; addresses: string[]; self: boolean }) {
 	const { person } = props;
 	const qc = useQueryClient();
-	const [removing, setRemoving] = useState(false);
+	const [archiving, setArchiving] = useState(false);
 	const refresh = () => qc.invalidateQueries({ queryKey: ["admin"] });
 	// Role and suspension are Better Auth's admin plugin, straight from the browser.
 	const setRole = useMutation({
@@ -114,7 +114,7 @@ function PersonRow(props: { person: Person; addresses: string[]; self: boolean }
 		mutationFn: () => (person.banned ? authClient.admin.unbanUser({ userId: person.id }) : authClient.admin.banUser({ userId: person.id })),
 		onSuccess: refresh,
 	});
-	const remove = useMutation({ mutationFn: () => adminApi.removePerson(person.id), onSuccess: refresh });
+	const archive = useMutation({ mutationFn: () => adminApi.removePerson(person.id), onSuccess: refresh });
 	const failed = setRole.error ?? suspend.error;
 
 	return (
@@ -126,7 +126,11 @@ function PersonRow(props: { person: Person; addresses: string[]; self: boolean }
 						{person.banned ? <Badge variant="outline">Suspended</Badge> : null}
 					</span>
 					<span className="text-muted-foreground">{person.email}</span>
-					{failed ? <span className="text-destructive">{errorMessage(failed)}</span> : null}
+					{failed ? (
+						<span role="alert" className="whitespace-normal text-destructive">
+							{errorMessage(failed)}
+						</span>
+					) : null}
 				</div>
 			</TableCell>
 			<AddressesCell addresses={props.addresses} />
@@ -137,7 +141,7 @@ function PersonRow(props: { person: Person; addresses: string[]; self: boolean }
 						<EllipsisIcon />
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end">
-						{/* You can't lock yourself out: someone else has to change your role, suspend, or remove you. */}
+						{/* You can't lock yourself out: someone else has to change your role, suspend, or archive you. */}
 						<DropdownMenuItem disabled={props.self} onClick={() => setRole.mutate()}>
 							{person.isAdmin ? "Make member" : "Make admin"}
 						</DropdownMenuItem>
@@ -145,25 +149,25 @@ function PersonRow(props: { person: Person; addresses: string[]; self: boolean }
 							{person.banned ? "Restore access" : "Suspend"}
 						</DropdownMenuItem>
 						<DropdownMenuSeparator />
-						<DropdownMenuItem variant="destructive" disabled={props.self} onClick={() => setRemoving(true)}>
-							Remove…
+						<DropdownMenuItem variant="destructive" disabled={props.self} onClick={() => setArchiving(true)}>
+							Archive…
 						</DropdownMenuItem>
 					</DropdownMenuContent>
 				</DropdownMenu>
-				<AlertDialog open={removing} onOpenChange={setRemoving}>
+				<AlertDialog open={archiving} onOpenChange={setArchiving}>
 					<AlertDialogContent>
 						<AlertDialogHeader>
-							<AlertDialogTitle>Remove {person.name}?</AlertDialogTitle>
+							<AlertDialogTitle>Archive {person.name}?</AlertDialogTitle>
 							<AlertDialogDescription>
-								They're signed out, and mail to addresses only they receive is refused. Their mailbox and mail are deleted for good in {REMOVAL_DAYS}{" "}
-								days, and until then you can restore them here. To keep their mail coming in, suspend them instead.
+								They're signed out, and mail to addresses only they receive is refused. Their mail is kept until you restore them or delete
+								them for good. To keep their mail coming in, suspend them instead.
 							</AlertDialogDescription>
 						</AlertDialogHeader>
-						{remove.error ? <FieldError>{errorMessage(remove.error)}</FieldError> : null}
+						{archive.error ? <FieldError>{errorMessage(archive.error)}</FieldError> : null}
 						<AlertDialogFooter>
 							<AlertDialogCancel>Cancel</AlertDialogCancel>
-							<AlertDialogAction variant="destructive" onClick={() => remove.mutate()} disabled={remove.isPending}>
-								Remove {person.name}
+							<AlertDialogAction variant="destructive" onClick={() => archive.mutate()} disabled={archive.isPending}>
+								Archive {person.name}
 							</AlertDialogAction>
 						</AlertDialogFooter>
 					</AlertDialogContent>
@@ -173,16 +177,35 @@ function PersonRow(props: { person: Person; addresses: string[]; self: boolean }
 	);
 }
 
-type Removed = Person & { deletesAt: number };
+type Archived = Person & { archived: NonNullable<Person["archived"]> };
 
-/** Someone removed but not yet deleted: when they will be, and the way back. */
-function RemovedRow(props: { person: Removed; addresses: string[] }) {
+/** Someone archived: when, the way back, and the way to delete them for good. */
+function ArchivedRow(props: { person: Archived; addresses: string[] }) {
 	const { person } = props;
 	const qc = useQueryClient();
+	// The archive the admin is asked about, kept as the dialog opens: if someone restores and archives them again
+	// meanwhile, deleting answers that they've changed rather than deleting the newer archive.
+	const [deleting, setDeleting] = useState<string | null>(null);
+	const refresh = () => qc.invalidateQueries({ queryKey: ["admin"] });
+	// Each clears the other's error as it starts, so the row shows what the last one said.
 	const restore = useMutation({
 		mutationFn: () => adminApi.restorePerson(person.id),
-		onSuccess: () => qc.invalidateQueries({ queryKey: ["admin"] }),
+		onMutate: () => {
+			remove.reset();
+		},
+		onSuccess: refresh,
 	});
+	// Refetched however it ends. A failure closes the dialog, so opening it again asks about the archive that's there
+	// now (after a 409, a newer one), and shows on the row.
+	const remove = useMutation({
+		mutationFn: (archiveId: string) => adminApi.deletePerson(person.id, archiveId),
+		onMutate: () => {
+			restore.reset();
+		},
+		onError: () => setDeleting(null),
+		onSettled: refresh,
+	});
+	const failed = restore.error ?? remove.error;
 
 	return (
 		<TableRow>
@@ -190,16 +213,50 @@ function RemovedRow(props: { person: Removed; addresses: string[] }) {
 				<div className="flex flex-col">
 					<span className="font-medium">{person.name}</span>
 					<span className="text-muted-foreground">{person.email}</span>
-					{restore.error ? <span className="text-destructive">{errorMessage(restore.error)}</span> : null}
+					{failed ? (
+						<span role="alert" className="whitespace-normal text-destructive">
+							{errorMessage(failed)}
+						</span>
+					) : null}
 				</div>
 			</TableCell>
 			<AddressesCell addresses={props.addresses} />
-			<TableCell>{new Date(person.deletesAt).toLocaleDateString([], { dateStyle: "medium" })}</TableCell>
+			<TableCell>{new Date(person.archived.at).toLocaleDateString([], { dateStyle: "medium" })}</TableCell>
 			<TableCell>
-				<Button variant="outline" size="sm" onClick={() => restore.mutate()} disabled={restore.isPending}>
-					{restore.isPending ? <Spinner data-icon="inline-start" /> : null}
-					Restore
-				</Button>
+				<div className="flex items-center gap-1">
+					<Button variant="outline" size="sm" onClick={() => restore.mutate()} disabled={restore.isPending}>
+						{restore.isPending ? <Spinner data-icon="inline-start" /> : null}
+						Restore
+					</Button>
+					<DropdownMenu>
+						<DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`More for ${person.name}`} />}>
+							<EllipsisIcon />
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="end" className="w-auto">
+							<DropdownMenuItem variant="destructive" onClick={() => setDeleting(person.archived.id)}>
+								Delete for good…
+							</DropdownMenuItem>
+						</DropdownMenuContent>
+					</DropdownMenu>
+				</div>
+				<AlertDialog open={deleting !== null} onOpenChange={(open) => setDeleting(open ? deleting : null)}>
+					<AlertDialogContent>
+						<AlertDialogHeader>
+							<AlertDialogTitle>Delete {person.name} for good?</AlertDialogTitle>
+							<AlertDialogDescription>
+								Their account, their mailbox and all its mail, and addresses only they receive are deleted. This can't be undone.
+							</AlertDialogDescription>
+						</AlertDialogHeader>
+						<AlertDialogFooter>
+							<AlertDialogCancel>Cancel</AlertDialogCancel>
+							<AlertDialogAction variant="destructive" onClick={() => {
+									if (deleting !== null) remove.mutate(deleting);
+								}} disabled={remove.isPending}>
+								Delete for good
+							</AlertDialogAction>
+						</AlertDialogFooter>
+					</AlertDialogContent>
+				</AlertDialog>
 			</TableCell>
 		</TableRow>
 	);

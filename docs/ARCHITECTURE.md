@@ -146,8 +146,8 @@ m/<mailboxId>/draft-files/<userId>/<uuid> account-owned draft sources; conflict 
 uploads/<mailboxId>/<uuid>              composer uploads; a lifecycle rule (DEPLOY.md) can reap abandoned ones
 ```
 
-Everything a mailbox owns sits under `m/<mailboxId>/`, so deleting a mailbox (30 days after its person is removed:
-`worker/removals.ts`) is a prefix delete. Its
+Everything a mailbox owns sits under `m/<mailboxId>/`, so deleting a mailbox (when an admin deletes its archived person
+for good: `worker/removals.ts`) is a prefix delete. Its
 originals under `raw/` go too, unless another mailbox holds that message or is still due it from the queue. The raw archive
 means any parsing bug can be fixed by re-queuing `InboundJob`s. Ingest is idempotent.
 
@@ -170,7 +170,7 @@ whole mailbox is the one exception. Code that writes or drops `m/` objects keeps
    (group aliases fan out here). Returning ends the SMTP transaction. If R2 or the queue fails, the handler
    throws instead of returning. Email Routing then answers `421 4.3.0` and the sender retries later, so the
    message is neither silently accepted nor bounced (§7 #4).
-4. `queue()` first checks the target mailbox is still in the directory: one deleted since (its person removed,
+4. `queue()` first checks the target mailbox is still in the directory: one deleted since (its person deleted for good,
    or a failed add undone) gets nothing, and its original goes once no mailbox it was queued for is left. Then it
    parses with postal-mime, writes the HTML and attachments to R2, extracts the `Authentication-Results`
    verdicts, works out who the sender verifiably is (§5.6), and calls `Mailbox.ingest()`. Only the verdicts
@@ -418,13 +418,14 @@ open tabs.
   minutes, die after 3 wrong guesses, and are stored hashed. Sign-in endpoints are rate-limited per client
   IP (3 a minute), with the counters in D1 so the limit holds across Worker instances.
 - **Roles** are the admin plugin's: `admin` or not. Role changes and suspensions go from the browser straight
-  to the plugin (`/api/auth/admin/*`); adding and removing people goes through `/api/admin`, since that also
-  creates or hides their mailbox. Suspending or removing someone ends their sessions at once. A session cookie
+  to the plugin (`/api/auth/admin/*`); adding and archiving people goes through `/api/admin`, since that also
+  creates or hides their mailbox. Suspending or archiving someone ends their sessions at once. A session cookie
   vouches for itself for up to 5 minutes without asking D1, and Better Auth renews it from the cookie alone, so
   everything that matters asks D1 whether the session still exists: reading mail (`Reader`, `worker/directory.ts`),
-  admin powers (`isAdminNow()`), and every Better Auth endpoint but signing in and out. Removing also refuses
-  their mail; they and their mailbox are deleted 30 days later unless an admin restores them first. You can't
-  change your own role, suspend yourself, or remove yourself.
+  admin powers (`isAdminNow()`), and every Better Auth endpoint but signing in and out. Archiving also refuses
+  their mail, and keeps them and their mailbox until an admin restores them or deletes them for good; deleting
+  for good checks, in its own writes, that the caller is still a signed-in admin. You can't change your own role,
+  suspend yourself, or archive yourself.
 - Mailbox access requires a `mailbox_members` row and a live session, and sending as an address requires
   `address_routes.can_send` on a domain that can send.
 - One Better Auth instance per origin the Worker is reached on (`workers.dev`, a custom domain), so OAuth

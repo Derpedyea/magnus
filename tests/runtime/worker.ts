@@ -13,7 +13,7 @@ import { type Exporter, ProtonImport as ProductionProtonImport } from "../../wor
 import type { ExporterState, ProtonImportJob } from "#shared/proton-export";
 import { cleanDraftFiles } from "../../worker/drafts";
 import { forgetExpiredDevices } from "../../worker/push";
-import { purgePerson, purgeRemoved } from "../../worker/removals";
+import { deleteMailboxObjects, deletePerson } from "../../worker/removals";
 import { NOW } from "./clock";
 
 export { Vault } from "../../worker/vault";
@@ -386,9 +386,9 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 		return a.api.createVerificationOTP({ body: { email: address, type: "sign-in" } });
 	}
 	forgetExpiredDevices() { return forgetExpiredDevices(this.env.DIRECTORY, Date.now()); }
-	purgeRemoved() { return atTestTime(() => purgeRemoved(controlled(this.env), now)); }
-	/** One person's purge, as if they'd been picked as due before whatever the test did since. */
-	purgePerson(userId: string) { return purgePerson(controlled(this.env).DIRECTORY, userId, now); }
+	/** Deletes someone for good, leaving their mail to deleteMailboxObjects(), as the hourly cron would. */
+	deletePerson(userId: string, archiveId: string, admin: { userId: string; sessionId: string }) { return deletePerson(controlled(this.env).DIRECTORY, userId, archiveId, admin); }
+	deleteMailboxObjects() { return atTestTime(() => deleteMailboxObjects(controlled(this.env))); }
 	parse(job: InboundJob) { return withPushService(() => ingest(controlled(this.env), job, models)); }
 	setModels(next: Partial<ModelAnswers>) { answers = { ...answers, ...next }; }
 	cleanDrafts() { return cleanDraftFiles(controlled(this.env), now); }

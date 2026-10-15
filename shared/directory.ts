@@ -17,8 +17,6 @@ export const MAX_SIGNATURE = 2000;
 /** Adding a passkey needs a sign-in from this many minutes ago at most. */
 export const FRESH_SIGN_IN_MINUTES = 15;
 
-/** A removed person, and their mail, are deleted for good this many days after their removal. Until then they can be restored. */
-export const REMOVAL_DAYS = 30;
 
 export interface MailboxAddress {
 	address: string;
@@ -71,8 +69,11 @@ export interface Person {
 	isAdmin: boolean;
 	/** Suspended: can't sign in, but their addresses keep receiving. */
 	banned: boolean;
-	/** Removed: when they and their mail are deleted for good, unless they're restored first. Null while they're here. */
-	deletesAt: number | null;
+	/**
+	 * Archived (removed, worker/removals.ts): when, and that archive's id, which deleting them for good names. They and
+	 * their mail are kept until restored or deleted for good. Null while they're here.
+	 */
+	archived: { at: number; id: string } | null;
 }
 
 export interface DirectoryMailbox {

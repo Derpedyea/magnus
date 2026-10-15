@@ -30,7 +30,7 @@ export const Route = createFileRoute("/_app/_settings/admin/addresses")({ compon
 function Addresses() {
 	const { addresses, mailboxes, domains } = useSuspenseQuery(directoryQuery).data;
 	const [adding, setAdding] = useState(false);
-	const names = new Map(mailboxes.map((m) => [m.id, m.removedWith ? `${m.name} (removed)` : m.name]));
+	const names = new Map(mailboxes.map((m) => [m.id, m.removedWith ? `${m.name} (archived)` : m.name]));
 
 	return (
 		<SettingsPage
@@ -106,7 +106,7 @@ function AddAddressDialog(props: { open: boolean; onOpenChange: (open: boolean) 
 	const [address, setAddress] = useState({ localPart: "", domain: props.domains[0]?.name ?? "" });
 	const [displayName, setDisplayName] = useState("");
 	const [mailboxIds, setMailboxIds] = useState<string[]>([]);
-	// Only those still listed: someone removed meanwhile drops off the list, and out of what's sent.
+	// Only those still listed: someone archived meanwhile drops off the list, and out of what's sent.
 	const listed = mailboxIds.filter((id) => props.mailboxes.some((m) => m.id === id));
 	const add = useMutation({
 		mutationFn: adminApi.addAddress,

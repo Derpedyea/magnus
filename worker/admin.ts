@@ -11,6 +11,7 @@ import {
 	addDomain,
 	addressExists,
 	blockSender,
+	codeIdentifiers,
 	codesWouldLandHere,
 	createMailbox,
 	deleteMailboxStatements,
@@ -22,7 +23,7 @@ import {
 	setCatchAll,
 	unblockSender,
 } from "./directory";
-import { deleteMailboxObjects, removePerson, restorePerson } from "./removals";
+import { deleteMailboxObjects, deletePerson, removePerson, restorePerson } from "./removals";
 import { RESTORE_WINDOW_MS, RestoreIncomplete, restoreMailbox } from "./restore";
 import { forgetCloudflareToken, getInstall, loadCloudflareToken, saveCloudflareToken } from "./settings";
 import { LocalPartSchema, NOT_THIS_INSTALL, TokenSchema } from "./setup";
@@ -148,8 +149,10 @@ export const admin = new Hono<AppEnv>()
 				headers: c.req.raw.headers,
 			});
 			const mailbox = createMailbox(db, user.id, body.name);
+			// Codes sent to this email before, such as to someone deleted for good, mustn't sign in this person.
+			const codes = db.prepare(`DELETE FROM auth_verifications WHERE lower(identifier) IN (${codeIdentifiers("?1")})`).bind(body.email);
 			try {
-				await db.batch([...mailbox.statements, ...(address ? addAddress(db, address, body.name, [mailbox.id]) : [])]);
+				await db.batch([...mailbox.statements, ...(address ? addAddress(db, address, body.name, [mailbox.id]) : []), codes]);
 			} catch (error) {
 				// Another admin just took the address, or D1 failed. Undo both sides so nothing blocks a retry: D1 can report
 				// a failure for writes it applied, and if the batch did roll back, removing the mailbox finds nothing. One batch,
@@ -170,7 +173,7 @@ export const admin = new Hono<AppEnv>()
 
 	/**
 	 * Shuts them out and stops their mail at once. They, their own mailboxes, and addresses that delivered only there are
-	 * deleted REMOVAL_DAYS later unless they're restored first (worker/removals.ts).
+	 * kept, archived, until they're restored or deleted for good (worker/removals.ts).
 	 */
 	.delete("/people/:id", async (c) => {
 		const id = c.req.param("id");
@@ -181,6 +184,22 @@ export const admin = new Hono<AppEnv>()
 	.post("/people/:id/restore", async (c) => {
 		const restored = await restorePerson(c.env.DIRECTORY, c.req.param("id"));
 		return restored ? c.body(null, 204) : c.json({ error: "They've already been deleted for good." }, 404);
+	})
+
+	/**
+	 * Deletes someone archived for good, with their mail: the archive the admin confirmed (`archiveId`), so not one
+	 * restored or made again since. Only someone archived, as archiving is the way to undo a slip.
+	 */
+	.post("/people/:id/delete", zValidator("json", z.object({ archiveId: z.string().min(1).max(100) })), async (c) => {
+		// Checked again in the deletion itself: the body can arrive after the check above, from someone no longer an admin.
+		const deleted = await deletePerson(c.env.DIRECTORY, c.req.param("id"), c.req.valid("json").archiveId, c.var.reader);
+		if (deleted === "missing") return c.json({ error: "Not found" }, 404);
+		if (deleted === "forbidden") return c.json({ error: "Only admins can do that." }, 403);
+		if (deleted === "changed") return c.json({ error: "They've been restored or archived again since. Check, then try again." }, 409);
+		if (deleted === "restoring") return c.json({ error: "Their mailbox is being restored to an earlier time. Try again once that's done." }, 409);
+		// Their mail goes now. Whatever doesn't is tried again hourly.
+		c.executionCtx.waitUntil(deleteMailboxObjects(c.env));
+		return c.body(null, 204);
 	})
 
 	// ─── Mailboxes ────────────────────────────────────────────────────────────────
