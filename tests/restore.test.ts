@@ -446,6 +446,27 @@ describe("restoring a mailbox", () => {
 		expect(await f.control.restored()).toEqual([]);
 	});
 
+	it("waits for an import into the mailbox to finish, as the rewind would lose what it took in", async () => {
+		const started = await f.worker.fetch(`${ORIGIN}/api/mailboxes/${ids.alice}/proton-import`, {
+			method: "POST", headers: { Cookie: await f.login("alice"), Origin: ORIGIN, "Content-Type": "application/json" },
+			body: JSON.stringify({ login: "alice@proton.test", password: "hunter2" }),
+		});
+		expect(started.status).toBeLessThan(300);
+		const refused = await restore(hourAgo());
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ error: expect.stringContaining("import") });
+		expect(await f.control.restored()).toEqual([]);
+		expect((await thread()).status).toBe(404);
+	});
+
+	it("answers with the way back though the mailbox shut down as the restore was armed", async () => {
+		await f.control.armThenFail();
+		const response = await restore(hourAgo());
+		expect(response.status).toBe(500);
+		expect(await response.json()).toMatchObject({ error: expect.stringContaining("Restore again"), undo: { at: expect.any(String), bookmark: expect.any(String) } });
+		expect((await thread()).status).toBe(503);
+	});
+
 	it.each([
 		["demoted", () => f.env.DIRECTORY.prepare("UPDATE auth_users SET role = 'user' WHERE id = 'admin'").run()],
 		["signed out", () => f.env.DIRECTORY.prepare("DELETE FROM auth_sessions WHERE userId = 'admin'").run()],

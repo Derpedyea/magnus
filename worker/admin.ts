@@ -216,6 +216,7 @@ export const admin = new Hono<AppEnv>()
 			}
 			if (result.kind === "missing") return c.json({ error: "Not found" }, 404);
 			if (result.kind === "forbidden") return c.json({ error: "Only admins can do that." }, 403);
+			if (result.kind === "importing") return c.json({ error: "An import into this mailbox is running. Restore once it's done or cancelled." }, 409);
 			if (result.kind === "busy") return c.json({ error: "This mailbox is being restored already. Try again once that's done." }, 409);
 			if (result.kind === "waiting") {
 				const waiting = result.waiting.map((w) => ({ ...w, sendAt: new Date(w.sendAt).toISOString() }));

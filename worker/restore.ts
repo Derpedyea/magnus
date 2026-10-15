@@ -20,6 +20,8 @@ export type RestoreResult =
 	| { kind: "busy" }
 	/** `admin` no longer is one: demoted or signed out after the request was let in, before its body arrived. */
 	| { kind: "forbidden" }
+	/** An import into the mailbox is under way: what it took in would be lost to the rewind, or come after the moment. */
+	| { kind: "importing" }
 	/** Mail waiting to send, which the restore would take away or hold. Nothing changed. */
 	| { kind: "waiting"; waiting: Waiting[] }
 	| {
@@ -74,6 +76,8 @@ async function restoreClaimed(env: Env, mailboxId: string, restoreId: string, ta
 	const undoAt = Date.now();
 	// A fresh stub for every call: one whose object reset can't be used again.
 	const mailbox = () => env.MAILBOX.getByName(mailboxId);
+	// Asked once the mailbox is claimed, when it's out of use, so no import can start after.
+	if (await env.PROTON_IMPORT.getByName(mailboxId).busy()) return { kind: "importing" };
 	const prepared = await mailbox().prepareRestore(target.at, target.bookmark, restoreId, until);
 	if ("waiting" in prepared) return { kind: "waiting", waiting: prepared.waiting };
 	const { bookmark } = prepared;
@@ -85,9 +89,11 @@ async function restoreClaimed(env: Env, mailboxId: string, restoreId: string, ta
 		.bind(mailboxId, restoreId)
 		.run();
 	if (named.meta.changes !== 1) throw new Error("Lost hold of the mailbox before restoring it. Restore again.");
-	const undo = { at: undoAt, bookmark: await mailbox().armRestore(bookmark, restoreId) };
-	// From here the mailbox may be rewound, so a failure still answers with the way back (RestoreIncomplete).
+	// From arming on the mailbox may be rewound, so a failure still answers with the way back (RestoreIncomplete): the
+	// bookmark arming returns, or should arming fail partway, the one from just before it.
+	let undo = { at: undoAt, bookmark: prepared.current };
 	try {
+		undo = { at: undoAt, bookmark: await mailbox().armRestore(bookmark, restoreId) };
 		// The reset makes this call fail. finishRestore() checks the restore took, and gives this error if it didn't.
 		const restart = await mailbox().restart().then(
 			() => null,

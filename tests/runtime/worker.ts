@@ -186,6 +186,8 @@ let restartsReach = true;
 const restored: string[] = [];
 /** A mailbox whose next holding() answer comes as a restore of it has just named itself and rewound it. */
 let restoreAsAnswering: string | null = null;
+/** The next restore armed fails to say so, as if the object shut down just after arming it. */
+let armThenFail = false;
 /** A mailbox whose restore loses its hold on it once finishRestore() is done, to another restore. */
 let loseHold: string | null = null;
 
@@ -211,6 +213,11 @@ export class Mailbox extends ProductionMailbox {
 			getCurrentBookmark: async () => bookmark(Date.now()),
 			onNextSessionRestoreBookmark: async (target: string) => {
 				armed.set(name, target);
+				// Armed, then the object shuts down before answering, as Cloudflare says it can at any time.
+				if (armThenFail) {
+					armThenFail = false;
+					throw new Error("Durable Object reset because its code was updated");
+				}
 				return bookmark(Date.now());
 			},
 		};
@@ -409,6 +416,8 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	setRestartsReach(reach: boolean) { restartsReach = reach; }
 	/** Names a restore of this mailbox, and rewinds it, just before it next answers holding(). */
 	restoreAsItAnswers(mailboxId: string) { restoreAsAnswering = mailboxId; }
+	/** Makes the next arming of a restore take, then fail to answer. */
+	armThenFail() { armThenFail = true; }
 	/** Hands this mailbox's hold to another restore once the current one has finished rewinding it. */
 	loseHoldAfterFinish(mailboxId: string) { loseHold = mailboxId; }
 	/** The bookmarks restored, in order. */
@@ -422,7 +431,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 			})),
 		})) };
 	}
-	reset() { armed.clear(); restartsReach = true; restoreAsAnswering = null; loseHold = null; restored.length = 0; exported = freshExport(); now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; answers = { quick: 0, deep: "personal" }; modelCalls = []; }
+	reset() { armed.clear(); armThenFail = false; restartsReach = true; restoreAsAnswering = null; loseHold = null; restored.length = 0; exported = freshExport(); now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; answers = { quick: 0, deep: "personal" }; modelCalls = []; }
 
 	async consume(bodies: unknown[], attempts = 1) {
 		const acks: string[] = [];

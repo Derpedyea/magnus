@@ -347,14 +347,16 @@ export class Mailbox extends DurableObject<Env> {
 	 * leaving the state unmarked: the restore would take away whatever was queued since that moment, unsent, and hold the
 	 * rest. From then until `until` (its lease's end), nothing joins the outbox (restoring()).
 	 */
-	async prepareRestore(at: number, bookmark: string | null, restoreId: string, until: number): Promise<{ bookmark: string } | { waiting: Waiting[] }> {
+	async prepareRestore(at: number, bookmark: string | null, restoreId: string, until: number): Promise<{ bookmark: string; current: string } | { waiting: Waiting[] }> {
 		// One that rewound but failed before it was applied is applied now, or this attempt's mark would make its state look
 		// like one from before a restore, never to be applied.
 		await this.applyLatestRestore();
 		// Throws for a time over 30 days ago.
 		const target = bookmark ?? (await this.pointInTime().getBookmarkForTime(at));
-		// The mark has to come after the state restored, or the restored state would carry it and seem unrestored.
-		if (target > (await this.pointInTime().getCurrentBookmark())) throw new Error("A restore can't go forward in time");
+		// The mark has to come after the state restored, or the restored state would carry it and seem unrestored. The
+		// current bookmark undoes the restore should arming it fail without saying so.
+		const current = await this.pointInTime().getCurrentBookmark();
+		if (target > current) throw new Error("A restore can't go forward in time");
 		// Nothing awaits from here to the marks, so nothing can join the outbox between the two.
 		const waiting = this.sql
 			.exec<{ subject: string; recipients: string; send_at: number }>(
@@ -372,7 +374,7 @@ export class Mailbox extends DurableObject<Env> {
 		// One armed by an attempt that never restarted takes effect at the next start whatever this one does, so the hold
 		// stays indefinite.
 		this.fence(restoreId, this.hold()?.until === null ? null : until);
-		return { bookmark: target };
+		return { bookmark: target, current };
 	}
 
 	/** Whether a restore under way refuses new sends, and R2 deletions it could need back (fence()). */

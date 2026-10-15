@@ -119,7 +119,7 @@ export async function purgeRemoved(env: Env, now: number): Promise<void> {
 export async function purgePerson(db: D1Database, userId: string, now: number): Promise<void> {
 	const cutoff = now - REMOVAL_MS;
 	const due = `EXISTS (SELECT 1 FROM removed_people WHERE user_id = ?1 AND removed_at <= ?2)
-		AND NOT EXISTS (SELECT 1 FROM mailboxes WHERE removed_with = ?1 AND coalesce(restoring_until, 0) > ?3)`;
+		AND NOT EXISTS (SELECT 1 FROM mailboxes WHERE removed_with = ?1 AND (coalesce(restoring_until, 0) > ?3 OR restore_incomplete = 1))`;
 	// Never one somebody's in. A restore takes the mailboxes it gives back out of hiding; this holds even if one didn't.
 	const hidden = `SELECT id FROM mailboxes WHERE removed_with = ?1 AND NOT EXISTS (SELECT 1 FROM mailbox_members WHERE mailbox_id = mailboxes.id)`;
 	await db.batch([
