@@ -53,29 +53,29 @@ export async function restoreMailbox(env: Env, mailboxId: string, target: Restor
 		const exists = await db.prepare(`SELECT 1 AS ok FROM mailboxes WHERE id = ?1`).bind(mailboxId).first();
 		return { kind: exists ? "busy" : "missing" };
 	}
-	// Lets go of the mailbox, marking whether a restore is left unfinished (restore_incomplete): one that finished clears
-	// it; one that may have rewound the mailbox, then failed, sets it; and one that failed before then leaves it as it was,
-	// as an earlier attempt can still be armed. Should this fail, the claim runs out by itself (RESTORE_LEASE_MS), so what
-	// the restore did (its undo above all) is answered either way.
-	const release = async (incomplete: "clear" | "set" | "keep") =>
-		db
-			.prepare(
-				`UPDATE mailboxes SET restoring = NULL, restoring_until = NULL,
-					restore_incomplete = CASE ?3 WHEN 'clear' THEN 0 WHEN 'set' THEN 1 ELSE restore_incomplete END
-				 WHERE id = ?1 AND restoring = ?2`,
-			)
-			.bind(mailboxId, restoreId, incomplete)
-			.run();
-	const letGo = (incomplete: "clear" | "set" | "keep") =>
-		release(incomplete).catch((error: unknown) =>
-			console.error(JSON.stringify({ msg: "restore lease kept until it runs out", mailboxId, incomplete, error: String(error) })),
-		);
+	// A restore that failed lets go of the mailbox, which stays out of use if it was named, by restore_incomplete
+	// (restoreClaimed()). Should letting go fail, the claim runs out by itself (RESTORE_LEASE_MS), so what the restore did
+	// (its undo above all) is answered either way.
+	const release = async () => db.prepare(`UPDATE mailboxes SET restoring = NULL, restoring_until = NULL WHERE id = ?1 AND restoring = ?2`).bind(mailboxId, restoreId).run();
+	const letGo = () =>
+		release().catch((error: unknown) => console.error(JSON.stringify({ msg: "restore lease kept until it runs out", mailboxId, error: String(error) })));
 	try {
 		const result = await restoreClaimed(env, mailboxId, restoreId, target, now + RESTORE_LEASE_MS);
-		await letGo(result.kind === "done" ? "clear" : "keep");
+		// Finished: back in use only now. Should this fail, it stays out of use, and restoring again finishes it.
+		if (result.kind === "done") {
+			const finish = async () =>
+				db.prepare(`UPDATE mailboxes SET restoring = NULL, restoring_until = NULL, restore_incomplete = 0 WHERE id = ?1 AND restoring = ?2`).bind(mailboxId, restoreId).run();
+			const done = await finish().then(
+				(r) => r.meta.changes === 1,
+				(error: unknown) => error,
+			);
+			if (done !== true) throw new RestoreIncomplete(result.undo, done === false ? new Error("Lost hold of the mailbox.") : done);
+			return result;
+		}
+		await letGo();
 		return result;
 	} catch (error) {
-		await letGo(error instanceof RestoreIncomplete ? "set" : "keep");
+		await letGo();
 		throw error;
 	}
 }
@@ -89,7 +89,11 @@ async function restoreClaimed(env: Env, mailboxId: string, restoreId: string, ta
 	const { bookmark } = prepared;
 	// Named before it's armed, so the object applies the restore from its first moment restored, even if Cloudflare
 	// restarts it before restart() does. The state from before still works as usual: it's marked pending.
-	const named = await env.DIRECTORY.prepare(`UPDATE mailboxes SET restore_id = ?2 WHERE id = ?1 AND restoring = ?2`).bind(mailboxId, restoreId).run();
+	// From here the mailbox may be rewound, so it's out of use (restore_incomplete) until a restore of it finishes, in the
+	// same write: restoring again rewinds again, and would erase whatever its people did in between.
+	const named = await env.DIRECTORY.prepare(`UPDATE mailboxes SET restore_id = ?2, restore_incomplete = 1 WHERE id = ?1 AND restoring = ?2`)
+		.bind(mailboxId, restoreId)
+		.run();
 	if (named.meta.changes !== 1) throw new Error("Lost hold of the mailbox before restoring it. Restore again.");
 	const undo = { at: undoAt, bookmark: await mailbox().armRestore(bookmark, restoreId) };
 	// From here the mailbox may be rewound, so a failure still answers with the way back (RestoreIncomplete).

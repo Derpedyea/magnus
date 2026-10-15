@@ -302,12 +302,31 @@ describe("restoring a mailbox", () => {
 		expect((await thread()).status).toBe(404);
 	});
 
-	it("still answers with what it did when letting go of the mailbox fails, and the hold runs out", async () => {
-		await f.control.failNext("directory", "UPDATE mailboxes SET restoring = NULL");
+	it("stays out of use when putting the mailbox back in use fails, till it's restored again", async () => {
+		await f.control.failNext("directory", "UPDATE mailboxes SET restoring = NULL, restoring_until = NULL, restore_incomplete = 0");
 		const response = await restore(hourAgo());
-		expect(response.status).toBe(200);
+		expect(response.status).toBe(500);
+		expect(await response.json()).toMatchObject({ error: expect.stringContaining("Restore again"), undo: { bookmark: expect.any(String) } });
+		expect((await thread()).status).toBe(503);
+		expect((await restore(hourAgo())).status).toBe(200);
+		expect((await thread()).status).toBe(404);
+	});
+
+	it("still answers with the way back when letting go of the mailbox fails too, and the hold runs out", async () => {
+		const at = Date.now() - 3600_000;
+		const id = ulid(at + 1000);
+		await f.env.MAIL.put(r2Keys.raw(id, at + 1000), RAW, { customMetadata: { envelopeFrom: "sender@outside.test", envelopeTo: "alice@example.com", mailboxes: ids.alice } });
+		await f.control.failNext("queue");
+		await f.control.failNext("directory", "UPDATE mailboxes SET restoring = NULL, restoring_until = NULL WHERE");
+		const response = await restore(new Date(at).toISOString());
+		expect(response.status).toBe(500);
 		expect(await response.json()).toMatchObject({ undo: { bookmark: expect.any(String) } });
 		expect(await f.env.DIRECTORY.prepare("SELECT restoring_until > ?2 AS held FROM mailboxes WHERE id = ?1").bind(ids.alice, Date.now()).first()).toEqual({ held: 1 });
+	});
+
+	it("empties no Trash from the all-mail view of a mailbox a restore left unfinished", async () => {
+		await f.env.DIRECTORY.prepare("UPDATE mailboxes SET restore_incomplete = 1 WHERE id = ?1").bind(ids.alice).run();
+		expect((await f.worker.fetch(`${ORIGIN}/api/trash`, { method: "DELETE", headers: { Cookie: await f.login("alice"), Origin: ORIGIN } })).status).toBe(503);
 	});
 
 	it("restores one at a time, and takes over from one that died", async () => {

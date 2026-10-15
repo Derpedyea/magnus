@@ -177,6 +177,18 @@ export async function mailboxAccess(db: D1Database, reader: Reader, mailboxId: s
 	return row === null ? null : row.restoring ? "restoring" : "member";
 }
 
+/**
+ * Which of these mailboxes are out of use, being restored to an earlier time or left unfinished by a restore that
+ * failed (worker/restore.ts), as mailboxAccess() says for one.
+ */
+export async function mailboxesRestoring(db: D1Database, mailboxIds: string[], now: number): Promise<string[]> {
+	const { results } = await db
+		.prepare(`SELECT id FROM mailboxes WHERE id IN (SELECT value FROM json_each(?1)) AND (coalesce(restoring_until, 0) > ?2 OR restore_incomplete = 1)`)
+		.bind(JSON.stringify(mailboxIds), now)
+		.all<{ id: string }>();
+	return results.map((r) => r.id);
+}
+
 /** Whether a restore revoked this send of a draft it put back (worker/restore.ts). */
 export async function isRevokedSend(db: D1Database, mailboxId: string, sendId: string): Promise<boolean> {
 	return (await db.prepare(`SELECT 1 AS hit FROM revoked_sends WHERE mailbox_id = ?1 AND send_id = ?2`).bind(mailboxId, sendId).first()) !== null;

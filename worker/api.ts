@@ -36,7 +36,7 @@ import { ProtonAnswerSchema, ProtonJobRefSchema, ProtonStartSchema } from "#shar
 import { admin } from "./admin";
 import { auth, currentUser, endReplacedSession, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
-import { getSendIdentities, getUserMailboxes, mailboxAccess, type Reader, resolveRecipient, setSignature } from "./directory";
+import { getSendIdentities, getUserMailboxes, mailboxAccess, mailboxesRestoring, type Reader, resolveRecipient, setSignature } from "./directory";
 import { fileHeaders, renderEmailHtml, serveFile } from "./html";
 import type { Mailbox } from "./mailbox/mailbox";
 import { getInstall } from "./settings";
@@ -135,6 +135,8 @@ async function readPage(
 const views = new Hono<AppEnv>()
 	.delete("/trash", zValidator("query", ScopeQuery), async (c) => {
 		const queries = (await planRequest(c, c.req.valid("query").in)).filter(canMatch);
+		// None while one is out of use: the mailbox's own hold covers only a restore under way, not one left unfinished.
+		if ((await mailboxesRestoring(c.env.DIRECTORY, queries.map((q) => q.mailboxId), Date.now())).length > 0) return c.json({ error: RESTORING }, 503);
 		// Each mailbox commits independently. Retrying after a partial failure is safe.
 		let deleted = 0;
 		for (const q of queries) {
