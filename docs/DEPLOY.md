@@ -138,6 +138,11 @@ Codes by email need nothing extra. To add "Continue with Google":
 
 Only people already added can sign in with Google, matched by their sign-in email.
 
+## Sign-in code sender (optional)
+
+Codes come from `login@` your first domain. To send them from another address, turn on Email Sending for its
+domain in Cloudflare, then `npx wrangler secret put LOGIN_CODE_FROM` with the address.
+
 ## Updating
 
 With the button, your copy is a new repository in your GitHub account. Pull this one into it and push, and

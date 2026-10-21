@@ -186,7 +186,8 @@ function createAuth(baseURL: string, secret: string) {
 }
 
 async function sendSignInCode(email: string, code: string) {
-	const from = await loginCodeSender(env.DIRECTORY);
+	// LOGIN_CODE_FROM's domain needs Email Sending turned on, though it needn't be one of Magnus's domains.
+	const from = optional("LOGIN_CODE_FROM") ?? (await loginCodeSender(env.DIRECTORY));
 	if (!from) {
 		console.error(JSON.stringify({ msg: "no domain can send sign-in codes yet", to: email }));
 		return;

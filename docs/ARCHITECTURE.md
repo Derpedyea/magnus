@@ -414,7 +414,8 @@ open tabs.
 - **Nobody signs up.** `auth_users` is the list of people, and admins add them. Codes are only sent to
   people who exist (`disableSignUp`), though the page answers the same for anyone, and Google only signs in
   an existing person, matched by email.
-- Codes go out through Email Sending from `login@` the oldest domain that can send. They expire after 10
+- Codes go out through Email Sending from `login@` the oldest domain that can send, or the `LOGIN_CODE_FROM`
+  secret when it's set. They expire after 10
   minutes, die after 3 wrong guesses, and are stored hashed. Sign-in endpoints are rate-limited per client
   IP (3 a minute), with the counters in D1 so the limit holds across Worker instances.
 - **Roles** are the admin plugin's: `admin` or not. Role changes and suspensions go from the browser straight

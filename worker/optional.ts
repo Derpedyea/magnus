@@ -4,6 +4,7 @@ import { env } from "cloudflare:workers";
  * Optional settings. Magnus needs none of them; set them with `wrangler secret put`, or in .dev.vars locally.
  *
  *   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   both set: adds "Continue with Google"
+ *   LOGIN_CODE_FROM                          sends sign-in codes from this address instead (worker/auth.ts)
  *   DEV_USER_EMAIL                           local dev: signs this person in on localhost without a code
  *   CLOUDFLARE_API_BASE                      local dev: sends Cloudflare API calls to a fake, to test setup
  *   PROTON_EXPORTER_URL                      local dev: the Proton export container, run by hand (worker/proton-import.ts)
@@ -11,7 +12,13 @@ import { env } from "cloudflare:workers";
  * Read by name rather than through Env: `wrangler types` only sees them when .dev.vars happens to have them.
  */
 export function optional(
-	name: "GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET" | "DEV_USER_EMAIL" | "CLOUDFLARE_API_BASE" | "PROTON_EXPORTER_URL",
+	name:
+		| "GOOGLE_CLIENT_ID"
+		| "GOOGLE_CLIENT_SECRET"
+		| "LOGIN_CODE_FROM"
+		| "DEV_USER_EMAIL"
+		| "CLOUDFLARE_API_BASE"
+		| "PROTON_EXPORTER_URL",
 ): string | undefined {
 	const value: unknown = Reflect.get(env, name);
 	return typeof value === "string" && value !== "" ? value : undefined;
