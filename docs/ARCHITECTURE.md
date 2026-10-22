@@ -343,11 +343,11 @@ mbox per folder; any other folder of `.eml` or mbox files works too. Code: `shar
    check is mutt's `is_from()`, so a body line nobody escaped doesn't split its message). Each is streamed through
    once (`splitMbox()`, a few hundred MB/s and a few MB of memory whatever its size), keeping only where each message
    is and its headers; the bytes are sliced from the file again as each is sent, and `>From ` lines lose one `>`
-   (mboxrd). Takeout's `X-Gmail-Labels` place a message: decoded first, since Gmail encodes the whole header when a
+   (mboxrd). Takeout's `X-Gmail-Labels` place a message, ahead of any Thunderbird flags it kept: decoded first, since Gmail encodes the whole header when a
    label isn't ASCII, and split on commas outside quotes, then Inbox, Sent, Spam, Trash, and Starred become those labels, Unread carries over, Drafts
    are left out, Gmail's other labels (Important, Opened, Archived, the inbox categories) need none, and the person's
    become labels. Without it, the file's folder places it: Thunderbird keeps subfolders in `<name>.sbd/`
-   (`Work.sbd/Clients` → `work-clients`), names its own folders Inbox, Sent, Trash, Junk, Archives (by year, all
+   (`Work.sbd/Clients` → `work-clients`; one under Sent is still sent mail), names its own folders Inbox, Sent, Trash, Junk, Archives (by year, all
    archived), Drafts, and Templates (left out), and Gmail's over IMAP under `[Gmail]`. Thunderbird's
    `X-Mozilla-Status` says read, starred, and deleted but not yet compacted away (left out), and `X-Mozilla-Keys`
    holds its tags; other programs write `Status: R` and `X-Status: F`. With none of them, mail is read. The same

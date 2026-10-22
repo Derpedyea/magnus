@@ -71,11 +71,13 @@ describe("mboxPlacement", () => {
 		["Thunderbird's Inbox, read", { "x-mozilla-status": "0001" }, ["Inbox"], { labels: ["inbox"], read: true }],
 		["a starred message in Sent", { "x-mozilla-status": "0005" }, ["Sent"], { labels: ["sent", "starred"], read: true, sent: true }],
 		["an unread one in a subfolder", { "x-mozilla-status": "0000" }, ["Work", "Clients"], { labels: ["work-clients"], read: false }],
+		["a subfolder of Sent, as sent", { "x-mozilla-status": "0001" }, ["Sent", "2024"], { labels: ["sent", "sent-2024"], read: true, sent: true }],
 		["Archives by year, as archived", { "x-mozilla-status": "0001" }, ["Archives", "2024"], { labels: [], read: true }],
 		["Gmail's folders over IMAP", { "x-mozilla-status": "0001" }, ["[Gmail]", "Starred"], { labels: ["starred"], read: true }],
 		["tags, without junk keywords", { "x-mozilla-status": "0001", "x-mozilla-keys": "$label2 receipts NonJunk $Forwarded" }, ["Junk"], { labels: ["spam", "work", "receipts"], read: true }],
 		["Status and X-Status from other programs", { status: "O", "x-status": "F" }, ["INBOX"], { labels: ["inbox", "starred"], read: false }],
 		["a file with nothing to say, as read", {}, ["mail"], { labels: ["mail"], read: true }],
+		["Takeout's labels over a Thunderbird flag left in the message", { "x-gmail-labels": "Inbox,Opened", "x-mozilla-status": "0009" }, ["All mail"], { labels: ["inbox"], read: true }],
 		["Takeout's labels over the file's name", { "x-gmail-labels": "Inbox,Unread" }, ["All mail Including Spam and Trash"], { labels: ["inbox"], read: false }],
 	])("files %s", (_, headers, folder, placement) => {
 		expect(place(headers, folder)).toEqual(placement);

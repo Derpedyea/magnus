@@ -209,11 +209,12 @@ const NOT_TAGS = new Set(["junk", "nonjunk", "notjunk"]);
  * Status and X-Status other programs write say whether it was read and starred. With none of them it's read.
  */
 export function mboxPlacement(headers: ReadonlyMap<string, string>, folder: readonly string[]): ImportPlacement | "draft" | "deleted" {
+	// First: mail Thunderbird once held can keep its X-Mozilla-Status in Gmail, deleted bit and all.
+	const gmail = headers.get("x-gmail-labels");
+	if (gmail !== undefined) return gmailPlacement(gmail) ?? "draft";
 	const status = headers.get("x-mozilla-status");
 	const mozilla = status && /^[0-9a-f]{4}$/i.test(status) ? Number.parseInt(status, 16) : null;
 	if (mozilla !== null && mozilla & MOZILLA_EXPUNGED) return "deleted";
-	const gmail = headers.get("x-gmail-labels");
-	if (gmail !== undefined) return gmailPlacement(gmail) ?? "draft";
 
 	const gmailImap = /^\[(gmail|google mail)\]$/i.test(folder[0] ?? "");
 	const path = gmailImap ? folder.slice(1) : folder;
@@ -223,8 +224,10 @@ export function mboxPlacement(headers: ReadonlyMap<string, string>, folder: read
 	const system = new Set<string>();
 	const own = new Set<string>();
 	if (path.length === 1 && top && top !== "archive") system.add(top);
-	// A subfolder of Inbox is the person's own; Archives files by year, and those are archived mail.
+	// A subfolder of Inbox is the person's own; Archives files by year, and those are archived mail. One of Sent
+	// (`Sent.sbd/2024`) is still mail you sent.
 	else if (path.length > 0 && top !== "archive") {
+		if (top === "sent") system.add("sent");
 		const label = importLabel(path.join("/"));
 		if (label) own.add(label);
 	}
@@ -237,7 +240,7 @@ export function mboxPlacement(headers: ReadonlyMap<string, string>, folder: read
 	return {
 		labels: [...system, ...own].slice(0, MAX_IMPORT_LABELS),
 		read,
-		...(path.length === 1 && top === "sent" ? { sent: true } : {}),
+		...(top === "sent" ? { sent: true } : {}),
 	};
 }
 
