@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
-import { type ImportItem, planImport, runImport, RETRY_DELAYS, wait } from "./import";
+import { importBody, type ImportItem, planImport, runImport, RETRY_DELAYS, wait } from "./import";
 
 const file = (name: string, content = "From: a@b.test\r\n\r\nHi") => new File([content], name);
 const metadata = (ID: string, Time: number, LabelIDs: string[], Flags = 1) =>
@@ -22,11 +22,11 @@ describe("planImport", () => {
 			["mail_20260101_120000/broken/body.txt", "Hi"],
 		]));
 		expect(plan).toMatchObject({ proton: true, drafts: 1, unexported: 1, tooBig: [], unreadable: [] });
-		expect(plan.items.map((i) => [i.file.name, i.placement, i.at])).toEqual([
+		expect(plan.items.map((i) => [i.name, i.placement, i.at])).toEqual([
 			["new.eml", { labels: [], read: false, sent: false }, 200_000],
 			["old.eml", { labels: ["inbox", "work"], read: false, sent: false }, 100_000],
 		]);
-		expect(plan.bytes).toBe(plan.items.reduce((n, i) => n + i.file.size, 0));
+		expect(plan.bytes).toBe(plan.items.reduce((n, i) => n + i.size, 0));
 	});
 
 	it("files plain .eml as archived and read, and lists what's too big to send", async () => {
@@ -35,7 +35,7 @@ describe("planImport", () => {
 			{ path: "Saved/huge.eml", file: new File([new Uint8Array(25 * 1024 * 1024 + 1)], "huge.eml") },
 		]);
 		expect(plan).toMatchObject({ proton: false, tooBig: ["Saved/huge.eml"], unreadable: [] });
-		expect(plan.items.map((i) => [i.file.name, i.placement])).toEqual([
+		expect(plan.items.map((i) => [i.name, i.placement])).toEqual([
 			["a.eml", { labels: [], read: true }],
 			["b.eml", { labels: [], read: true }],
 		]);
@@ -108,8 +108,50 @@ describe("planImport", () => {
 	});
 });
 
+describe("planImport with mbox files", () => {
+	const mbox = (...messages: string[]) => messages.map((m) => `From - Mon Jan  1 00:00:00 2024\n${m}\n\n`).join("");
+	const message = (id: string, date: string, extra = "") => `Message-ID: <${id}@x.test>\nDate: ${date}\nSubject: ${id}\n${extra}\nHi`;
+
+	it("reads Thunderbird's folders, subfolders, and flags, sends mail in two folders once, and skips its other files", async () => {
+		const fractions: number[] = [];
+		const plan = await planImport(picked([
+			["Local Folders/Inbox", mbox(message("a", "Mon, 1 Jan 2024 10:00:00 +0000", "X-Mozilla-Status: 0001"), message("gone", "Mon, 1 Jan 2024 11:00:00 +0000", "X-Mozilla-Status: 0009"))],
+			["Local Folders/Inbox.msf", "// <!-- <mdb:mork:z v=\"1.4\"/> -->"],
+			["Local Folders/Drafts", mbox(message("draft", "Mon, 1 Jan 2024 12:00:00 +0000"))],
+			["Local Folders/Work.sbd/Clients", mbox(message("b", "Tue, 2 Jan 2024 10:00:00 +0000", "X-Mozilla-Status: 0004"))],
+			// Gmail over IMAP: the same mail in the inbox and All Mail.
+			["imap.gmail.com/[Gmail].sbd/All Mail", mbox(message("a", "Mon, 1 Jan 2024 10:00:00 +0000", "X-Mozilla-Status: 0001"))],
+		]), (f) => fractions.push(f));
+		expect(plan).toMatchObject({ mbox: true, gmail: false, drafts: 1, deleted: 1, tooBig: [] });
+		expect(plan.items.map((i) => [i.path, i.name, i.placement])).toEqual([
+			["Local Folders/Work.sbd/Clients #1", "b", { labels: ["starred", "work-clients"], read: false }],
+			["Local Folders/Inbox #1", "a", { labels: ["inbox"], read: true }],
+		]);
+		expect(await (await importBody(plan.items[1]!)).text()).toBe(message("a", "Mon, 1 Jan 2024 10:00:00 +0000", "X-Mozilla-Status: 0001") + "\n");
+		expect(plan.bytes).toBe(plan.items.reduce((n, i) => n + i.size, 0));
+		expect(fractions.at(-1)).toBe(1);
+	});
+
+	it.each([["Drafts first", 0], ["All Mail first", 1]])("leaves out a Gmail draft Thunderbird also keeps in All Mail (%s)", async (_, order) => {
+		const files = [
+			["imap.gmail.com/[Gmail].sbd/Drafts", mbox(message("d", "Mon, 1 Jan 2024 10:00:00 +0000"))],
+			["imap.gmail.com/[Gmail].sbd/All Mail", mbox(message("d", "Mon, 1 Jan 2024 10:00:00 +0000"), message("e", "Mon, 1 Jan 2024 11:00:00 +0000"))],
+		] satisfies [string, string][];
+		const plan = await planImport(picked(order ? files.reverse() : files));
+		expect(plan).toMatchObject({ drafts: 1, items: [{ name: "e" }] });
+		expect(plan.items).toHaveLength(1);
+	});
+
+	it("files Takeout's mail by its labels, whatever the file's called", async () => {
+		const plan = await planImport(picked([
+			["Takeout/Mail/All mail Including Spam and Trash.mbox", mbox(message("c", "Wed, 3 Jan 2024 10:00:00 +0000", "X-Gmail-Labels: Sent,Opened\nX-Gmail-Labels: Receipts"))],
+		]));
+		expect(plan).toMatchObject({ mbox: true, gmail: true, items: [{ name: "c", placement: { labels: ["sent", "receipts"], read: true, sent: true } }] });
+	});
+});
+
 describe("runImport", () => {
-	const items = (n: number): ImportItem[] => Array.from({ length: n }, (_, i) => ({ path: `${i}.eml`, file: file(`${i}.eml`), placement: { labels: [], read: true }, at: 0 }));
+	const items = (n: number): ImportItem[] => Array.from({ length: n }, (_, i) => ({ path: `${i}.eml`, name: `${i}.eml`, file: file(`${i}.eml`), size: 20, placement: { labels: [], read: true }, at: 0 }));
 
 	function harness(answers: Record<string, (ApiError | Error | null)[]>) {
 		const calls: string[] = [];
@@ -146,7 +188,7 @@ describe("runImport", () => {
 	});
 
 	it.each([
-		[401, "You were signed out. Sign in and import the folder again to finish."],
+		[401, "You were signed out. Sign in and import the same export again to finish."],
 		[404, "You can't import into this mailbox anymore."],
 	])("stops everything on %s, since nothing else would get through", async (status, message) => {
 		const h = harness({ "0.eml": [new ApiError("No", status)] });
@@ -156,7 +198,7 @@ describe("runImport", () => {
 	});
 
 	it("sends big messages one at a time, so the Worker taking them stays within its memory", async () => {
-		const big = (i: number): ImportItem => ({ path: `big-${i}.eml`, file: new File([new Uint8Array(20 * 1024 * 1024)], `big-${i}.eml`), placement: { labels: [], read: true }, at: 0 });
+		const big = (i: number): ImportItem => ({ path: `big-${i}.eml`, name: `big-${i}.eml`, file: new File([new Uint8Array(20 * 1024 * 1024)], `big-${i}.eml`), size: 20 * 1024 * 1024, placement: { labels: [], read: true }, at: 0 });
 		let held = 0;
 		let most = 0;
 		const outcome = await runImport([big(0), big(1), big(2), ...items(3)], {

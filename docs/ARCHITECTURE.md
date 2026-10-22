@@ -320,10 +320,12 @@ Web Push with VAPID, on WebCrypto alone. Code: `worker/push.ts`, `worker/push-ap
 
 ### 4.7 Importing mail from another provider
 
-Settings › Import mail takes a folder, dropped or chosen. Proton's
+Settings › Import mail takes a folder or files, dropped or chosen. Proton's
 [Export Tool](https://proton.me/support/proton-mail-export-tool) writes one `mail_<date>_<time>/` folder holding
-`<id>.eml` and `<id>.metadata.json` per message, plus `labels.json`; any other folder of `.eml` files works too.
-Code: `shared/import.ts`, `src/import.ts`, `worker/mail/import.ts`.
+`<id>.eml` and `<id>.metadata.json` per message, plus `labels.json`; Gmail's
+[Takeout](https://takeout.google.com/settings/takeout/custom/gmail) writes one mbox of All mail; Thunderbird keeps an
+mbox per folder; any other folder of `.eml` or mbox files works too. Code: `shared/import.ts`, `src/import.ts`,
+`src/mbox.ts`, `worker/mail/import.ts`.
 
 1. **The browser reads the folder** and pairs each message with Proton's details: Inbox, Sent, Trash, Spam, and
    Starred become those labels, the person's own folders and labels become labels (`Work/Clients` →
@@ -336,6 +338,22 @@ Code: `shared/import.ts`, `src/import.ts`, `worker/mail/import.ts`.
    whose details are missing or can't be read is listed as unreadable rather than guessed at, and an export whose `labels.json` is
    missing or unreadable is refused, since the person's own folders and labels would be lost. An `.eml` with no
    details is filed as archived and read, or Sent when it's from one of the mailbox's addresses.
+
+   **mbox files** are any other file whose first line is a `From ` line with an asctime date (RFC 4155; the date
+   check is mutt's `is_from()`, so a body line nobody escaped doesn't split its message). Each is streamed through
+   once (`splitMbox()`, a few hundred MB/s and a few MB of memory whatever its size), keeping only where each message
+   is and its headers; the bytes are sliced from the file again as each is sent, and `>From ` lines lose one `>`
+   (mboxrd). Takeout's `X-Gmail-Labels` place a message, ahead of any Thunderbird flags it kept: decoded first, since Gmail encodes the whole header when a
+   label isn't ASCII, and split on commas outside quotes, then Inbox, Sent, Spam, Trash, and Starred become those labels, Unread carries over, Drafts
+   are left out, Gmail's other labels (Important, Opened, Archived, the inbox categories) need none, and the person's
+   become labels. Without it, the file's folder places it: Thunderbird keeps subfolders in `<name>.sbd/`
+   (`Work.sbd/Clients` → `work-clients`; one under Sent is still sent mail), names its own folders Inbox, Sent, Trash, Junk, Archives (by year, all
+   archived), Drafts, and Templates (left out), and Gmail's over IMAP under `[Gmail]`. Thunderbird's
+   `X-Mozilla-Status` says read, starred, and deleted but not yet compacted away (left out), and `X-Mozilla-Keys`
+   holds its tags; other programs write `Status: R` and `X-Status: F`. With none of them, mail is read. The same
+   Message-ID in two files (Thunderbird keeps Gmail's mail in All Mail and in each folder it's in) is sent once, in
+   both places, and read only if both say so; when one copy is a draft (Gmail keeps those in All Mail too), it's left
+   out, unless another copy says it was sent. Leaving the page stops the reading.
 2. **It sends each message on its own**, newest first and four at a time (big ones alone, since the Worker reads
    each whole), to `POST /api/mailboxes/:id/import`, with where it goes in the query (one schema checks each label). Failures on the way are retried; being signed out or
    losing the mailbox stops the import. The page has to stay open, and says so.
@@ -683,8 +701,8 @@ The web app is the only client, so it has to be good on phones and good enough t
 3. **Drafts**: implemented with private, account-scoped D1 storage, version checks, and a device-local recovery
    journal. Attachments live outside the temporary upload prefix; hourly cleanup keeps referenced files.
 4. **Keyboard shortcuts** (j/k, e archive, r reply, c compose, / search), **bulk select**.
-5. **Mailbox import**: implemented for Proton's Export Tool and folders of `.eml` (§4.7). Still to come: MBOX
-   (Gmail's Takeout, Thunderbird), and folder names as labels for plain `.eml` exports.
+5. **Mailbox import**: implemented for Proton's Export Tool, mbox (Gmail's Takeout, Thunderbird, and others), and
+   folders of `.eml` (§4.7). Still to come: folder names as labels for plain `.eml` exports.
 
 **Later**
 
