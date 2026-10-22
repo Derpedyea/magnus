@@ -153,14 +153,11 @@ const GMAIL_SYSTEM = new Map<string, string | null>([
 /**
  * Where a message was in Gmail, from Takeout's X-Gmail-Labels (`Inbox,Opened,Work/Clients`), or null for a draft. The
  * whole header can be one encoded word, commas and all (`=?UTF-8?Q?=C3=85pnet,Kategori:_Reklame?=`), so it's decoded
- * before it's split. Gmail names its own labels in the account's language; only English ones are known here, and
- * the rest become labels.
+ * before it's split, and a label with a comma in it is quoted (`Inbox,"Work, Client"`). Gmail names its own labels in
+ * the account's language; only English ones are known here, and the rest become labels.
  */
 export function gmailPlacement(header: string): ImportPlacement | null {
-	const names = decodeWords(header)
-		.split(",")
-		.map((n) => n.trim())
-		.filter(Boolean);
+	const names = Array.from(decodeWords(header).matchAll(/\s*(?:"([^"]*)"|([^,]*))\s*(?:,|$)/g), (m) => (m[1] ?? m[2] ?? "").trim()).filter(Boolean);
 	if (names.includes("Drafts")) return null;
 	const system = new Set<string>();
 	const own = new Set<string>();

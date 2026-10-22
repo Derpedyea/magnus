@@ -46,6 +46,7 @@ function Import() {
 	const { mailboxes } = useAccount();
 	const [stage, setStage] = useState<Stage>({ step: "pick", error: null });
 	const [mailboxId, setMailboxId] = useState(mailboxes[0]?.id ?? "");
+	/** Reading what was chosen, or importing it. */
 	const running = useRef<AbortController | null>(null);
 	useEffect(
 		() => () => {
@@ -59,16 +60,23 @@ function Import() {
 	const blocker = useBlocker({ shouldBlockFn: () => true, disabled: !busy, enableBeforeUnload: busy, withResolver: true });
 
 	const read = async (files: Promise<PickedFile[]>) => {
+		// Leaving the page stops reading too: a Takeout can take minutes.
+		const controller = new AbortController();
+		running.current = controller;
 		setStage({ step: "reading", fraction: null });
 		try {
 			// A Takeout is read a chunk at a time, hundreds of thousands of them: show only whole percents.
 			const plan = await planImport(await files, (fraction) => {
 				const percent = Math.floor(fraction * 100) / 100;
 				setStage((s) => (s.step === "reading" && s.fraction !== percent ? { step: "reading", fraction: percent } : s));
-			});
+			}, controller.signal);
+			if (running.current !== controller) return;
 			setStage({ step: "ready", plan });
 		} catch (error) {
+			if (running.current !== controller) return;
 			setStage({ step: "pick", error: errorMessage(error) });
+		} finally {
+			if (running.current === controller) running.current = null;
 		}
 	};
 

@@ -344,7 +344,7 @@ mbox per folder; any other folder of `.eml` or mbox files works too. Code: `shar
    once (`splitMbox()`, a few hundred MB/s and a few MB of memory whatever its size), keeping only where each message
    is and its headers; the bytes are sliced from the file again as each is sent, and `>From ` lines lose one `>`
    (mboxrd). Takeout's `X-Gmail-Labels` place a message: decoded first, since Gmail encodes the whole header when a
-   label isn't ASCII, then Inbox, Sent, Spam, Trash, and Starred become those labels, Unread carries over, Drafts
+   label isn't ASCII, and split on commas outside quotes, then Inbox, Sent, Spam, Trash, and Starred become those labels, Unread carries over, Drafts
    are left out, Gmail's other labels (Important, Opened, Archived, the inbox categories) need none, and the person's
    become labels. Without it, the file's folder places it: Thunderbird keeps subfolders in `<name>.sbd/`
    (`Work.sbd/Clients` → `work-clients`), names its own folders Inbox, Sent, Trash, Junk, Archives (by year, all
@@ -352,7 +352,8 @@ mbox per folder; any other folder of `.eml` or mbox files works too. Code: `shar
    `X-Mozilla-Status` says read, starred, and deleted but not yet compacted away (left out), and `X-Mozilla-Keys`
    holds its tags; other programs write `Status: R` and `X-Status: F`. With none of them, mail is read. The same
    Message-ID in two files (Thunderbird keeps Gmail's mail in All Mail and in each folder it's in) is sent once, in
-   both places, and read only if both say so.
+   both places, and read only if both say so; when one copy is a draft (Gmail keeps those in All Mail too), it's left
+   out, unless another copy says it was sent. Leaving the page stops the reading.
 2. **It sends each message on its own**, newest first and four at a time (big ones alone, since the Worker reads
    each whole), to `POST /api/mailboxes/:id/import`, with where it goes in the query (one schema checks each label). Failures on the way are retried; being signed out or
    losing the mailbox stops the import. The page has to stay open, and says so.

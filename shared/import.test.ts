@@ -55,6 +55,10 @@ describe("gmailPlacement", () => {
 		expect(gmailPlacement(header)).toEqual(placement);
 	});
 
+	it("keeps a quoted label with a comma in it whole", () => {
+		expect(gmailPlacement('Inbox,"Work, Client",Unread')).toEqual({ labels: ["inbox", "work-client"], read: false });
+	});
+
 	it("skips drafts", () => {
 		expect(gmailPlacement("Drafts,Opened")).toBeNull();
 	});

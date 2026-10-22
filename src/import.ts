@@ -66,9 +66,10 @@ const READERS = 16;
  *
  * Any other file that starts with a `From ` line is an mbox, and is read through once (`onProgress` hears how far) for
  * where each message in it is and where it goes (mboxPlacement()). The same message in two of them (Thunderbird keeps
- * Gmail's mail in All Mail and each folder it's in) is sent once, with the labels of both.
+ * Gmail's mail in All Mail and each folder it's in) is sent once, with the labels of both, unless one of them is a
+ * draft. `signal` stops reading them.
  */
-export async function planImport(files: PickedFile[], onProgress?: (fraction: number) => void): Promise<ImportPlan> {
+export async function planImport(files: PickedFile[], onProgress?: (fraction: number) => void, signal?: AbortSignal): Promise<ImportPlan> {
 	const byPath = new Map(files.map((f) => [f.path, f.file]));
 	const emls = files.filter((f) => /\.eml$/i.test(f.file.name));
 	const sidecars = new Map(
@@ -125,10 +126,12 @@ export async function planImport(files: PickedFile[], onProgress?: (fraction: nu
 	const total = mboxes.reduce((n, f) => n + f.file.size, 0);
 	let read = 0;
 	const byMessageId = new Map<string, ImportItem>();
+	/** Gmail keeps a draft in All Mail too, so its copy there, before or after it in the scan, isn't mail either. */
+	const draftIds = new Set<string>();
 	for (const { path, file } of mboxes) {
 		const folder = mboxFolder(path);
 		let n = 0;
-		for await (const message of splitMbox(file, (bytes) => onProgress?.((read += bytes) / total))) {
+		for await (const message of splitMbox(file, (bytes) => onProgress?.((read += bytes) / total), signal)) {
 			const key = `${path} #${++n}`;
 			const size = message.end - message.start;
 			if (size > MAX_IMPORT_BYTES) {
@@ -137,11 +140,14 @@ export async function planImport(files: PickedFile[], onProgress?: (fraction: nu
 			}
 			const headers = parseHeaders(message.headers);
 			const placement = mboxPlacement(headers, folder);
-			if (placement === "draft") plan.drafts++;
-			else if (placement === "deleted") plan.deleted++;
+			const id = own(headers.get("message-id"));
+			if (placement === "draft") {
+				// Counted once however many copies there are.
+				if (!id || !draftIds.has(id)) plan.drafts++;
+				if (id) draftIds.add(id);
+			} else if (placement === "deleted") plan.deleted++;
 			else {
 				if (headers.has("x-gmail-labels")) plan.gmail = true;
-				const id = own(headers.get("message-id"));
 				const same = id ? byMessageId.get(id) : undefined;
 				if (same) {
 					same.placement = mergePlacements(same.placement, placement);
@@ -155,6 +161,9 @@ export async function planImport(files: PickedFile[], onProgress?: (fraction: nu
 			}
 		}
 	}
+	// Mail that was sent isn't a draft, even if a draft of it is left over somewhere.
+	const drafts = new Set([...draftIds].map((id) => byMessageId.get(id)).filter((item) => item && !item.placement.sent));
+	if (drafts.size) plan.items = plan.items.filter((item) => !drafts.has(item));
 	// Newest first, so recent mail is there to read first. Sorting is stable, so files with no date keep their order.
 	plan.items.sort((a, b) => b.at - a.at);
 	plan.bytes = plan.items.reduce((n, i) => n + i.size, 0);

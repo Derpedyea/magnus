@@ -15,11 +15,13 @@ export interface MboxMessage {
 }
 
 /**
- * A message's `From ` line: the sender, then the date as asctime() writes it (`From - Mon Jan  1 00:00:00 2024`,
- * Takeout's `From 1848707889910060830@xxx Thu Nov 13 20:20:33 +0000 2025`). Checking for the day too, like mutt's
- * is_from(), keeps a body line a program forgot to escape from splitting its message in two.
+ * A message's `From ` line: the sender, then the date as asctime() writes it (`From - Mon Jan  1 00:00:00 2024`),
+ * perhaps with a zone before the year (Takeout's `From 1848707889910060830@xxx Thu Nov 13 20:20:33 +0000 2025`).
+ * Checking the whole date, like mutt's is_from(), keeps a body line a program forgot to escape from splitting its
+ * message in two.
  */
-const FROM_LINE = /^From \S*\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s/;
+const FROM_LINE =
+	/^From \S*\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?\s+(?:(?:[+-]\d{4}|[A-Z]{1,5})\s+)?\d{4}\b/;
 /** Enough of a line to tell a `From ` line by: the sender can be a long bounce address. */
 const HEAD_BYTES = 512;
 /** The Worker refuses a message whose headers run longer (worker/mail/import.ts), so there's no need to keep more. */
@@ -37,8 +39,12 @@ export async function isMbox(file: Blob): Promise<boolean> {
 	return FROM_LINE.test(latin1.decode(await file.slice(0, HEAD_BYTES).arrayBuffer()));
 }
 
-/** Every message in an mbox file, in order. `onBytes` hears how much more of the file has been read. */
-export async function* splitMbox(file: Blob, onBytes?: (bytes: number) => void): AsyncGenerator<MboxMessage> {
+/**
+ * Every message in an mbox file, in order. `onBytes` hears how much more of the file has been read; `signal` stops
+ * reading it, throwing its reason.
+ */
+export async function* splitMbox(file: Blob, onBytes?: (bytes: number) => void, signal?: AbortSignal): AsyncGenerator<MboxMessage> {
+	signal?.throwIfAborted();
 	const reader = file.stream().getReader();
 	/** Offset of the line being read, and its first bytes. */
 	let lineStart = 0;
@@ -90,6 +96,10 @@ export async function* splitMbox(file: Blob, onBytes?: (bytes: number) => void):
 	for (;;) {
 		const { value, done: eof } = await reader.read();
 		if (eof) break;
+		if (signal?.aborted) {
+			await reader.cancel();
+			signal.throwIfAborted();
+		}
 		let at = 0;
 		while (at < value.length) {
 			const newline = value.indexOf(LF, at);

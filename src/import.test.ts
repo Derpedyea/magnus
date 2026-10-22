@@ -132,6 +132,16 @@ describe("planImport with mbox files", () => {
 		expect(fractions.at(-1)).toBe(1);
 	});
 
+	it.each([["Drafts first", 0], ["All Mail first", 1]])("leaves out a Gmail draft Thunderbird also keeps in All Mail (%s)", async (_, order) => {
+		const files = [
+			["imap.gmail.com/[Gmail].sbd/Drafts", mbox(message("d", "Mon, 1 Jan 2024 10:00:00 +0000"))],
+			["imap.gmail.com/[Gmail].sbd/All Mail", mbox(message("d", "Mon, 1 Jan 2024 10:00:00 +0000"), message("e", "Mon, 1 Jan 2024 11:00:00 +0000"))],
+		] satisfies [string, string][];
+		const plan = await planImport(picked(order ? files.reverse() : files));
+		expect(plan).toMatchObject({ drafts: 1, items: [{ name: "e" }] });
+		expect(plan.items).toHaveLength(1);
+	});
+
 	it("files Takeout's mail by its labels, whatever the file's called", async () => {
 		const plan = await planImport(picked([
 			["Takeout/Mail/All mail Including Spam and Trash.mbox", mbox(message("c", "Wed, 3 Jan 2024 10:00:00 +0000", "X-Gmail-Labels: Sent,Opened\nX-Gmail-Labels: Receipts"))],

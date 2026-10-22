@@ -5,7 +5,7 @@ const MBOX = [
 	"From 1848707889910060830@xxx Thu Nov 13 20:20:33 +0000 2025\r\n",
 	"X-Gmail-Labels: Inbox,Opened\r\nSubject: one\r\n\r\nHi\r\n>From here\r\n>>From there\r\n> From a quote\r\n\r\n",
 	"From - Mon Jan  1 00:00:00 2024\n",
-	"Subject: two\n\nFrom the top, a line nobody escaped\n",
+	"Subject: two\n\nFrom the top, a line nobody escaped\nFrom Alice Mon is when we meet\n",
 ].join("");
 
 /** A file read back a few bytes at a time, as a big one is: lines and `From ` lines cross chunks. */
@@ -21,9 +21,9 @@ function chunked(text: string, size: number): Blob {
 	return blob;
 }
 
-async function split(blob: Blob) {
+async function split(blob: Blob, signal?: AbortSignal) {
 	const messages = [];
-	for await (const message of splitMbox(blob)) messages.push({ headers: message.headers, escaped: message.escaped, body: await (await mboxBody(blob, message)).text() });
+	for await (const message of splitMbox(blob, undefined, signal)) messages.push({ headers: message.headers, escaped: message.escaped, body: await (await mboxBody(blob, message)).text() });
 	return messages;
 }
 
@@ -36,8 +36,14 @@ describe("splitMbox", () => {
 				// One `>` comes off each escaped line, and the blank line before the next message isn't this one's.
 				body: "X-Gmail-Labels: Inbox,Opened\r\nSubject: one\r\n\r\nHi\r\nFrom here\r\n>From there\r\n> From a quote\r\n",
 			},
-			{ escaped: false, headers: "Subject: two", body: "Subject: two\n\nFrom the top, a line nobody escaped\n" },
+			{ escaped: false, headers: "Subject: two", body: "Subject: two\n\nFrom the top, a line nobody escaped\nFrom Alice Mon is when we meet\n" },
 		]);
+	});
+
+	it("stops reading once told to", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		await expect(split(chunked(MBOX, 7), controller.signal)).rejects.toThrow();
 	});
 
 	it("tells an mbox by its first line", async () => {
