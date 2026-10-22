@@ -13,7 +13,7 @@ import {
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi, Link, useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, ArrowLeftIcon, CircleAlertIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, StarIcon, StarOffIcon, Trash2Icon, UserRoundCheckIcon, type LucideIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, CheckIcon, CircleAlertIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, ShieldXIcon, StarIcon, StarOffIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Popover, PopoverContent, PopoverDescription, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast-manager";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -194,7 +195,7 @@ function BranchView(props: { branch: Branch<ThreadMessage>; render: (m: ThreadMe
 				<div key={m.id} className="relative grid grid-cols-[1.75rem_minmax(0,1fr)] gap-x-2.5 pb-3">
 					{i > 0 ? <span aria-hidden className={cn(RAIL, "top-0 h-2")} /> : null}
 					{m !== last || forks.length > 0 ? <span aria-hidden className={cn(RAIL, "top-9 bottom-0")} /> : null}
-					<Avatar from={m.from} ours={m.direction === "out"} />
+					<Avatar message={m} />
 					{props.render(m, messages[i - 1])}
 				</div>
 			))}
@@ -214,20 +215,97 @@ function BranchView(props: { branch: Branch<ThreadMessage>; render: (m: ThreadMe
 }
 
 /** Their initial; yours stand out, so your side of the conversation shows at a glance. */
-function Avatar({ from, ours }: { from: Address; ours: boolean }) {
-	const initial = Array.from(from.name?.trim() || from.address)[0]?.toUpperCase();
+function Avatar({ message: m }: { message: MessageDetail }) {
+	const ours = m.direction === "out";
+	const initial = Array.from(m.from.name?.trim() || m.from.address)[0]?.toUpperCase();
 	return (
-		<span
-			aria-hidden
-			className={cn(
-				"mt-2 flex size-7 items-center justify-center rounded-full text-xs font-medium",
-				ours ? "bg-primary text-primary-foreground" : "bg-muted text-foreground ring-1 ring-foreground/10 ring-inset",
-			)}
-		>
-			{initial}
+		<span className="relative mt-2 size-7">
+			<span
+				aria-hidden
+				className={cn(
+					"flex size-7 items-center justify-center rounded-full text-xs font-medium",
+					ours ? "bg-primary text-primary-foreground" : "bg-muted text-foreground ring-1 ring-foreground/10 ring-inset",
+				)}
+			>
+				{initial}
+			</span>
+			{ours ? null : <SenderBadge message={m} />}
 		</span>
 	);
 }
+
+/**
+ * Whether the From's domain vouched for it: a check when it did, a cross when it failed, nothing when there was
+ * nothing to go on. The cross comes with Forged's banner too; this is the at-a-glance half. Hover or tap says what
+ * it means, with each check in plain words under Details.
+ */
+function SenderBadge({ message: m }: { message: MessageDetail }) {
+	const [details, setDetails] = useState(false);
+	const spoofed = m.verdict?.kind === "spoofed";
+	if (!m.senderVerified && !spoofed) return null;
+	const domain = domainOf(m.from.address);
+	const title = spoofed ? `May not be from ${domain}` : `Really from ${domain}`;
+	const BadgeIcon = spoofed ? XIcon : CheckIcon;
+	const ShieldIcon = spoofed ? ShieldXIcon : ShieldCheckIcon;
+	return (
+		<Popover onOpenChange={(open) => open || setDetails(false)}>
+			<PopoverTrigger
+				openOnHover
+				delay={150}
+				aria-label={title}
+				className={cn(
+					"absolute -right-1 -bottom-1 flex size-3.5 items-center justify-center rounded-full text-white ring-2 ring-background outline-none focus-visible:ring-ring",
+					spoofed ? "bg-destructive" : "bg-emerald-600",
+				)}
+			>
+				<BadgeIcon className="size-2.5" strokeWidth={3.5} />
+			</PopoverTrigger>
+			<PopoverContent side="bottom" align="start" className="w-auto max-w-80 gap-0 p-3">
+				<div className="flex items-start gap-2.5">
+					<span className={cn("flex size-7 shrink-0 items-center justify-center rounded-md", spoofed ? "bg-destructive/15 text-destructive" : "bg-emerald-500/15 text-emerald-500")}>
+						<ShieldIcon className="size-4" />
+					</span>
+					<div className="min-w-0">
+						<PopoverTitle className="break-words">{title}</PopoverTitle>
+						<PopoverDescription className="text-xs">
+							{spoofed ? `${domain} didn't confirm it sent this.` : "The domain confirmed this message is theirs."}
+						</PopoverDescription>
+						{m.auth ? (
+							<button type="button" className="mt-1 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground" onClick={() => setDetails(!details)}>
+								{details ? "Hide details" : "Details"}
+							</button>
+						) : null}
+					</div>
+				</div>
+				{details && m.auth ? (
+					<ul className="mt-3 flex flex-col gap-2 border-t pt-3 text-xs">
+						{AUTH_CHECKS.map((c) => {
+							const result = m.auth?.[c.key] ?? null;
+							const state = result === "pass" ? "pass" : result === null || result === "none" ? "none" : "fail";
+							const Icon = state === "pass" ? CheckIcon : state === "fail" ? XIcon : MinusIcon;
+							return (
+								<li key={c.key} className="grid grid-cols-[0.875rem_1fr_auto] items-center gap-2">
+									<Icon className={cn("size-3.5", state === "pass" ? "text-emerald-500" : state === "fail" ? "text-destructive" : "text-muted-foreground")} />
+									<span className={cn(state === "none" && "text-muted-foreground")}>{c[state]}</span>
+									<span className="font-mono text-[10px] text-muted-foreground">{c.key.toUpperCase()}</span>
+								</li>
+							);
+						})}
+					</ul>
+				) : null}
+			</PopoverContent>
+		</Popover>
+	);
+}
+
+/** Each of the sender checks Email Routing stamps, in words. Anything but pass or none, softfail included, is a fail. */
+const AUTH_CHECKS = [
+	{ key: "spf", pass: "Sent from an approved server", fail: "Sent from a server it didn't approve", none: "No list of approved servers" },
+	{ key: "dkim", pass: "Signed by the sender", fail: "Its signature doesn't check out", none: "Not signed" },
+	{ key: "dmarc", pass: "Matches the From address", fail: "Doesn't match the From address", none: "No policy for the From address" },
+] as const;
+
+const domainOf = (address: string) => address.split("@").at(-1) ?? address;
 
 function Message(props: {
 	mailboxId: string;
@@ -277,7 +355,6 @@ function Message(props: {
 			<CollapsibleContent render={<CardContent />}>
 				<p className="pb-2 text-xs text-muted-foreground">
 						{recipientsLine(m)}
-						{m.auth ? ` · spf ${m.auth.spf ?? "?"} · dkim ${m.auth.dkim ?? "?"} · dmarc ${m.auth.dmarc ?? "?"}` : ""}
 				</p>
 				{props.outgoing ? <Undelivered mailboxId={props.mailboxId} message={m} /> : null}
 				<Triage mailboxId={props.mailboxId} message={m} />
@@ -461,6 +538,7 @@ function SpamReason(props: { mailboxId: string; message: MessageDetail }) {
 /** Inbound mail the filter held back says why, with the way out. Nothing otherwise. */
 function Triage(props: { mailboxId: string; message: MessageDetail }) {
 	if (props.message.direction !== "in") return null;
+	if (props.message.verdict?.kind === "spoofed") return <Forged {...props} />;
 	if (props.message.labels.includes("spam")) return <SpamReason {...props} />;
 	if (props.message.labels.includes("screener")) return <Screening {...props} />;
 	return null;
@@ -513,14 +591,42 @@ function Screening(props: { mailboxId: string; message: MessageDetail }) {
 	);
 }
 
+/**
+ * Mail that failed its sender's checks, wherever it is: let out of Spam, its From may still be anyone. The way out
+ * moves this message only, since a forged sender has no standing to judge.
+ */
+function Forged(props: { mailboxId: string; message: MessageDetail }) {
+	const qc = useQueryClient();
+	const inSpam = props.message.labels.includes("spam");
+	const move = useMutation({
+		mutationFn: () => api.judge(props.mailboxId, props.message.id, inSpam ? "trusted" : "spam"),
+		onSuccess: () => qc.invalidateQueries({ queryKey: ["mail"] }),
+	});
+	const domain = domainOf(props.message.from.address);
+	return (
+		<div className="mb-3 flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2">
+			<TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
+			<div className="min-w-0 flex-1">
+				<p className="font-medium break-words text-destructive">This may not be from {domain}</p>
+				<p className="text-xs break-words text-muted-foreground">
+					{move.error ? errorMessage(move.error) : `${domain} didn't confirm it sent this. Don't click its links or reply with personal info.`}
+				</p>
+			</div>
+			{/* It stays after either move, so the button flips rather than staying spent. */}
+			<Button variant="outline" size="xs" disabled={move.isPending} onClick={() => move.mutate()}>
+				{move.isPending ? <Spinner className="size-3" /> : inSpam ? <InboxIcon /> : <OctagonAlertIcon />}
+				{inSpam ? "Not spam" : "Spam"}
+			</Button>
+		</div>
+	);
+}
+
 /** Mail that may be out to get you reads as a warning. */
 /** `settings`: where it went is a setting, so the banner says where to change it. */
 function spamReason({ from, verdict }: MessageDetail): { danger: boolean; reason: string; settings?: boolean } {
 	switch (verdict?.kind) {
 		case "marked":
 			return { danger: false, reason: `Earlier mail from ${from.address} was marked as spam.` };
-		case "spoofed":
-			return { danger: true, reason: `It failed ${from.address.split("@").at(-1)}'s sender checks, so it may not be from them.` };
 		case "unchecked":
 			return { danger: false, reason: "It couldn't be checked, so it waits here instead of your inbox." };
 		case "checked":
