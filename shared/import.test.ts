@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ImportQuerySchema, importLabel, type ProtonLabel, protonPlacement } from "./import";
+import { gmailPlacement, ImportQuerySchema, importLabel, mboxPlacement, mergePlacements, parseHeaders, type ProtonLabel, protonPlacement } from "./import";
 
 // From labels.json: Proton lists some system labels too, typed as folders or labels.
 const LABELS = new Map<string, ProtonLabel>(
@@ -40,6 +40,61 @@ describe("protonPlacement", () => {
 
 	it("skips drafts, which aren't mail yet", () => {
 		expect(protonPlacement(message(["1", "8", "5"], 0), LABELS)).toBeNull();
+	});
+});
+
+describe("gmailPlacement", () => {
+	it.each([
+		["Inbox,Opened,Category Updates,Important", { labels: ["inbox"], read: true }],
+		["Archived,Unread,Work/Clients", { labels: ["work-clients"], read: false }],
+		["Sent,Opened,Inbox", { labels: ["sent", "inbox"], read: true, sent: true }],
+		["Spam,Trash,Starred,Unread", { labels: ["spam", "trash", "starred"], read: false }],
+		// Takeout encodes the whole header, commas and all, when a label isn't ASCII.
+		["=?UTF-8?Q?Inbox,Opened,=C3=85rsrapport?=", { labels: ["inbox", "årsrapport"], read: true }],
+	])("files %s", (header, placement) => {
+		expect(gmailPlacement(header)).toEqual(placement);
+	});
+
+	it("skips drafts", () => {
+		expect(gmailPlacement("Drafts,Opened")).toBeNull();
+	});
+});
+
+describe("mboxPlacement", () => {
+	const place = (headers: Record<string, string>, folder: string[]) => mboxPlacement(new Map(Object.entries(headers)), folder);
+
+	it.each([
+		["Thunderbird's Inbox, read", { "x-mozilla-status": "0001" }, ["Inbox"], { labels: ["inbox"], read: true }],
+		["a starred message in Sent", { "x-mozilla-status": "0005" }, ["Sent"], { labels: ["sent", "starred"], read: true, sent: true }],
+		["an unread one in a subfolder", { "x-mozilla-status": "0000" }, ["Work", "Clients"], { labels: ["work-clients"], read: false }],
+		["Archives by year, as archived", { "x-mozilla-status": "0001" }, ["Archives", "2024"], { labels: [], read: true }],
+		["Gmail's folders over IMAP", { "x-mozilla-status": "0001" }, ["[Gmail]", "Starred"], { labels: ["starred"], read: true }],
+		["tags, without junk keywords", { "x-mozilla-status": "0001", "x-mozilla-keys": "$label2 receipts NonJunk $Forwarded" }, ["Junk"], { labels: ["spam", "work", "receipts"], read: true }],
+		["Status and X-Status from other programs", { status: "O", "x-status": "F" }, ["INBOX"], { labels: ["inbox", "starred"], read: false }],
+		["a file with nothing to say, as read", {}, ["mail"], { labels: ["mail"], read: true }],
+		["Takeout's labels over the file's name", { "x-gmail-labels": "Inbox,Unread" }, ["All mail Including Spam and Trash"], { labels: ["inbox"], read: false }],
+	])("files %s", (_, headers, folder, placement) => {
+		expect(place(headers, folder)).toEqual(placement);
+	});
+
+	it("leaves out drafts, templates, and what Thunderbird deleted but hasn't compacted away", () => {
+		expect(place({}, ["Drafts"])).toBe("draft");
+		expect(place({}, ["Templates"])).toBe("draft");
+		expect(place({ "x-mozilla-status": "0009" }, ["Inbox"])).toBe("deleted");
+	});
+});
+
+describe("parseHeaders", () => {
+	it("unfolds headers, keeps the first of each, and joins split X-Gmail-Labels", () => {
+		const headers = parseHeaders("Subject: one\r\n two\r\nX-Gmail-Labels: Inbox\r\nSubject: later\r\nX-Gmail-Labels: Work\r\nbroken line");
+		expect([...headers]).toEqual([["subject", "one two"], ["x-gmail-labels", "Inbox,Work"]]);
+	});
+});
+
+describe("mergePlacements", () => {
+	it("files a message found twice in both places, read only if both say so", () => {
+		expect(mergePlacements({ labels: ["work"], read: true }, { labels: ["inbox", "work"], read: false })).toEqual({ labels: ["inbox", "work"], read: false });
+		expect(mergePlacements({ labels: [], read: true }, { labels: ["sent"], read: true, sent: true })).toEqual({ labels: ["sent"], read: true, sent: true });
 	});
 });
 

@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { byteBudget } from "#shared";
-import { type ImportPlacement, MAX_IMPORT_BYTES, type ProtonLabel, ProtonLabelsSchema, ProtonMetadataSchema, protonPlacement } from "#shared/import";
+import {
+	type ImportPlacement, MAX_IMPORT_BYTES, mboxPlacement, mergePlacements, parseHeaders, type ProtonLabel, ProtonLabelsSchema,
+	ProtonMetadataSchema, protonPlacement,
+} from "#shared/import";
+import { decodeWords } from "postal-mime";
 import { ApiError } from "./api";
+import { isMbox, type MboxMessage, mboxBody, splitMbox } from "./mbox";
 
 /** A file from the folder or files chosen, with its path inside what was chosen. */
 export interface PickedFile {
@@ -10,8 +15,14 @@ export interface PickedFile {
 }
 
 export interface ImportItem {
+	/** Unique in the import: an mbox message's is its file's and its place in it (`Inbox #12`). */
 	path: string;
+	/** What to call it: the file's name, or an mbox message's subject. */
+	name: string;
 	file: File;
+	/** Where in `file` it is, when that's an mbox holding many. */
+	mbox?: Pick<MboxMessage, "start" | "end" | "escaped">;
+	size: number;
 	placement: ImportPlacement;
 	/** When it arrived, if the export says, to send the newest first. 0 when it doesn't. */
 	at: number;
@@ -23,7 +34,13 @@ export interface ImportPlan {
 	bytes: number;
 	/** Proton's Export Tool wrote it. */
 	proton: boolean;
+	/** Messages in it came from Gmail's Takeout. */
+	gmail: boolean;
+	/** It holds mbox files. */
+	mbox: boolean;
 	drafts: number;
+	/** Mail Thunderbird deleted but kept in the file until the folder is compacted. */
+	deleted: number;
 	/** Messages Proton listed but couldn't export as mail (it saves their parts in a folder instead). */
 	unexported: number;
 	tooBig: string[];
@@ -46,8 +63,12 @@ const READERS = 16;
  * A folder is Proton's export when one of those files in it is shaped like Proton's (`{ Version, Payload }`). There,
  * one that can't be read stops the import or lists its message as unreadable, rather than misfiling mail. Anywhere
  * else they're another program's, and left alone.
+ *
+ * Any other file that starts with a `From ` line is an mbox, and is read through once (`onProgress` hears how far) for
+ * where each message in it is and where it goes (mboxPlacement()). The same message in two of them (Thunderbird keeps
+ * Gmail's mail in All Mail and each folder it's in) is sent once, with the labels of both.
  */
-export async function planImport(files: PickedFile[]): Promise<ImportPlan> {
+export async function planImport(files: PickedFile[], onProgress?: (fraction: number) => void): Promise<ImportPlan> {
 	const byPath = new Map(files.map((f) => [f.path, f.file]));
 	const emls = files.filter((f) => /\.eml$/i.test(f.file.name));
 	const sidecars = new Map(
@@ -76,14 +97,15 @@ export async function planImport(files: PickedFile[]): Promise<ImportPlan> {
 	// the full export again couldn't add them: the messages would already be here.
 	for (const folder of exports) if (!labelsByFolder.has(folder)) throw new Error(`${folder} has no labels.json, which lists the folders and labels in Proton's export`);
 
-	const plan: ImportPlan = { items: [], bytes: 0, proton: exports.size > 0, drafts: 0, unexported: 0, tooBig: [], unreadable: [] };
+	const plan: ImportPlan = { items: [], bytes: 0, proton: exports.size > 0, gmail: false, mbox: false, drafts: 0, deleted: 0, unexported: 0, tooBig: [], unreadable: [] };
 	const paired = new Set(emls.map((f) => sidecarOf(f.path)));
 	plan.unexported = files.filter((f) => f.path.endsWith(METADATA) && !paired.has(f.path) && exports.has(folderOf(f.path))).length;
 
 	for (const { path, file } of emls) {
 		const sidecar = sidecars.get(path);
+		const item = { path, name: file.name, file, size: file.size };
 		if (file.size > MAX_IMPORT_BYTES) plan.tooBig.push(path);
-		else if (!exports.has(folderOf(path))) plan.items.push({ path, file, placement: { labels: [], read: true }, at: 0 });
+		else if (!exports.has(folderOf(path))) plan.items.push({ ...item, placement: { labels: [], read: true }, at: 0 });
 		else {
 			const parsed = ProtonMetadataSchema.safeParse(sidecar);
 			// Proton names both files by the message's id, so details naming another message aren't this one's.
@@ -92,14 +114,78 @@ export async function planImport(files: PickedFile[]): Promise<ImportPlan> {
 				continue;
 			}
 			const placement = protonPlacement(parsed.data.Payload, labelsByFolder.get(folderOf(path)) ?? new Map());
-			if (placement) plan.items.push({ path, file, placement, at: parsed.data.Payload.Time * 1000 });
+			if (placement) plan.items.push({ ...item, placement, at: parsed.data.Payload.Time * 1000 });
 			else plan.drafts++;
+		}
+	}
+
+	const candidates = files.filter((f) => !/\.(eml|json|msf)$/i.test(f.file.name) && f.file.size > 0);
+	const mboxes = (await pool(candidates, READERS, async (f) => ((await isMbox(f.file)) ? f : null))).filter((f) => f !== null);
+	plan.mbox = mboxes.length > 0;
+	const total = mboxes.reduce((n, f) => n + f.file.size, 0);
+	let read = 0;
+	const byMessageId = new Map<string, ImportItem>();
+	for (const { path, file } of mboxes) {
+		const folder = mboxFolder(path);
+		let n = 0;
+		for await (const message of splitMbox(file, (bytes) => onProgress?.((read += bytes) / total))) {
+			const key = `${path} #${++n}`;
+			const size = message.end - message.start;
+			if (size > MAX_IMPORT_BYTES) {
+				plan.tooBig.push(key);
+				continue;
+			}
+			const headers = parseHeaders(message.headers);
+			const placement = mboxPlacement(headers, folder);
+			if (placement === "draft") plan.drafts++;
+			else if (placement === "deleted") plan.deleted++;
+			else {
+				if (headers.has("x-gmail-labels")) plan.gmail = true;
+				const id = own(headers.get("message-id"));
+				const same = id ? byMessageId.get(id) : undefined;
+				if (same) {
+					same.placement = mergePlacements(same.placement, placement);
+					continue;
+				}
+				const subject = own(decodeWords(headers.get("subject") ?? "").trim().slice(0, 200));
+				const at = Date.parse(headers.get("date") ?? "");
+				const item: ImportItem = { path: key, name: subject || `${file.name} #${n}`, file, mbox: { start: message.start, end: message.end, escaped: message.escaped }, size, placement, at: Number.isNaN(at) ? 0 : at };
+				if (id) byMessageId.set(id, item);
+				plan.items.push(item);
+			}
 		}
 	}
 	// Newest first, so recent mail is there to read first. Sorting is stable, so files with no date keep their order.
 	plan.items.sort((a, b) => b.at - a.at);
-	plan.bytes = plan.items.reduce((n, i) => n + i.file.size, 0);
+	plan.bytes = plan.items.reduce((n, i) => n + i.size, 0);
 	return plan;
+}
+
+/**
+ * A copy of a string cut from a message's headers. A cut can keep the whole string it came from (V8 does), and a
+ * Takeout's hundreds of thousands of them would keep every message's headers.
+ */
+function own<T extends string | undefined>(s: T): T {
+	return (s === undefined ? s : utf8.decode(new TextEncoder().encode(s))) as T;
+}
+const utf8 = new TextDecoder();
+
+/** What to send for an item: the file, or an mbox message's bytes as they were before they went into it. */
+export function importBody(item: ImportItem): Promise<Blob> {
+	return item.mbox ? mboxBody(item.file, item.mbox) : Promise.resolve(item.file);
+}
+
+/**
+ * An mbox file's folder and its parents, outermost first. Thunderbird keeps subfolders in `<name>.sbd/` beside the
+ * folder's file (`Work.sbd/Clients` → Work/Clients); Apple Mail exports `<name>.mbox/mbox`.
+ */
+export function mboxFolder(path: string): string[] {
+	const parts = path.split("/");
+	let name = parts.pop() ?? "";
+	if (name === "mbox" && /\.mbox$/i.test(parts.at(-1) ?? "")) name = parts.pop() ?? "";
+	const folder = [name.replace(/\.(mbox|mbx)$/i, "")];
+	for (let parent = parts.pop(); parent && /\.(sbd|mbox)$/i.test(parent); parent = parts.pop()) folder.unshift(parent.replace(/\.(sbd|mbox)$/i, ""));
+	return folder;
 }
 
 /** Sidecar states besides its JSON: no file beside the message, or one too big to be Proton's. In an export, both are unreadable. */
@@ -168,11 +254,11 @@ export async function runImport(items: ImportItem[], options: RunOptions): Promi
 	let next = 0;
 
 	const send = async (item: ImportItem): Promise<void> => {
-		await budget.take(item.file.size);
+		await budget.take(item.size);
 		try {
 			await sendOnce(item);
 		} finally {
-			budget.give(item.file.size);
+			budget.give(item.size);
 		}
 	};
 
@@ -181,13 +267,13 @@ export async function runImport(items: ImportItem[], options: RunOptions): Promi
 			try {
 				await options.upload(item, signal);
 				progress.done++;
-				progress.bytesDone += item.file.size;
+				progress.bytesDone += item.size;
 				return;
 			} catch (error) {
 				if (signal.aborted) return;
 				const status = error instanceof ApiError ? error.status : null;
 				if (status === 401 || status === 403 || status === 404) {
-					fatal = status === 401 ? "You were signed out. Sign in and import the folder again to finish." : "You can't import into this mailbox anymore.";
+					fatal = status === 401 ? "You were signed out. Sign in and import the same export again to finish." : "You can't import into this mailbox anymore.";
 					halt.abort();
 					return;
 				}

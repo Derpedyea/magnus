@@ -1,3 +1,4 @@
+import { decodeWords } from "postal-mime";
 import { z } from "zod";
 import { SYSTEM_LABELS, type SystemLabel } from "./types";
 
@@ -136,4 +137,140 @@ export function protonPlacement(meta: ProtonMetadata, labels: ReadonlyMap<string
 	}
 	// Where it was (Inbox, Sent, Trash…) first, so a message with more labels than fit loses only some of its own.
 	return { labels: [...system, ...own].slice(0, MAX_IMPORT_LABELS), read: meta.Unread === 0, sent: (meta.Flags & SENT) !== 0 };
+}
+
+// ─── mbox: Gmail's Takeout, Thunderbird, and the rest ───────────────────────
+// One file holds a folder's messages, each after a `From ` line (RFC 4155). Takeout writes one file of All mail with
+// each message's labels in X-Gmail-Labels; Thunderbird writes one file per folder, named like it, with subfolders in a
+// `<name>.sbd/` beside it, and keeps read and starred in X-Mozilla-Status.
+
+/** Gmail's own labels in X-Gmail-Labels, as labels here or as nothing. The inbox's categories (`Category …`) are nothing too. */
+const GMAIL_SYSTEM = new Map<string, string | null>([
+	["Inbox", "inbox"], ["Sent", "sent"], ["Spam", "spam"], ["Trash", "trash"], ["Starred", "starred"],
+	["Important", null], ["Opened", null], ["Unread", null], ["Archived", null],
+]);
+
+/**
+ * Where a message was in Gmail, from Takeout's X-Gmail-Labels (`Inbox,Opened,Work/Clients`), or null for a draft. The
+ * whole header can be one encoded word, commas and all (`=?UTF-8?Q?=C3=85pnet,Kategori:_Reklame?=`), so it's decoded
+ * before it's split. Gmail names its own labels in the account's language; only English ones are known here, and
+ * the rest become labels.
+ */
+export function gmailPlacement(header: string): ImportPlacement | null {
+	const names = decodeWords(header)
+		.split(",")
+		.map((n) => n.trim())
+		.filter(Boolean);
+	if (names.includes("Drafts")) return null;
+	const system = new Set<string>();
+	const own = new Set<string>();
+	for (const name of names) {
+		const label = GMAIL_SYSTEM.get(name);
+		if (label !== undefined) {
+			if (label) system.add(label);
+		} else if (!name.startsWith("Category ")) {
+			const imported = importLabel(name);
+			if (imported) own.add(imported);
+		}
+	}
+	return {
+		labels: [...system, ...own].slice(0, MAX_IMPORT_LABELS),
+		// Takeout writes one or the other; with neither, it's read, like an .eml with nothing to say.
+		read: names.includes("Opened") || !names.includes("Unread"),
+		// Gmail labels everything you sent Sent. Without it, the Worker still counts mail from your addresses as sent.
+		...(names.includes("Sent") ? { sent: true } : {}),
+	};
+}
+
+/** Folder names programs give their own folders, lowercased. Anything else is the person's own and becomes a label. */
+const FOLDERS = new Map<string, "inbox" | "sent" | "trash" | "spam" | "starred" | "archive" | "draft">([
+	["inbox", "inbox"],
+	["sent", "sent"], ["sent mail", "sent"], ["sent messages", "sent"], ["sent items", "sent"],
+	["trash", "trash"], ["bin", "trash"], ["deleted items", "trash"], ["deleted messages", "trash"],
+	["spam", "spam"], ["junk", "spam"], ["junk e-mail", "spam"], ["junk email", "spam"],
+	["archive", "archive"], ["archives", "archive"], ["all mail", "archive"],
+	["drafts", "draft"], ["templates", "draft"], ["outbox", "draft"], ["unsent messages", "draft"],
+]);
+/** Gmail's folders over IMAP, which Thunderbird keeps under `[Gmail]`, besides the ones above. */
+const GMAIL_FOLDERS = new Map<string, "starred" | "archive">([["starred", "starred"], ["important", "archive"]]);
+
+/** Thunderbird's X-Mozilla-Status bits (nsMsgMessageFlags.idl). */
+const MOZILLA_READ = 0x1;
+const MOZILLA_MARKED = 0x4;
+/** Deleted, but still in the file until the folder is compacted. */
+const MOZILLA_EXPUNGED = 0x8;
+/** Thunderbird's tags in X-Mozilla-Keys: its five built-in ones, and keywords that aren't tags. */
+const MOZILLA_TAGS = new Map([["$label1", "important"], ["$label2", "work"], ["$label3", "personal"], ["$label4", "todo"], ["$label5", "later"]]);
+const NOT_TAGS = new Set(["junk", "nonjunk", "notjunk"]);
+
+/**
+ * Where a message in an mbox file was, or why it's left out: drafts aren't mail yet, and Thunderbird keeps mail it
+ * deleted until the folder is compacted. `folder` is the file's folder and its parents, outermost first
+ * (`Work.sbd/Clients` → `["Work", "Clients"]`); `headers` are the message's, by lowercased name.
+ *
+ * Takeout's labels say everything. Otherwise the folder says where it was, and Thunderbird's X-Mozilla-Status or the
+ * Status and X-Status other programs write say whether it was read and starred. With none of them it's read.
+ */
+export function mboxPlacement(headers: ReadonlyMap<string, string>, folder: readonly string[]): ImportPlacement | "draft" | "deleted" {
+	const status = headers.get("x-mozilla-status");
+	const mozilla = status && /^[0-9a-f]{4}$/i.test(status) ? Number.parseInt(status, 16) : null;
+	if (mozilla !== null && mozilla & MOZILLA_EXPUNGED) return "deleted";
+	const gmail = headers.get("x-gmail-labels");
+	if (gmail !== undefined) return gmailPlacement(gmail) ?? "draft";
+
+	const gmailImap = /^\[(gmail|google mail)\]$/i.test(folder[0] ?? "");
+	const path = gmailImap ? folder.slice(1) : folder;
+	const name = path[0]?.toLowerCase() ?? "";
+	const top = FOLDERS.get(name) ?? (gmailImap ? GMAIL_FOLDERS.get(name) : undefined);
+	if (top === "draft") return "draft";
+	const system = new Set<string>();
+	const own = new Set<string>();
+	if (path.length === 1 && top && top !== "archive") system.add(top);
+	// A subfolder of Inbox is the person's own; Archives files by year, and those are archived mail.
+	else if (path.length > 0 && top !== "archive") {
+		const label = importLabel(path.join("/"));
+		if (label) own.add(label);
+	}
+	const read = mozilla !== null ? (mozilla & MOZILLA_READ) !== 0 : (headers.get("status")?.includes("R") ?? true);
+	if ((mozilla !== null && mozilla & MOZILLA_MARKED) || headers.get("x-status")?.includes("F")) system.add("starred");
+	for (const key of (headers.get("x-mozilla-keys") ?? "").split(/\s+/)) {
+		const tag = MOZILLA_TAGS.get(key.toLowerCase()) ?? (key.startsWith("$") || NOT_TAGS.has(key.toLowerCase()) ? null : importLabel(key));
+		if (tag) own.add(tag);
+	}
+	return {
+		labels: [...system, ...own].slice(0, MAX_IMPORT_LABELS),
+		read,
+		...(path.length === 1 && top === "sent" ? { sent: true } : {}),
+	};
+}
+
+/**
+ * A message's header block as lowercased name → unfolded value, the first of each name. X-Gmail-Labels is the
+ * exception: a long one can be split over several, so they're joined.
+ */
+export function parseHeaders(block: string): Map<string, string> {
+	const headers = new Map<string, string>();
+	for (const field of block.replaceAll(/\r?\n[ \t]+/g, " ").split(/\r?\n/)) {
+		const colon = field.indexOf(":");
+		if (colon <= 0) continue;
+		const name = field.slice(0, colon).trim().toLowerCase();
+		const value = field.slice(colon + 1).trim();
+		const seen = headers.get(name);
+		if (seen === undefined) headers.set(name, value);
+		else if (name === "x-gmail-labels") headers.set(name, `${seen},${value}`);
+	}
+	return headers;
+}
+
+/**
+ * One message found in two places in an export, as it goes here: in both, read only if both say so, and sent if either
+ * does. Where it was comes first among its labels, as everywhere else.
+ */
+export function mergePlacements(a: ImportPlacement, b: ImportPlacement): ImportPlacement {
+	const labels = [...new Set([...a.labels, ...b.labels])];
+	return {
+		labels: [...labels.filter((l) => IMPORT_SYSTEM.has(l)), ...labels.filter((l) => !IMPORT_SYSTEM.has(l))].slice(0, MAX_IMPORT_LABELS),
+		read: a.read && b.read,
+		...(a.sent || b.sent ? { sent: true } : {}),
+	};
 }

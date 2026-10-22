@@ -109,7 +109,7 @@ export const api = {
 			),
 		),
 	/** One message from another provider's export, filed where it was there. */
-	importMessage: (mailboxId: string, file: File, placement: ImportPlacement, signal: AbortSignal) =>
+	importMessage: (mailboxId: string, file: Blob, placement: ImportPlacement, signal: AbortSignal) =>
 		parseResponse(
 			mailbox.import.$post(
 				{

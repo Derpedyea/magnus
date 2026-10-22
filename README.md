@@ -49,8 +49,9 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
   in view, with confirmation. Files still used by other mail stay; failed storage cleanup retries automatically.
 - **Bring your old mail.** Sign in to Proton on Settings › Import mail and your mail comes over on its own, with its
   folders, labels, stars, read state, and Sent, threaded like new mail; close the page whenever. Magnus runs Proton's
-  own Export Tool for it in a Cloudflare Container. Or drop a folder: the one Proton's Export Tool saves on your
-  computer, or any folder of `.eml` files. Importing the same mail again adds nothing twice.
+  own Export Tool for it in a Cloudflare Container. Or drop an export: the `.mbox` from Gmail's Takeout, Thunderbird's
+  Mail folder, the folder Proton's Export Tool saves on your computer, or any folder of `.eml` or mbox files.
+  Importing the same mail again adds nothing twice.
 - **Hostile HTML stays contained**: streaming sanitizer, strict CSP, sandboxed iframe, and remote images
   blocked until you ask.
 - **Sign in with a passkey or an emailed code**, or Google if you add it. There's no sign-up; only people you add can get in.
