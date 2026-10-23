@@ -99,28 +99,31 @@ export function labelBatches(threads: readonly Labeled[], key: string, on: boole
 export type Drop = "before" | "after" | "inside";
 
 /**
- * What moves label `key` to `drop` of label `target`: between the target and its neighbour (or a step past the target at
- * the end), so no other label changes. Null when that's where it already is.
+ * The changes that move label `key` to `drop` of label `target`: halfway between its new neighbours, so no other label
+ * changes. Mailboxes number their labels apart, so merged ones can tie and leave no room between: then the labels beside
+ * it are renumbered. Empty when it's already there.
  */
-export function labelMove(labels: readonly Label[], key: string, target: string, drop: Drop): LabelChange | null {
+export function labelMove(labels: readonly Label[], key: string, target: string, drop: Drop): { key: string; change: LabelChange }[] {
 	const label = labels.find((l) => l.key === key);
 	const to = labels.find((l) => l.key === target);
-	if (!label || !to || label === to) return null;
+	if (!label || !to || label === to) return [];
 	// A label whose parent is missing sits at the top (labelTree()).
 	const keys = new Set(labels.map((l) => l.key));
 	const parentOf = (l: Label) => (l.parent !== null && keys.has(l.parent) ? l.parent : null);
 	const parent = drop === "inside" ? to.key : parentOf(to);
+	const moved = parentOf(label) !== parent;
+	if (!moved && drop === "inside") return [];
 	const beside = labels.filter((l) => parentOf(l) === parent).sort(byPlace);
-	const at = beside.indexOf(to);
-	if (parentOf(label) === parent && (drop === "inside" || beside[drop === "before" ? at - 1 : at + 1] === label)) return null;
-	const others = beside.filter((l) => l !== label);
-	let position: number;
-	if (drop === "inside") position = (others.at(-1)?.position ?? 0) + 1;
-	else {
-		const next = others[others.indexOf(to) + (drop === "before" ? -1 : 1)];
-		position = next ? (to.position + next.position) / 2 : to.position + (drop === "before" ? -1 : 1);
-	}
-	return parentOf(label) === parent ? { position } : { parent, position };
+	const order = beside.filter((l) => l !== label);
+	order.splice(drop === "inside" ? order.length : order.indexOf(to) + (drop === "after" ? 1 : 0), 0, label);
+	if (!moved && order.every((l, i) => l === beside[i])) return [];
+	const at = order.indexOf(label);
+	const before = order[at - 1]?.position;
+	const after = order[at + 1]?.position;
+	const position = before === undefined ? (after ?? 2) - 1 : after === undefined ? before + 1 : (before + after) / 2;
+	const place = (l: Label, position: number) => ({ key: l.key, change: l === label && moved ? { parent, position } : { position } });
+	if ((before === undefined || before < position) && (after === undefined || position < after)) return [place(label, position)];
+	return order.flatMap((l, i) => (l === label || l.position !== i + 1 ? [place(l, i + 1)] : []));
 }
 
 /** A tree's labels in order, each just before the labels inside it, with the labels beside it. */

@@ -40,7 +40,7 @@ import { api, errorMessage } from "../api";
 import { type LabelNode, labelPath, labelRows, labelStyle, useLabels } from "../labels";
 import { labelsQuery } from "../queries";
 
-/** Pickers' stand-in for null: no color, or no label to go inside. */
+/** The color picker's stand-in for null: no color. */
 const NONE = "none";
 const COLORS = [NONE, ...LABEL_COLORS] as const;
 const colorName = (color: (typeof COLORS)[number]) => (color === NONE ? "No color" : color.charAt(0).toUpperCase() + color.slice(1));
@@ -56,9 +56,15 @@ export function useUpdateLabel() {
 		mutationFn: ({ key, change }: { key: string; change: LabelChange }) => api.updateLabel(key, change),
 		onMutate: async ({ key, change }) => {
 			await qc.cancelQueries({ queryKey: labelsQuery.queryKey });
+			const before = qc.getQueryData(labelsQuery.queryKey);
 			qc.setQueryData(labelsQuery.queryKey, (r) => r && { labels: r.labels.map((l) => (l.key === key ? { ...l, ...change } : l)) });
+			return before;
 		},
-		onError: (error) => toast.add({ title: errorMessage(error), type: "error" }),
+		// Put back at once, in case the refetch fails too.
+		onError: (error, _, before) => {
+			qc.setQueryData(labelsQuery.queryKey, before);
+			toast.add({ title: errorMessage(error), type: "error" });
+		},
 		onSettled: () => qc.invalidateQueries({ queryKey: labelsQuery.queryKey }),
 	});
 }
@@ -143,9 +149,9 @@ function LabelForm(props: FormProps & { onDone: () => void }) {
 			props.onDone();
 		},
 	});
-	// A label can go inside one that isn't already as deep as labels go.
+	// A label can go inside one that isn't already as deep as labels go. Null for none: a label can be keyed "none".
 	const places = [
-		{ value: NONE, label: "None" },
+		{ value: null, label: "None" },
 		...labelRows(tree)
 			.filter((r) => r.node.depth < MAX_LABEL_DEPTH - 1)
 			.map((r) => ({ value: r.node.label.key, label: labelPath(byKey, r.node.label.key) })),
@@ -182,13 +188,13 @@ function LabelForm(props: FormProps & { onDone: () => void }) {
 				<>
 					<Field>
 						<FieldLabel htmlFor={`${id}-inside`}>Inside</FieldLabel>
-						<Select items={places} value={parent ?? NONE} onValueChange={(value) => setParent(value === NONE ? null : String(value))}>
+						<Select items={places} value={parent} onValueChange={setParent}>
 							<SelectTrigger id={`${id}-inside`} className="w-full">
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
 								{places.map((place) => (
-									<SelectItem key={place.value} value={place.value}>
+									<SelectItem key={place.value ?? ""} value={place.value}>
 										{place.label}
 									</SelectItem>
 								))}

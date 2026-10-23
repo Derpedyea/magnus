@@ -148,10 +148,11 @@ export function Sidebar(props: {
 		);
 	};
 
-	// Hidden labels leave the labels inside them out too, and collapsed ones their sublabels.
+	// Hidden labels leave the labels inside them out too, and collapsed ones their sublabels, except in the rail, which
+	// has no chevrons to open them.
 	const opens = (node: LabelNode) => node.children.some((c) => !c.label.hidden);
 	const shown = (nodes: LabelNode[]): LabelNode[] =>
-		nodes.filter((n) => !n.label.hidden).flatMap((n) => [n, ...(collapsed.has(n.label.key) ? [] : shown(n.children))]);
+		nodes.filter((n) => !n.label.hidden).flatMap((n) => [n, ...(collapsed.has(n.label.key) && !iconsOnly ? [] : shown(n.children))]);
 	// Room for chevrons before the swatches once any label has others inside it.
 	const nested = labels.tree.some((n) => !n.label.hidden && opens(n));
 

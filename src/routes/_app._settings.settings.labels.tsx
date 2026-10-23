@@ -35,8 +35,7 @@ function Labels() {
 	const [over, setOver] = useState<{ key: string; drop: Drop } | null>(null);
 	const update = useUpdateLabel();
 	const move: Move = (key, target, drop) => {
-		const change = labelMove(labels, key, target, drop);
-		if (change) update.mutate({ key, change });
+		for (const change of labelMove(labels, key, target, drop)) update.mutate(change);
 	};
 	const end = () => {
 		setDragging(null);
