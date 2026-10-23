@@ -7,8 +7,13 @@ import { defineAppHotkeys } from "@tanstack/react-hotkeys";
  */
 export const appHotkeys = defineAppHotkeys({
 	"compose.new": { hotkey: "C", meta: { name: "Compose", group: "Mail" } },
-	// Registered on each composer (Composer), ahead of the editor, where Mod+Enter would add a line break.
-	"compose.send": { hotkey: "Mod+Enter", meta: { name: "Send", group: "Mail" }, options: { capture: true, stopPropagation: true, conflictBehavior: "allow" } },
+	// Registered on each composer (Composer), ahead of the editor, where Mod+Enter would add a line break. The one
+	// shortcut meant for while you type, whatever it's rebound to; the rest wait (components/KeyboardShortcuts.tsx).
+	"compose.send": {
+		hotkey: "Mod+Enter",
+		meta: { name: "Send", group: "Mail" },
+		options: { capture: true, stopPropagation: true, conflictBehavior: "allow", ignoreInputs: false },
+	},
 	"search.focus": { hotkey: "/", meta: { name: "Search", group: "Mail" } },
 
 	"thread.next": { hotkey: "J", meta: { name: "Next conversation", group: "Conversation" } },
@@ -30,8 +35,7 @@ export const appHotkeys = defineAppHotkeys({
 	"go.sent": { hotkey: ["G", "T"], meta: { name: "Sent", group: "Go to" } },
 	"go.all": { hotkey: ["G", "A"], meta: { name: "All mail", group: "Go to" } },
 
-	// Not while typing, where Mod+B is bold.
-	"sidebar.toggle": { hotkey: "Mod+B", meta: { name: "Toggle sidebar", group: "App" }, options: { ignoreInputs: true } },
+	"sidebar.toggle": { hotkey: "Mod+B", meta: { name: "Toggle sidebar", group: "App" } },
 	"help.shortcuts": { hotkey: "?", meta: { name: "Keyboard shortcuts", group: "App" } },
 });
 

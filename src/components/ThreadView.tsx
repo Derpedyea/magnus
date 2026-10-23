@@ -838,6 +838,20 @@ function HtmlBody({
 		doc.addEventListener("click", onClick);
 		return () => doc.removeEventListener("click", onClick);
 	}, [doc]);
+	// Keys pressed after clicking into the mail stay in its document, so they're passed on to the app's shortcuts.
+	useEffect(() => {
+		const frame = ref.current;
+		if (!doc || !frame) return;
+		const forward = (e: KeyboardEvent) => {
+			if (!frame.dispatchEvent(new KeyboardEvent(e.type, e))) e.preventDefault();
+		};
+		doc.addEventListener("keydown", forward);
+		doc.addEventListener("keyup", forward);
+		return () => {
+			doc.removeEventListener("keydown", forward);
+			doc.removeEventListener("keyup", forward);
+		};
+	}, [doc]);
 
 	const measure = (doc: Document) => {
 		const frame = ref.current;

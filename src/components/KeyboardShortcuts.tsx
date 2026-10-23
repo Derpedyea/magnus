@@ -9,6 +9,7 @@ import { toast } from "@/components/ui/toast-manager";
 import { api, errorMessage } from "../api";
 import { appHotkeys } from "../hotkeys";
 import { meQuery } from "../queries";
+import { currentSession } from "../session";
 import { Shortcut } from "./Shortcut";
 
 /**
@@ -22,13 +23,23 @@ export function HotkeysRoot({ hotkeys, children }: { hotkeys: Me["hotkeys"]; chi
 	const save = (custom: CustomHotkeys) => {
 		const value = custom as Me["hotkeys"];
 		qc.setQueryData(meQuery.queryKey, (me) => me && { ...me, hotkeys: value });
+		// One still queued when the session ends would go out with whoever signs in next (session.ts).
+		const session = currentSession();
 		saving.current = saving.current
-			.then(() => api.saveHotkeys(value))
-			.catch((error: unknown) => void toast.add({ title: `Couldn't save your shortcuts: ${errorMessage(error)}`, type: "error" }));
+			.then(() => (session === currentSession() ? api.saveHotkeys(value) : undefined))
+			.catch((error: unknown) => {
+				if (session === currentSession()) toast.add({ title: `Couldn't save your shortcuts: ${errorMessage(error)}`, type: "error" });
+			});
 	};
 	return (
-		// Saved by an older version, an entry may name a shortcut that's gone; the provider skips it.
-		<HotkeysProvider appHotkeys={appHotkeys} customHotkeys={hotkeys as CustomHotkeys} onCustomHotkeysChange={save}>
+		// Saved by an older version, an entry may name a shortcut that's gone; the provider skips it. None fire while you
+		// type, even rebound to a Ctrl or ⌘ chord, except Send (hotkeys.ts).
+		<HotkeysProvider
+			appHotkeys={appHotkeys}
+			customHotkeys={hotkeys as CustomHotkeys}
+			onCustomHotkeysChange={save}
+			defaultOptions={{ hotkey: { ignoreInputs: true } }}
+		>
 			{children}
 			<CheatSheet />
 		</HotkeysProvider>
