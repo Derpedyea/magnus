@@ -49,10 +49,10 @@ export function Composer(props: {
 	restored: boolean;
 	/**
 	 * Docked under a thread as its reply box (ThreadView), rather than a window. The quote goes out below the text
-	 * without filling the box; `onDone` empties the box after a send or discard. With `replyAll`, a toggle swaps To
-	 * and Cc for everyone on the message.
+	 * without filling the box; `onDone` empties the box after a send or discard, and `onSent` follows a send. With
+	 * `replyAll`, a toggle swaps To and Cc for everyone on the message.
 	 */
-	inline?: { quote: string; onDone: () => void; replyAll?: { to: Address[]; cc: Address[] } };
+	inline?: { quote: string; onDone: () => void; onSent?: () => void; replyAll?: { to: Address[]; cc: Address[] } };
 }) {
 	const qc = useQueryClient();
 	const sync = useDraftSync();
@@ -104,6 +104,7 @@ export function Composer(props: {
 			void qc.invalidateQueries({ queryKey: ["contacts"] });
 			closeDraft(props.id);
 			props.inline?.onDone();
+			props.inline?.onSent?.();
 			// Undo reopens it in the window, quote and all, as it went out.
 			toastUndoSend(queued, props.inline ? { ...draft, text: draft.text + props.inline.quote } : draft, qc);
 		},

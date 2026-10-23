@@ -97,6 +97,26 @@ export function ThreadView() {
 	});
 	const last = messages.at(-1);
 
+	// After a send from the reply box, the thread follows its end for a few seconds, as a chat does: the new message
+	// comes in, and its frame sizes itself, after the send returns.
+	const ref = useRef<HTMLElement>(null);
+	const followUntil = useRef(0);
+	useEffect(() => {
+		const article = ref.current;
+		const scroller = article && scrollParent(article);
+		if (!article || !scroller) return;
+		const observer = new ResizeObserver(() => {
+			if (Date.now() < followUntil.current) scroller.scrollTo({ top: scroller.scrollHeight });
+		});
+		observer.observe(article);
+		return () => observer.disconnect();
+	}, []);
+	const onSent = () => {
+		followUntil.current = Date.now() + 4000;
+		const scroller = ref.current && scrollParent(ref.current);
+		scroller?.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+	};
+
 	// Phones show icons alone, bigger, like Gmail's toolbar; the label stays for screen readers.
 	const action = (Icon: LucideIcon, label: string, onClick: () => void) => (
 		<Button variant="ghost" size="sm" onClick={onClick} className="text-muted-foreground max-md:size-10 max-md:px-0">
@@ -106,7 +126,7 @@ export function ThreadView() {
 	);
 
 	return (
-		<article className="mx-auto max-w-4xl px-4 pb-6 lg:p-6">
+		<article ref={ref} className="mx-auto max-w-4xl px-4 pb-6 lg:p-6">
 			{/* Stacked over the list, the toolbar stays on screen and leads with the way back. */}
 			<div className="sticky top-0 z-10 -mx-4 mb-4 flex items-center gap-1 border-b bg-background px-2 py-2 lg:static lg:mx-0 lg:flex-wrap lg:px-0 lg:pt-0 lg:pb-3">
 				<BackToList className="mr-auto" />
@@ -148,7 +168,7 @@ export function ThreadView() {
 					/>
 				))}
 			</div>
-			{last ? <ReplyDock key={last.id} message={last} ctx={answerContext(last)} /> : null}
+			{last ? <ReplyDock key={last.id} message={last} ctx={answerContext(last)} onSent={onSent} /> : null}
 		</article>
 	);
 }
@@ -157,7 +177,7 @@ export function ThreadView() {
  * The thread's reply box: answers its last message, chat-style, without leaving the thread. Each send or discard
  * starts a fresh one. Older messages answer from their own menus, in the composer window.
  */
-function ReplyDock({ message: m, ctx }: { message: ThreadMessage; ctx: AnswerContext }) {
+function ReplyDock({ message: m, ctx, onSent }: { message: ThreadMessage; ctx: AnswerContext; onSent: () => void }) {
 	const account = useAccount();
 	// A new id for each box, so a sent reply's draft isn't reused by the next.
 	const [draftId, setDraftId] = useState(() => crypto.randomUUID());
@@ -179,9 +199,15 @@ function ReplyDock({ message: m, ctx }: { message: ThreadMessage; ctx: AnswerCon
 			identities={account.identities}
 			initial={initial}
 			restored={false}
-			inline={{ quote: quote(m), onDone: () => setDraftId(crypto.randomUUID()), replyAll }}
+			inline={{ quote: quote(m), onDone: () => setDraftId(crypto.randomUUID()), onSent, replyAll }}
 		/>
 	);
+}
+
+/** The nearest ancestor that scrolls: the thread's pane, whichever layout it's in (routes/_app._mail.$view.tsx). */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+	for (let p = el.parentElement; p; p = p.parentElement) if (/auto|scroll/.test(getComputedStyle(p).overflowY)) return p;
+	return null;
 }
 
 /** Below lg, where the thread covers the list (routes/_app._mail.$view.tsx). Matches Tailwind's `max-lg:`. */
