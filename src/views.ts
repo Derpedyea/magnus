@@ -1,4 +1,6 @@
+import type { Label } from "#shared";
 import { ClockIcon, FilePenIcon, InboxIcon, MailsIcon, MailWarningIcon, OctagonAlertIcon, SendIcon, StarIcon, Trash2Icon, UserRoundCheckIcon } from "lucide-react";
+import { labelPath } from "./labels";
 
 /** The views every mailbox has, in sidebar order. Any other view is a label. */
 export const SYSTEM_VIEWS = [
@@ -17,5 +19,6 @@ export const SYSTEM_VIEWS = [
 ];
 export const SYSTEM = new Set(SYSTEM_VIEWS.map((v) => v.label));
 
-/** What a view is called: a system view's name, or a label as it's written. */
-export const viewName = (view: string) => (view === "search" ? "Search" : (SYSTEM_VIEWS.find((v) => v.label === view)?.name ?? view));
+/** What a view is called: a system view's name, or a label's name after those of the labels it's in. */
+export const viewName = (view: string, labels: ReadonlyMap<string, Label>) =>
+	view === "search" ? "Search" : (SYSTEM_VIEWS.find((v) => v.label === view)?.name ?? labelPath(labels, view));

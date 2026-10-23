@@ -106,7 +106,7 @@ function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]
 			) : (
 				// Phones keep the sidebar in a drawer, so the list says where you are. Trash's own header does that.
 				<h1 className="flex min-w-0 items-baseline gap-2 px-4 pt-3 pb-1 md:hidden">
-					<span className="shrink-0 font-heading text-lg font-semibold">{viewName(view)}</span>
+					<span className="shrink-0 font-heading text-lg font-semibold">{viewName(view, labels)}</span>
 					{scope.length ? <span className="truncate text-muted-foreground">{scope.join(", ")}</span> : null}
 				</h1>
 			)}
