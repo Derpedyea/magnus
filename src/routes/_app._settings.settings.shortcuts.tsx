@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { useShortcutGroups } from "../components/KeyboardShortcuts";
 import { SettingsPage } from "../components/SettingsPage";
 import { Shortcut } from "../components/Shortcut";
-import { isAddressKey } from "../hotkeys";
+import { usesAddressKey } from "../hotkeys";
 
 export const Route = createFileRoute("/_app/_settings/settings/shortcuts")({ component: Shortcuts });
 
@@ -64,8 +64,8 @@ function ShortcutRow({ item }: { item: AppHotkeyListItem }) {
 		// Keys anything on screen uses right now…
 		detectConflicts: true,
 		// …and the rest of these, mounted or not.
-		validate: (hotkey) => {
-			if (isAddressKey(hotkey)) return "Number keys switch between addresses";
+		validate: (hotkey, context) => {
+			if (usesAddressKey(context.kind === "chord" ? [context.event] : context.events)) return "Number keys switch between addresses";
 			const [conflict] = findConflicts(id, hotkey);
 			return conflict ? `${formatForDisplay(hotkey)} is already ${conflict.meta?.name ?? conflict.id}` : true;
 		},

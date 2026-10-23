@@ -1,4 +1,4 @@
-import { defineAppHotkeys, type Hotkey } from "@tanstack/react-hotkeys";
+import { defineAppHotkeys } from "@tanstack/react-hotkeys";
 
 /**
  * Every shortcut anyone can rebind, after Gmail's: letters for mail, G then a letter to go somewhere, Mod (⌘ on a Mac,
@@ -18,8 +18,9 @@ export const appHotkeys = defineAppHotkeys({
 	"thread.replyAll": { hotkey: "A", meta: { name: "Reply all", group: "Conversation" } },
 	"thread.forward": { hotkey: "F", meta: { name: "Forward", group: "Conversation" } },
 	"thread.archive": { hotkey: "E", meta: { name: "Archive", group: "Conversation" } },
-	"thread.trash": { hotkey: "#", meta: { name: "Trash", group: "Conversation" } },
-	"thread.spam": { hotkey: "!", meta: { name: "Spam", group: "Conversation" } },
+	// Not Gmail's # and !: on most layouts they're Shift and a number, which the address keys take. Backspace is a Mac's delete.
+	"thread.trash": { hotkey: "Backspace", meta: { name: "Trash", group: "Conversation" } },
+	"thread.spam": { hotkey: "Shift+S", meta: { name: "Spam", group: "Conversation" } },
 	"thread.star": { hotkey: "S", meta: { name: "Star", group: "Conversation" } },
 	"thread.unread": { hotkey: "Shift+U", meta: { name: "Mark unread", group: "Conversation" } },
 
@@ -46,6 +47,7 @@ declare module "@tanstack/react-hotkeys" {
  */
 export const DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] as const;
 
-export function isAddressKey(hotkey: Hotkey): boolean {
-	return typeof hotkey === "string" && /^(Shift\+)?(\[Digit\d\]|\d)$/.test(hotkey);
+/** Whether a recorded shortcut uses a number key without Ctrl, Alt, or ⌘, which the address keys take, whatever it types. */
+export function usesAddressKey(events: ReadonlyArray<KeyboardEvent>): boolean {
+	return events.some((e) => /^Digit\d$/.test(e.code) && !e.ctrlKey && !e.altKey && !e.metaKey);
 }

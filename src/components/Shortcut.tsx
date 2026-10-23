@@ -17,9 +17,9 @@ export function ShortcutHint({ hotkey, className }: { hotkey: AppHotkey; classNa
  * Wraps a dialog, menu, or sheet: while it's open its own keys are the only ones that work, so E in a menu doesn't
  * archive the conversation behind it. Per instance, so one opened from another takes over until it closes.
  */
-export function OverlayScope({ children }: { children: ReactNode }) {
+export function OverlayScope({ enabled = true, children }: { enabled?: boolean; children: ReactNode }) {
 	return (
-		<HotkeysProvider scope={`overlay-${useId()}`} exclusive>
+		<HotkeysProvider scope={`overlay-${useId()}`} exclusive enabled={enabled}>
 			{children}
 		</HotkeysProvider>
 	);

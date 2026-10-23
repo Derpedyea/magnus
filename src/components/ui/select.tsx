@@ -4,7 +4,26 @@ import { cn } from "cn"
 import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
 import { OverlayScope } from "@/components/Shortcut"
 
-const Select = SelectPrimitive.Root
+// Base UI keeps a select's portal mounted after its trigger is focused, so the content's hotkey scope follows open.
+const SelectOpen = React.createContext(false)
+
+function Select<Value, Multiple extends boolean | undefined = false>({
+  onOpenChange,
+  ...props
+}: SelectPrimitive.Root.Props<Value, Multiple>) {
+  const [open, setOpen] = React.useState(props.open ?? props.defaultOpen ?? false)
+  return (
+    <SelectOpen.Provider value={props.open ?? open}>
+      <SelectPrimitive.Root
+        {...props}
+        onOpenChange={(next, details) => {
+          setOpen(next)
+          onOpenChange?.(next, details)
+        }}
+      />
+    </SelectOpen.Provider>
+  )
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (
@@ -70,7 +89,7 @@ function SelectContent({
   >) {
   return (
     <SelectPrimitive.Portal>
-      <OverlayScope>
+      <OverlayScope enabled={React.useContext(SelectOpen)}>
         <SelectPrimitive.Positioner
           side={side}
           sideOffset={sideOffset}
