@@ -12,7 +12,7 @@ import {
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi, Link, useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, ArrowLeftIcon, BanIcon, CheckIcon, CircleAlertIcon, DownloadIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, ShieldXIcon, StarIcon, StarOffIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, BanIcon, CheckIcon, CircleAlertIcon, ClockIcon, DownloadIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, ShieldXIcon, StarIcon, StarOffIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -888,26 +888,31 @@ const setsColors = (doc: Document) =>
 	doc.querySelector("[bgcolor], [background], [text], font[color], [style*='color' i], [style*='background' i]") !== null ||
 	Array.from(doc.querySelectorAll("style")).some((s) => /color|background/i.test(s.textContent));
 
-const WAITING = "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300";
-const DELIVERY_TONES: Partial<Record<DeliveryStatus, string>> = { queued: WAITING, sending: WAITING, deferred: WAITING };
+/** How a sent message is getting on, as an icon: what each status means is in its tooltip. Nothing once it's gone out. */
+const DELIVERY: Partial<Record<DeliveryStatus, { Icon: LucideIcon; tone: string; label: string }>> = {
+	queued: { Icon: ClockIcon, tone: "text-amber-600 dark:text-amber-400", label: "Waiting to send" },
+	sending: { Icon: ClockIcon, tone: "text-amber-600 dark:text-amber-400", label: "Sending" },
+	deferred: { Icon: ClockIcon, tone: "text-amber-600 dark:text-amber-400", label: "Delayed: their server asked to try again later" },
+	bounced: { Icon: CircleAlertIcon, tone: "text-destructive", label: "Bounced" },
+	failed: { Icon: CircleAlertIcon, tone: "text-destructive", label: "Couldn't send" },
+	rejected: { Icon: CircleAlertIcon, tone: "text-destructive", label: "Rejected by their server" },
+	complained: { Icon: CircleAlertIcon, tone: "text-destructive", label: "They marked it as spam" },
+	cancelled: { Icon: BanIcon, tone: "text-muted-foreground", label: "Cancelled" },
+};
 
 function DeliveryBadge({ message }: { message: MessageDetail }) {
-	if (!message.delivery) return null;
-	const { status, detail } = message.delivery;
-	// Gone out as it should: nothing to say, as in a letter. What's still on its way or failed shows.
-	if (status === "delivered" || status === "sent") return null;
-	const tone = DELIVERY_TONES[status];
-	// Anything without a tone didn't make it.
-	const badge = (
-		<Badge variant={tone ? "secondary" : "destructive"} className={tone}>
-			{status}
-		</Badge>
-	);
-	if (!detail) return badge;
+	const shown = message.delivery && DELIVERY[message.delivery.status];
+	if (!message.delivery || !shown) return null;
+	const { Icon, tone, label } = shown;
 	return (
 		<Tooltip>
-			<TooltipTrigger render={badge} />
-			<TooltipContent>{detail}</TooltipContent>
+			<TooltipTrigger render={<span role="img" aria-label={label} className={cn("inline-flex shrink-0 self-center", tone)} />}>
+				<Icon className="size-3.5" />
+			</TooltipTrigger>
+			<TooltipContent>
+				{label}
+				{message.delivery.detail ? `. ${message.delivery.detail}` : ""}
+			</TooltipContent>
 		</Tooltip>
 	);
 }
