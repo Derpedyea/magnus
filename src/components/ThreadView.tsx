@@ -27,7 +27,7 @@ import { toast } from "@/components/ui/toast-manager";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, errorMessage, formatList, messageUrl } from "../api";
 import { type AnswerContext, answerFrom, isOutgoing, openDraft, quote, replyRecipients, withSignature } from "../compose";
-import { useAccount, useScope } from "../hooks";
+import { stacked, useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
 import { findQuote, isForward, splitQuote } from "../quotes";
 import { type Branch, replyTree } from "../replies";
@@ -135,13 +135,15 @@ export function ThreadView() {
 	const relabel = useLabelThreads();
 	const { byKey } = useLabels();
 	useHotkey(hotkeys["thread.close"], close);
+	// Not a held key's repeats: its first press may have gone to the list's selection (SelectionBar) and moved it all
+	// out, and the rest would then fall through to this conversation.
 	// Archive takes it out of the inbox; elsewhere there's nothing to take it out of.
-	useHotkey(hotkeys["thread.archive"], () => inInbox && archive());
+	useHotkey(hotkeys["thread.archive"], (e) => !e.repeat && inInbox && archive());
 	// Trash for good asks first (PermanentDelete), so the key leaves that to a click.
-	useHotkey(hotkeys["thread.trash"], () => !deleteForever && trash());
-	useHotkey(hotkeys["thread.spam"], spam);
+	useHotkey(hotkeys["thread.trash"], (e) => !e.repeat && !deleteForever && trash());
+	useHotkey(hotkeys["thread.spam"], (e) => !e.repeat && spam());
 	useHotkey(hotkeys["thread.star"], toggleStar);
-	useHotkey(hotkeys["thread.unread"], markUnread);
+	useHotkey(hotkeys["thread.unread"], (e) => !e.repeat && markUnread());
 	useHotkey(hotkeys["thread.label"], () => setLabeling(true));
 	// Reply and Reply all go to the reply box (Composer), which answers the last message too.
 	useHotkey(hotkeys["thread.forward"], () => last && openDraft(forwardDraft(last, answerContext(last))));
@@ -267,9 +269,6 @@ function scrollParent(el: HTMLElement): HTMLElement | null {
 	for (let p = el.parentElement; p; p = p.parentElement) if (/auto|scroll/.test(getComputedStyle(p).overflowY)) return p;
 	return null;
 }
-
-/** Below lg, where the thread covers the list (routes/_app._mail.$view.tsx). Matches Tailwind's `max-lg:`. */
-const stacked = () => matchMedia("(width < 64rem)").matches;
 
 /**
  * Leaves the thread for its list. Stacked, the thread is a screen pushed over the list, so this goes back to it, as
