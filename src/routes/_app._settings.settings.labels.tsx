@@ -6,7 +6,7 @@ import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from "@/components/ui/dropdown-menu";
-import { LabelDialog, LabelMenu, Swatch, useUpdateLabel } from "../components/LabelMenu";
+import { LabelDialog, LabelMenu, Swatch, useUpdateLabels } from "../components/LabelMenu";
 import { SettingsPage } from "../components/SettingsPage";
 import { type Drop, type LabelNode, labelMove, labelPath, labelRows, useLabels } from "../labels";
 import { labelsQuery } from "../queries";
@@ -33,9 +33,10 @@ function Labels() {
 	const [creating, setCreating] = useState(false);
 	const [dragging, setDragging] = useState<string | null>(null);
 	const [over, setOver] = useState<{ key: string; drop: Drop } | null>(null);
-	const update = useUpdateLabel();
+	const update = useUpdateLabels();
 	const move: Move = (key, target, drop) => {
-		for (const change of labelMove(labels, key, target, drop)) update.mutate(change);
+		const changes = labelMove(labels, key, target, drop);
+		if (changes.length > 0) update.mutate(changes);
 	};
 	const end = () => {
 		setDragging(null);

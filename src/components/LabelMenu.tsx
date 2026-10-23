@@ -49,15 +49,19 @@ export function Swatch(props: { color: LabelColor | null; className?: string }) 
 	return <span aria-hidden className={cn("size-3 shrink-0 rounded-[3px]", labelStyle(props.color).swatch, props.className)} />;
 }
 
-/** Changes a label at once, from its menu or a drag. The server's refusal (too deep, a name taken) undoes it and says why. */
-export function useUpdateLabel() {
+/**
+ * Changes labels at once, from a menu or a drag: one label, or the several a move renumbers (labelMove()). The server's
+ * refusal (too deep, a name taken) undoes them all and says why.
+ */
+export function useUpdateLabels() {
 	const qc = useQueryClient();
 	return useMutation({
-		mutationFn: ({ key, change }: { key: string; change: LabelChange }) => api.updateLabel(key, change),
-		onMutate: async ({ key, change }) => {
+		mutationFn: (changes: { key: string; change: LabelChange }[]) => Promise.all(changes.map((c) => api.updateLabel(c.key, c.change))),
+		onMutate: async (changes) => {
 			await qc.cancelQueries({ queryKey: labelsQuery.queryKey });
 			const before = qc.getQueryData(labelsQuery.queryKey);
-			qc.setQueryData(labelsQuery.queryKey, (r) => r && { labels: r.labels.map((l) => (l.key === key ? { ...l, ...change } : l)) });
+			const changed = new Map(changes.map((c) => [c.key, c.change]));
+			qc.setQueryData(labelsQuery.queryKey, (r) => r && { labels: r.labels.map((l) => ({ ...l, ...changed.get(l.key) })) });
 			return before;
 		},
 		// Put back at once, in case the refetch fails too.
@@ -76,13 +80,15 @@ export function useUpdateLabel() {
 export function LabelMenu(props: { node: LabelNode; scope: string[]; trigger: ReactElement; children?: ReactNode }) {
 	const { label, depth } = props.node;
 	const [dialog, setDialog] = useState<"rename" | "inside" | "delete" | null>(null);
-	const update = useUpdateLabel();
-	const change = (change: LabelChange) => update.mutate({ key: label.key, change });
+	const { byKey } = useLabels();
+	const update = useUpdateLabels();
+	const change = (change: LabelChange) => update.mutate([{ key: label.key, change }]);
 	const opener = (name: NonNullable<typeof dialog>) => (open: boolean) => setDialog(open ? name : null);
 	return (
 		<>
 			<DropdownMenu>
-				<DropdownMenuTrigger render={props.trigger} aria-label={`More for ${label.name}`}>
+				{/* Named by its path, so a screen reader hears where it sits too. */}
+				<DropdownMenuTrigger render={props.trigger} aria-label={`More for ${labelPath(byKey, label.key)}`}>
 					<EllipsisIcon />
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end" className="w-auto min-w-44">
