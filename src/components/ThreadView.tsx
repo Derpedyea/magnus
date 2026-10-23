@@ -29,6 +29,7 @@ import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
 import { findQuote, isForward, splitQuote } from "../quotes";
 import { type Branch, replyTree } from "../replies";
+import { useDraftEntries } from "../drafts";
 import { currentSession } from "../session";
 import { appearance } from "../theme";
 import { BlockSender, useCanBlock } from "./BlockSender";
@@ -168,7 +169,7 @@ export function ThreadView() {
 					/>
 				))}
 			</div>
-			{last ? <ReplyDock key={last.id} message={last} ctx={answerContext(last)} onSent={onSent} /> : null}
+			{last ? <ReplyDock message={last} ctx={answerContext(last)} onSent={onSent} /> : null}
 		</article>
 	);
 }
@@ -179,27 +180,35 @@ export function ThreadView() {
  */
 function ReplyDock({ message: m, ctx, onSent }: { message: ThreadMessage; ctx: AnswerContext; onSent: () => void }) {
 	const account = useAccount();
-	// A new id for each box, so a sent reply's draft isn't reused by the next.
-	const [draftId, setDraftId] = useState(() => crypto.randomUUID());
-	// Mounted per message (ThreadView keys it), so the starting point stays put while it's typed in.
-	const [{ initial, replyAll }] = useState(() => {
+	// Each box gets its own draft id, so a sent reply's draft isn't reused by the next. The quote goes out with it
+	// (Composer's `inline`) rather than filling the box.
+	const start = () => {
 		const draft = replyDraft(m, false, ctx);
 		const all = replyDraft(m, true, ctx);
 		return {
-			// The quote goes out with it (Composer's `inline`) rather than filling the box.
+			draftId: crypto.randomUUID(),
+			answers: m.id,
+			quote: quote(m),
 			initial: { ...draft, text: withSignature("", null, signatureOf(draft.from, ctx)) },
 			replyAll: { to: all.to, cc: all.cc },
 		};
-	});
+	};
+	const [box, setBox] = useState(start);
+	// Mail that comes in while a reply's being written doesn't take the box away: it goes on answering the message it
+	// started on. A box nothing's been written in moves on to the newest message.
+	const started = useDraftEntries().some((entry) => entry.id === box.draftId);
+	if (box.answers !== m.id && !started) setBox(start());
+	// answerFrom() finds no address here that may send: there's no From to reply with.
+	if (!box.initial.from) return <p className="mt-4 border-t pt-4 text-sm text-muted-foreground">Replies can't be sent from this mailbox: none of its addresses can send.</p>;
 	return (
 		<Composer
-			key={draftId}
+			key={box.draftId}
 			id={0}
-			draftId={draftId}
+			draftId={box.draftId}
 			identities={account.identities}
-			initial={initial}
+			initial={box.initial}
 			restored={false}
-			inline={{ quote: quote(m), onDone: () => setDraftId(crypto.randomUUID()), onSent, replyAll }}
+			inline={{ quote: box.quote, onDone: () => setBox(start()), onSent, replyAll: box.replyAll }}
 		/>
 	);
 }
@@ -527,6 +536,8 @@ function MessageHeader(props: { message: MessageDetail; outgoing: boolean; reply
 		<div className={cn("flex min-w-0 flex-1 flex-col gap-0.5", props.outgoing && "items-end")}>
 			<span className={cn("flex w-full min-w-0 items-baseline gap-2", props.outgoing && "justify-end")}>
 				<span className="truncate text-[15px] font-semibold">{m.from.name || m.from.address}</span>
+				{/* A display name is whatever the sender says it is; the address beside it is what they can't make up. */}
+				{m.from.name && !props.outgoing ? <span className="min-w-0 truncate text-xs text-muted-foreground">{m.from.address}</span> : null}
 				{props.replyingTo ? (
 					<span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
 						<ReplyIcon className="size-3" />
@@ -551,10 +562,14 @@ function letterDate(d: Date): string {
 	return d.toLocaleString(undefined, { weekday: "short", year, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
-/** "to Maya Chen, Bo": who it went to, by name. The full addresses are in recipientsLine(), on hover. */
+/**
+ * "to Maya Chen, Bo": who it went to, by name, or who it was Bcc'd to when that's all there is (sent mail). The
+ * full addresses are in recipientsLine(), on hover.
+ */
 function toLine(m: MessageDetail): string {
-	const names = [...m.to, ...m.cc].map((a) => a.name || a.address);
-	return names.length ? `to ${names.join(", ")}` : "";
+	const names = (list: Address[]) => list.map((a) => a.name || a.address).join(", ");
+	if (m.to.length + m.cc.length > 0) return `to ${names([...m.to, ...m.cc])}`;
+	return m.bcc.length > 0 ? `bcc ${names(m.bcc)}` : "";
 }
 
 /** Gmail's "•••": shows or hides the quoted history folded off the end of a reply. */
