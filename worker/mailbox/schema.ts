@@ -223,4 +223,23 @@ export const MIGRATIONS: string[] = [
 	-- Where mail imported from another provider goes (InboundJob.imported, JSON), so retrying it from Failed still does.
 	ALTER TABLE failed ADD COLUMN imported TEXT;
 	`,
+	`
+	-- The person's own labels: what each is called, its color, and where it sits. Mail names a label by key, which never
+	-- changes, so renaming or moving one rewrites no mail. System labels have none. Every label of their own on mail has
+	-- one (addLabels()); those already on mail start out named after their keys, in order of them.
+	CREATE TABLE labels (
+		key TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		parent TEXT REFERENCES labels(key),
+		color TEXT,
+		-- Order among the labels sharing its parent.
+		position REAL NOT NULL,
+		hidden INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX labels_parent ON labels(parent);
+	INSERT INTO labels (key, name, position)
+	SELECT label, label, row_number() OVER (ORDER BY label) FROM (
+		SELECT DISTINCT label FROM message_labels WHERE label NOT IN ('inbox', 'sent', 'outbox', 'spam', 'trash', 'starred', 'screener')
+	);
+	`,
 ];

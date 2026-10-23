@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { RESERVED_LABELS } from "./address";
 import { fromBase64Url } from "./base64url";
 import { type CustomHotkeys, MAX_SIGNATURE } from "./directory";
-import type { MailSettings } from "./types";
+import { LABEL_COLORS, type LabelChange, type LabelDef, type MailSettings } from "./types";
 
 /** Email Service: to + cc + bcc combined. */
 export const MAX_RECIPIENTS = 50;
@@ -56,11 +57,42 @@ export const ComposeSchema = z
 
 export type ComposeRequest = z.infer<typeof ComposeSchema>;
 
+/** System labels someone can put mail under (archiving is taking `inbox` away), and the ones they can take it out of. */
+const ADDABLE = new Set(["inbox", "starred", "trash", "spam"]);
+const REMOVABLE = new Set([...ADDABLE, "screener"]);
+/**
+ * A label of the person's own, by key: letters, digits, and `._-`, as labelKey(), labelFromTag(), and importLabel() make
+ * them, and not dots alone. Keys go in URLs (/labels/:key), where anything else could name another label or route.
+ */
+const OwnLabelKey = z
+	.string()
+	.regex(/^(?!\.+$)[\p{L}\p{N}._-]{1,64}$/u, "Not a label's key")
+	.refine((key) => !RESERVED_LABELS.has(key), "Not a label of your own");
+const labelOr = (system: ReadonlySet<string>) => z.union([z.enum([...system]), OwnLabelKey]);
+
+export const LabelNameSchema = z.string().trim().min(1, "Name it").max(64).refine((name) => !name.includes("/"), "A label's name can't have a / in it");
+const LabelColorSchema = z.enum(LABEL_COLORS).nullable();
+
+/** A label as one mailbox has it, to copy into another. */
+export const LabelDefSchema = z.object({ key: OwnLabelKey, name: LabelNameSchema, parent: OwnLabelKey.nullable(), color: LabelColorSchema }) satisfies z.ZodType<LabelDef>;
+
 export const ModifyThreadsSchema = z.object({
 	threadIds: z.array(z.string()).min(1).max(500),
-	add: z.array(z.string().min(1).max(64)).default([]),
-	remove: z.array(z.string().min(1).max(64)).default([]),
+	add: z.array(labelOr(ADDABLE)).max(50).default([]),
+	remove: z.array(labelOr(REMOVABLE)).max(50).default([]),
+	/**
+	 * Labels being added, as the mailboxes that have them have them, outermost first. The threads' mailbox takes on any it
+	 * doesn't have yet; one it has stays as it is.
+	 */
+	define: z.array(LabelDefSchema).max(50).default([]),
 });
+
+/** A new label in the mailboxes of the addresses in view. */
+export const CreateLabelSchema = z.object({ name: LabelNameSchema, parent: OwnLabelKey.nullable().default(null), color: LabelColorSchema.default(null) });
+
+export const UpdateLabelSchema = z
+	.object({ name: LabelNameSchema, parent: OwnLabelKey.nullable(), color: LabelColorSchema, position: z.number().finite(), hidden: z.boolean() })
+	.partial() satisfies z.ZodType<LabelChange>;
 
 /** Stops or resumes sharing a file sent as a link. The link itself never changes. */
 export const ShareLinkSchema = z.object({ shared: z.boolean() });

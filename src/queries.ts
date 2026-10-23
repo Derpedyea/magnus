@@ -74,6 +74,9 @@ export const mailSettingsQuery = (mailboxId: string) => queryOptions({ queryKey:
 
 export const countsQuery = (scope: string[]) => queryOptions({ queryKey: ["mail", "counts", scope], queryFn: () => api.counts(scope) });
 
+/** The user's own labels across their mailboxes. Under ["mail"], so a change in another tab or by someone sharing a mailbox shows. */
+export const labelsQuery = queryOptions({ queryKey: ["mail", "labels"], queryFn: api.labels, select: (r) => r.labels });
+
 export const threadQuery = (mailboxId: string, threadId: string) =>
 	queryOptions({ queryKey: ["mail", "thread", mailboxId, threadId], queryFn: () => api.thread(mailboxId, threadId) });
 
