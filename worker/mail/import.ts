@@ -60,7 +60,7 @@ export async function importMessage(env: Env, mailboxId: string, raw: Uint8Array
 	const rawKey = r2Keys.imported(mailboxId, id);
 	// With nothing to say where it was, mail from one of our addresses goes to Sent.
 	const labels = sent && placement.sent === undefined ? [...new Set([...placement.labels, "sent"])] : placement.labels;
-	const imported: Imported = { labels, read: placement.read, sent, addresses: filed };
+	const imported: Imported = { labels, ...(placement.paths?.length ? { paths: placement.paths } : {}), read: placement.read, sent, addresses: filed };
 
 	await env.MAIL.put(rawKey, raw, { httpMetadata: { contentType: "message/rfc822" }, customMetadata: { mailboxes: mailboxId } });
 	const job: InboundJob = {

@@ -65,6 +65,8 @@ export interface InboundJob {
 
 export interface Imported {
 	labels: string[];
+	/** Its own labels' folders and labels there, by path (ImportPlacement.paths). Jobs queued before these came have none. */
+	paths?: string[];
 	read: boolean;
 	/** Sent from the mailbox rather than received by it. */
 	sent: boolean;
