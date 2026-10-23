@@ -1019,9 +1019,7 @@ export class Mailbox extends DurableObject<Env> {
 
 	/** Labels of the person's own that mail gets and this mailbox didn't have (a +tag's, an import's) are named after their keys. */
 	private addLabels(messageIds: string[], labels: string[]): void {
-		for (const key of labels.filter(isOwnLabel)) {
-			this.sql.exec(`INSERT OR IGNORE INTO labels (key, name, position) VALUES (?1, ?1, ${LAST_POSITION("NULL")})`, key);
-		}
+		this.defineLabels(labels.filter(isOwnLabel).map((key) => ({ key, name: key, parent: null, color: null })));
 		for (const id of messageIds) {
 			for (const label of labels) {
 				this.sql.exec(`INSERT OR IGNORE INTO message_labels (message_id, label) VALUES (?1, ?2)`, id, label);
@@ -1290,7 +1288,7 @@ export class Mailbox extends DurableObject<Env> {
 				if (this.depth(parent) + this.height(key) > MAX_LABEL_DEPTH) return { error: `Labels go at most ${MAX_LABEL_DEPTH} deep` };
 			}
 			const name = change.name ?? label.name;
-			if ((moved || change.name !== undefined) && this.nameTaken(parent, name, key)) return { error: `There's already a label called “${name}” there` };
+			if ((moved || change.name !== undefined) && this.nameTaken(parent, name, [key])) return { error: `There's already a label called “${name}” there` };
 			this.sql.exec(
 				`UPDATE labels SET name = ?2, parent = ?3, color = ?4, hidden = ?5, position = coalesce(?6, ${LAST_POSITION("?3")}) WHERE key = ?1`,
 				key,
@@ -1322,7 +1320,7 @@ export class Mailbox extends DurableObject<Env> {
 			const step = ((after ?? label.position + 1) - label.position) / (children.length + 1);
 			children.forEach((child, i) => {
 				let name = child.name;
-				for (let n = 2; this.nameTaken(label.parent, name, child.key); n++) name = `${child.name} ${n}`;
+				for (let n = 2; this.nameTaken(label.parent, name, [child.key, key]); n++) name = `${child.name} ${n}`;
 				this.sql.exec(`UPDATE labels SET parent = ?2, name = ?3, position = ?4 WHERE key = ?1`, child.key, label.parent, name, label.position + step * (i + 1));
 			});
 			this.sql.exec(`DELETE FROM message_labels WHERE label = ?1`, key);
@@ -1344,7 +1342,7 @@ export class Mailbox extends DurableObject<Env> {
 			if (this.label(def.key)) continue;
 			const parent = def.parent !== null && this.label(def.parent) && this.depth(def.parent) < MAX_LABEL_DEPTH ? def.parent : null;
 			let name = def.name;
-			for (let n = 2; this.nameTaken(parent, name, null); n++) name = `${def.name} ${n}`;
+			for (let n = 2; this.nameTaken(parent, name, []); n++) name = `${def.name} ${n}`;
 			this.sql.exec(`INSERT INTO labels (key, name, parent, color, position) VALUES (?1, ?2, ?3, ?4, ${LAST_POSITION("?3")})`, def.key, name, parent, def.color);
 			added = true;
 		}
@@ -1356,13 +1354,13 @@ export class Mailbox extends DurableObject<Env> {
 		return row && toLabel(row);
 	}
 
-	/** Whether a label beside `parent`'s others, other than `except`, has this name, whatever its case. */
-	private nameTaken(parent: string | null, name: string, except: string | null): boolean {
+	/** Whether a label inside `parent`, other than those in `except`, has this name, whatever its case. */
+	private nameTaken(parent: string | null, name: string, except: readonly string[]): boolean {
 		const wanted = name.toLowerCase();
 		return this.sql
 			.exec<{ key: string; name: string }>(`SELECT key, name FROM labels WHERE parent IS ?1`, parent)
 			.toArray()
-			.some((l) => l.key !== except && l.name.toLowerCase() === wanted);
+			.some((l) => !except.includes(l.key) && l.name.toLowerCase() === wanted);
 	}
 
 	/** The label and every label inside it. */

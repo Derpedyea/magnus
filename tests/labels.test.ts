@@ -52,7 +52,8 @@ describe("Labels", () => {
 		expect(await labels(bob)).toEqual([expect.objectContaining({ key: "receipts", name: "Receipts", color: "green" })]);
 	});
 
-	it.each([["outbox"], ["sent"], ["failed"]])("won't put mail under %s", async (label) => {
+	// Keys go in URLs: one with a # or / in it would name another label there.
+	it.each([["outbox"], ["sent"], ["failed"], ["work#x"], ["a/b"], [".."]])("won't put mail under %s", async (label) => {
 		expect((await request(`/mailboxes/${ids.alice}/threads/modify`, "POST", { threadIds: ["any"], add: [label] })).status).toBe(400);
 	});
 });

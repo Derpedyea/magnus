@@ -60,9 +60,15 @@ export type ComposeRequest = z.infer<typeof ComposeSchema>;
 /** System labels someone can put mail under (archiving is taking `inbox` away), and the ones they can take it out of. */
 const ADDABLE = new Set(["inbox", "starred", "trash", "spam"]);
 const REMOVABLE = new Set([...ADDABLE, "screener"]);
-/** A label of the person's own, by key. */
-const OwnLabelKey = z.string().min(1).max(64).refine((key) => !RESERVED_LABELS.has(key), "Not a label of your own");
-const labelOr = (system: ReadonlySet<string>) => z.string().min(1).max(64).refine((key) => system.has(key) || !RESERVED_LABELS.has(key), "Not a label you can change");
+/**
+ * A label of the person's own, by key: letters, digits, and `._-`, as labelKey(), labelFromTag(), and importLabel() make
+ * them, and not dots alone. Keys go in URLs (/labels/:key), where anything else could name another label or route.
+ */
+const OwnLabelKey = z
+	.string()
+	.regex(/^(?!\.+$)[\p{L}\p{N}._-]{1,64}$/u, "Not a label's key")
+	.refine((key) => !RESERVED_LABELS.has(key), "Not a label of your own");
+const labelOr = (system: ReadonlySet<string>) => z.union([z.enum([...system]), OwnLabelKey]);
 
 export const LabelNameSchema = z.string().trim().min(1, "Name it").max(64).refine((name) => !name.includes("/"), "A label's name can't have a / in it");
 const LabelColorSchema = z.enum(LABEL_COLORS).nullable();

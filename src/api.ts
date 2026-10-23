@@ -100,9 +100,10 @@ export const api = {
 	labels: () => parseResponse(client.labels.$get()),
 	/** A new label in the mailboxes of the addresses in view. */
 	createLabel: (scope: string[], label: Json<typeof client.labels.$post>) => parseResponse(client.labels.$post({ query: { in: formatScope(scope) }, json: label })),
-	updateLabel: (key: string, change: LabelChange) => parseResponse(client.labels[":key"].$patch({ param: { key }, json: change })),
+	// The client puts params in the path as they are.
+	updateLabel: (key: string, change: LabelChange) => parseResponse(client.labels[":key"].$patch({ param: { key: encodeURIComponent(key) }, json: change })),
 	/** Takes it off all mail and deletes it; the labels inside it move up. */
-	deleteLabel: (key: string) => parseResponse(client.labels[":key"].$delete({ param: { key } })),
+	deleteLabel: (key: string) => parseResponse(client.labels[":key"].$delete({ param: { key: encodeURIComponent(key) } })),
 	/** Not spam (trusted) or Spam for one message and its sender, not the whole thread. */
 	judge: (mailboxId: string, messageId: string, verdict: "trusted" | "spam") =>
 		parseResponse(mailbox.messages[":messageId"].judge.$post({ param: { mailboxId, messageId }, json: { verdict } })),
