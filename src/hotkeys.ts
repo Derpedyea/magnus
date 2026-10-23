@@ -27,6 +27,7 @@ export const appHotkeys = defineAppHotkeys({
 	"thread.trash": { hotkey: "Backspace", meta: { name: "Trash", group: "Conversation" } },
 	"thread.spam": { hotkey: "Shift+S", meta: { name: "Spam", group: "Conversation" } },
 	"thread.star": { hotkey: "S", meta: { name: "Star", group: "Conversation" } },
+	"thread.label": { hotkey: "L", meta: { name: "Label", group: "Conversation" } },
 	"thread.unread": { hotkey: "Shift+U", meta: { name: "Mark unread", group: "Conversation" } },
 
 	"go.inbox": { hotkey: ["G", "I"], meta: { name: "Inbox", group: "Go to" } },

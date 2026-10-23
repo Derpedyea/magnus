@@ -61,3 +61,36 @@ export function useLabels() {
 	const labels = useQuery(labelsQuery).data ?? NONE;
 	return useMemo(() => ({ labels, byKey: new Map(labels.map((l) => [l.key, l])), tree: labelTree(labels) }), [labels]);
 }
+
+/** A conversation as labeling sees it: where it lives, and the keys of the labels its mail has. */
+export interface Labeled {
+	mailboxId: string;
+	id: string;
+	labels: readonly string[];
+}
+
+/** Whether all of these conversations have the label, none do, or only some. */
+export function labelState(threads: readonly Labeled[], key: string): "checked" | "unchecked" | "mixed" {
+	const have = threads.filter((t) => t.labels.includes(key)).length;
+	return have === 0 ? "unchecked" : have === threads.length ? "checked" : "mixed";
+}
+
+/** The most conversations one api.modify can name (ModifyThreadsSchema). */
+const MODIFY_MAX = 500;
+
+/**
+ * The conversations a label goes on (`on`) or comes off that don't have it yet, or do: one api.modify's worth each,
+ * since a call goes to one mailbox and names at most MODIFY_MAX.
+ */
+export function labelBatches(threads: readonly Labeled[], key: string, on: boolean): { mailboxId: string; threadIds: string[] }[] {
+	const byMailbox = new Map<string, string[]>();
+	for (const t of threads) {
+		if (t.labels.includes(key) === on) continue;
+		const ids = byMailbox.get(t.mailboxId) ?? [];
+		ids.push(t.id);
+		byMailbox.set(t.mailboxId, ids);
+	}
+	return [...byMailbox].flatMap(([mailboxId, ids]) =>
+		Array.from({ length: Math.ceil(ids.length / MODIFY_MAX) }, (_, i) => ({ mailboxId, threadIds: ids.slice(i * MODIFY_MAX, (i + 1) * MODIFY_MAX) })),
+	);
+}

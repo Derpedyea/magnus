@@ -3,6 +3,7 @@ import {
 	type AttachmentMeta,
 	type DeliveryStatus,
 	formatBytes,
+	isOwnLabel,
 	type MessageDetail,
 	type PreviewKind,
 	preview,
@@ -12,7 +13,7 @@ import {
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi, Link, useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, ArrowLeftIcon, BanIcon, CheckIcon, CircleAlertIcon, ClockIcon, DownloadIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, ShieldXIcon, StarIcon, StarOffIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, BanIcon, CheckIcon, CircleAlertIcon, ClockIcon, DownloadIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, ShieldXIcon, StarIcon, StarOffIcon, TagIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
 import { type AppHotkey, useAppHotkeys, useHotkey } from "@tanstack/react-hotkeys";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -31,11 +32,13 @@ import { threadQuery } from "../queries";
 import { findQuote, isForward, splitQuote } from "../quotes";
 import { type Branch, replyTree } from "../replies";
 import { useDraftEntries } from "../drafts";
+import { useLabels } from "../labels";
 import { currentSession } from "../session";
 import { appearance } from "../theme";
 import { BlockSender, useCanBlock } from "./BlockSender";
 import { Composer, type Draft } from "./Composer";
 import { FileViewer } from "./FileViewer";
+import { LabelChip, LabelPicker, useLabelThreads } from "./LabelPicker";
 import { PermanentDelete } from "./PermanentDelete";
 import { Shortcut } from "./Shortcut";
 
@@ -127,6 +130,10 @@ export function ThreadView() {
 	const spam = () => (modify.mutate({ verb: "mark as spam", add: ["spam"] }), close());
 	const toggleStar = () => (starred ? modify.mutate({ verb: "unstar", remove: ["starred"] }) : modify.mutate({ verb: "star", add: ["starred"] }));
 	const markUnread = () => (markRead.mutate(false), close());
+	const [labeling, setLabeling] = useState(false);
+	const labeled = [{ mailboxId, id: threadId, labels: summary.labels }];
+	const relabel = useLabelThreads();
+	const { byKey } = useLabels();
 	useHotkey(hotkeys["thread.close"], close);
 	// Archive takes it out of the inbox; elsewhere there's nothing to take it out of.
 	useHotkey(hotkeys["thread.archive"], () => inInbox && archive());
@@ -135,20 +142,24 @@ export function ThreadView() {
 	useHotkey(hotkeys["thread.spam"], spam);
 	useHotkey(hotkeys["thread.star"], toggleStar);
 	useHotkey(hotkeys["thread.unread"], markUnread);
+	useHotkey(hotkeys["thread.label"], () => setLabeling(true));
 	// Reply and Reply all go to the reply box (Composer), which answers the last message too.
 	useHotkey(hotkeys["thread.forward"], () => last && openDraft(forwardDraft(last, answerContext(last))));
 
-	// Phones show icons alone, bigger, like Gmail's toolbar; the label stays for screen readers.
-	const action = (Icon: LucideIcon, label: string, onClick: () => void, hotkey: AppHotkey) => (
+	// Phones show icons alone, bigger, like Gmail's toolbar; the label stays for screen readers. `wrap` puts the button
+	// in what it opens.
+	const action = (Icon: LucideIcon, label: string, onClick: (() => void) | undefined, hotkey: AppHotkey, wrap = (button: React.ReactElement) => button) => (
 		<Tooltip>
-			<TooltipTrigger
-				render={
-					<Button variant="ghost" size="sm" onClick={onClick} className="text-muted-foreground max-md:size-10 max-md:px-0">
-						<Icon className="size-3.5 max-md:size-5" />
-						<span className="max-md:sr-only">{label}</span>
-					</Button>
-				}
-			/>
+			{wrap(
+				<TooltipTrigger
+					render={
+						<Button variant="ghost" size="sm" onClick={onClick} className="text-muted-foreground max-md:size-10 max-md:px-0">
+							<Icon className="size-3.5 max-md:size-5" />
+							<span className="max-md:sr-only">{label}</span>
+						</Button>
+					}
+				/>,
+			)}
 			<TooltipContent>
 				{label} <Shortcut hotkey={hotkey} />
 			</TooltipContent>
@@ -171,9 +182,17 @@ export function ThreadView() {
 					: action(Trash2Icon, "Trash", trash, hotkeys["thread.trash"])}
 				{action(OctagonAlertIcon, "Spam", spam, hotkeys["thread.spam"])}
 				{action(starred ? StarOffIcon : StarIcon, starred ? "Unstar" : "Star", toggleStar, hotkeys["thread.star"])}
+				{action(TagIcon, "Label", undefined, hotkeys["thread.label"], (button) => (
+					<LabelPicker threads={labeled} open={labeling} onOpenChange={setLabeling} trigger={button} />
+				))}
 				{action(MailIcon, "Mark unread", markUnread, hotkeys["thread.unread"])}
 			</div>
-			<h1 className="font-heading text-xl font-semibold break-words">{summary.subject}</h1>
+			<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+				<h1 className="font-heading text-xl font-semibold break-words">{summary.subject}</h1>
+				{summary.labels.filter(isOwnLabel).map((key) => (
+					<LabelChip key={key} labelKey={key} label={byKey.get(key)} onRemove={() => relabel.mutate({ threads: labeled, key, on: false })} />
+				))}
+			</div>
 			<p className="mt-1 mb-4 text-sm text-muted-foreground">
 				{summary.participants.map((p) => p.name || p.address).join(", ")} · {messages.length} {messages.length === 1 ? "message" : "messages"}
 			</p>

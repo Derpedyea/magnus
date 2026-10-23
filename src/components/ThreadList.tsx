@@ -1,4 +1,4 @@
-import type { MailboxThread } from "#shared";
+import { isOwnLabel, type Label, type MailboxThread } from "#shared";
 import { useQueryClient, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { getRouteApi, Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useAppHotkeys, useHotkey } from "@tanstack/react-hotkeys";
@@ -9,8 +9,10 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { formatDate } from "../dates";
 import { useAccount } from "../hooks";
+import { useLabels } from "../labels";
 import { foldList, listQuery } from "../queries";
 import { viewName } from "../views";
+import { LabelChip } from "./LabelPicker";
 import { PermanentDelete } from "./PermanentDelete";
 
 const route = getRouteApi("/_app/_mail/$view");
@@ -36,6 +38,7 @@ function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]
 	const threads = data.pages.flatMap((p) => p.threads);
 	// Per-row address dots, unless every row would show the same one.
 	const colors = account.addresses.length > 1 && scope.length !== 1 ? account.colors : null;
+	const { byKey: labels } = useLabels();
 
 	const scrollRef = useRef<HTMLElement>(null);
 	const listRef = useRef<HTMLUListElement>(null);
@@ -122,7 +125,7 @@ function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]
 							style={{ transform: `translateY(${item.start - rows.options.scrollMargin}px)` }}
 						>
 							{t ? (
-								<ThreadRow thread={t} view={view} colors={colors} />
+								<ThreadRow thread={t} view={view} colors={colors} labels={labels} />
 							) : (
 								<div className="flex h-14 items-center justify-center gap-2 text-muted-foreground">
 									{isFetchNextPageError ? (
@@ -145,9 +148,11 @@ function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]
 	);
 }
 
-function ThreadRow({ thread: t, view, colors }: { thread: MailboxThread; view: string; colors: Map<string, string> | null }) {
+function ThreadRow({ thread: t, view, colors, labels }: { thread: MailboxThread; view: string; colors: Map<string, string> | null; labels: ReadonlyMap<string, Label> }) {
 	const unread = t.unreadCount > 0;
 	const people = t.participants.map((p) => p.name || p.address.split("@")[0]).slice(0, 3).join(", ");
+	// The view's own label goes without saying.
+	const own = t.labels.filter((l) => isOwnLabel(l) && l !== view);
 	return (
 		<Link
 			to="/$view/$mailboxId/$threadId"
@@ -165,7 +170,15 @@ function ThreadRow({ thread: t, view, colors }: { thread: MailboxThread; view: s
 					<time className="text-xs text-muted-foreground">{formatDate(t.lastMessageAt)}</time>
 				</span>
 			</div>
-			<div className={`truncate ${unread ? "font-semibold" : ""}`}>{t.subject}</div>
+			<div className="flex items-center gap-2">
+				<span className={`truncate ${unread ? "font-semibold" : ""}`}>{t.subject}</span>
+				{own.length > 0 ? (
+					<span className="ml-auto flex shrink-0 items-center gap-1">
+						{own.slice(0, 2).map((key) => <LabelChip key={key} labelKey={key} label={labels.get(key)} />)}
+						{own.length > 2 ? <span className="text-xs text-muted-foreground">+{own.length - 2}</span> : null}
+					</span>
+				) : null}
+			</div>
 			<div className="truncate text-muted-foreground">{t.snippet}</div>
 		</Link>
 	);
