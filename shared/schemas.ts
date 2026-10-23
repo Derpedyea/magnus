@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { fromBase64Url } from "./base64url";
-import { MAX_SIGNATURE } from "./directory";
+import { type CustomHotkeys, MAX_SIGNATURE } from "./directory";
 import type { MailSettings } from "./types";
 
 /** Email Service: to + cc + bcc combined. */
@@ -70,6 +70,14 @@ export const SignatureSchema = z.object({
 	address: z.email(),
 	text: z.string().max(MAX_SIGNATURE),
 });
+
+/**
+ * Every shortcut someone has rebound (Me["hotkeys"]), replacing what was saved. Bounded rather than checked against
+ * the app's list, which the browser checks when it loads them; one it doesn't know is dropped there.
+ */
+export const HotkeysSchema = z.object({
+	hotkeys: z.record(z.string().max(64), z.union([z.string().min(1).max(64), z.array(z.string().min(1).max(64)).min(1).max(8), z.null()])).refine((h) => Object.keys(h).length <= 100, "Too many shortcuts"),
+}) satisfies z.ZodType<{ hotkeys: CustomHotkeys }>;
 
 /** A banner's answer about one message's sender (Mailbox.judgeMessage()). */
 export const JudgeSchema = z.object({ verdict: z.enum(["trusted", "spam"]) });

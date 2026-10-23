@@ -11,6 +11,7 @@ import {
 import { noteBody } from "#shared/markdown";
 import { useForm, useSelector } from "@tanstack/react-form";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useAppHotkeys, useHotkey } from "@tanstack/react-hotkeys";
 import { shallow } from "@tanstack/react-store";
 import { CheckIcon, CloudOffIcon, ForwardIcon, LinkIcon, PaperclipIcon, ReplyAllIcon, SendIcon, Trash2Icon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
@@ -31,6 +32,7 @@ import { normalizeMarkdown } from "../markdown";
 import { currentSession } from "../session";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { RecipientField } from "./RecipientField";
+import { ShortcutHint } from "./Shortcut";
 import { toastUndoSend } from "./UndoToast";
 
 export type { Draft } from "#shared/drafts";
@@ -181,6 +183,7 @@ export function Composer(props: {
 	const [showCc, setShowCc] = useState(Boolean(props.initial.cc.length + props.initial.bcc.length || props.initial.recipientInputs?.cc || props.initial.recipientInputs?.bcc));
 	const filePicker = useRef<HTMLInputElement>(null);
 	const sheet = useRef<HTMLFormElement>(null);
+	const hotkeys = useAppHotkeys();
 	// Phones: the composer fills what the on-screen keyboard leaves of the screen. The keyboard only shrinks the
 	// visual viewport, so without this Send and the caret could end up behind it.
 	useEffect(() => {
@@ -262,16 +265,26 @@ export function Composer(props: {
 				<Button type="submit" disabled={!ready || send.isPending || upload.isPending || discard.isPending || entry?.removing || entry?.status === "conflict"} className={cn("px-4", className)}>
 					{send.isPending ? <Spinner data-icon="inline-start" /> : null}
 					{entry?.state === "sending" && !send.isPending ? "Retry Send" : "Send"}
+					<ShortcutHint hotkey={hotkeys["compose.send"]} />
 				</Button>
 			)}
 		</form.Subscribe>
 	);
 
+	// The reply box: something written, from an address that may send, to someone. Its Send waits for it too.
+	const ready = (v: Draft) => v.from !== "" && v.to.length > 0 && !invalidAddresses(v.to) && (v.text.trim() !== props.initial.text.trim() || v.attachments.length > 0);
+	const busy = send.isPending || upload.isPending || discard.isPending || entry?.removing || entry?.status === "conflict";
+	// Mod+Enter, while you're in this composer; a window's checks the rest when it submits.
+	useHotkey(
+		hotkeys["compose.send"],
+		() => {
+			if (!busy && (props.inline ? ready(form.state.values) : form.state.values.from !== "")) void form.handleSubmit();
+		},
+		{ target: sheet },
+	);
+
 	if (props.inline) {
 		const replyAll = props.inline.replyAll;
-		// Something written, from an address that may send, to someone: what Send and ⌘/Ctrl+Enter both wait for.
-		const ready = (v: Draft) => v.from !== "" && v.to.length > 0 && !invalidAddresses(v.to) && (v.text.trim() !== props.initial.text.trim() || v.attachments.length > 0);
-		const busy = send.isPending || upload.isPending || discard.isPending || entry?.removing || entry?.status === "conflict";
 		return (
 			// Stays at the bottom of the thread as it scrolls, like a chat's. ⌘/Ctrl+Enter sends; Enter is a new line.
 			<form
@@ -280,15 +293,18 @@ export function Composer(props: {
 					e.preventDefault();
 					void form.handleSubmit();
 				}}
-				onKeyDown={(e) => {
-					if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-						e.preventDefault();
-						if (ready(form.state.values) && !busy) void form.handleSubmit();
-					}
-				}}
 				aria-label="Reply"
 				className="sticky bottom-0 z-10 -mx-4 bg-background px-4 pt-3 pb-3 lg:mx-0 lg:px-0 lg:pb-5"
 			>
+				<ReplyKeys
+					onReply={(all) => {
+						if (all && replyAll) {
+							form.setFieldValue("to", replyAll.to);
+							form.setFieldValue("cc", replyAll.cc);
+						}
+						sheet.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.focus();
+					}}
+				/>
 				<div className="overflow-hidden rounded-2xl border bg-background shadow-sm transition-colors focus-within:border-ring">
 					<fieldset disabled={locked}>
 						{showRecipients ? (
@@ -390,6 +406,7 @@ export function Composer(props: {
 									<Button type="submit" size="sm" disabled={!canSend || busy} className="rounded-full px-3.5">
 										{send.isPending ? <Spinner data-icon="inline-start" /> : <SendIcon data-icon="inline-start" />}
 										{entry?.state === "sending" && !send.isPending ? "Retry" : "Send"}
+										<ShortcutHint hotkey={hotkeys["compose.send"]} />
 									</Button>
 								)}
 							</form.Subscribe>
@@ -560,6 +577,14 @@ export function Composer(props: {
 }
 
 /** The forwarded message, which goes below the note untouched: who it's from and how it starts. */
+/** R and A in a thread: start writing in its reply box, to everyone with A. */
+function ReplyKeys({ onReply }: { onReply: (all: boolean) => void }) {
+	const hotkeys = useAppHotkeys();
+	useHotkey(hotkeys["thread.reply"], () => onReply(false));
+	useHotkey(hotkeys["thread.replyAll"], () => onReply(true));
+	return null;
+}
+
 function Forwarded({ message: m }: { message: NonNullable<Draft["forward"]>["message"] }) {
 	const snippet = makeSnippet(m.text);
 	return (

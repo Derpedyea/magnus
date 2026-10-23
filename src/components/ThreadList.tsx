@@ -1,6 +1,7 @@
 import type { MailboxThread } from "#shared";
 import { useQueryClient, useSuspenseInfiniteQuery } from "@tanstack/react-query";
-import { getRouteApi, Link } from "@tanstack/react-router";
+import { getRouteApi, Link, useNavigate, useParams } from "@tanstack/react-router";
+import { useAppHotkeys, useHotkey } from "@tanstack/react-hotkeys";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
@@ -52,6 +53,21 @@ function Threads({ view, scope, q, threadOpen }: { view: string; scope: string[]
 		},
 	});
 	const items = rows.getVirtualItems();
+
+	// J and K open the conversation below or above the open one, or the first when none is.
+	const navigate = useNavigate();
+	const open = useParams({ strict: false, select: (p) => `${p.mailboxId}/${p.threadId}` });
+	const step = (by: 1 | -1) => {
+		const at = threads.findIndex((t) => `${t.mailboxId}/${t.id}` === open);
+		const index = at === -1 ? 0 : at + by;
+		const t = threads[index];
+		if (!t) return;
+		rows.scrollToIndex(index);
+		void navigate({ to: "/$view/$mailboxId/$threadId", params: { view, mailboxId: t.mailboxId, threadId: t.id }, search: true });
+	};
+	const hotkeys = useAppHotkeys();
+	useHotkey(hotkeys["thread.next"], () => step(1));
+	useHotkey(hotkeys["thread.previous"], () => step(-1));
 
 	const nearEnd = (rows.calculateRange()?.endIndex ?? 0) >= threads.length - LEAD;
 	useEffect(() => {

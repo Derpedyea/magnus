@@ -1,4 +1,5 @@
 import {
+	type CustomHotkeys,
 	type Directory,
 	escapeMarkdown,
 	type MailboxMembership,
@@ -137,6 +138,25 @@ export async function getUserMailboxes(db: D1Database, reader: Reader): Promise<
 				signature: a.signature !== null && a.markdown === 0 ? escapeMarkdown(a.signature) : a.signature,
 			})),
 	}));
+}
+
+/** Their rebound shortcuts (Me["hotkeys"]). */
+export async function getCustomHotkeys(db: D1Database, reader: Reader): Promise<CustomHotkeys> {
+	const row = await db.prepare(`SELECT value FROM custom_hotkeys WHERE user_id = ?1 AND ${live("?2", "?1")}`).bind(reader.userId, reader.sessionId).first<{ value: string }>();
+	return row ? (JSON.parse(row.value) as CustomHotkeys) : {};
+}
+
+/** Replaces them; none left deletes the row. Written only while the request's session exists, as setSignature is. */
+export async function setCustomHotkeys(db: D1Database, reader: Reader, hotkeys: CustomHotkeys): Promise<void> {
+	await (Object.keys(hotkeys).length > 0
+		? db
+				.prepare(
+					`INSERT INTO custom_hotkeys (user_id, value) SELECT ?1, ?2 WHERE ${live("?3", "?1")}
+					 ON CONFLICT (user_id) DO UPDATE SET value = excluded.value`,
+				)
+				.bind(reader.userId, JSON.stringify(hotkeys), reader.sessionId)
+		: db.prepare(`DELETE FROM custom_hotkeys WHERE user_id = ?1 AND ${live("?2", "?1")}`).bind(reader.userId, reader.sessionId)
+	).run();
 }
 
 /**

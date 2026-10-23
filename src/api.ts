@@ -1,4 +1,4 @@
-import { type Address, formatScope, type MailSettings, type StepId } from "#shared";
+import { type Address, type CustomHotkeys, formatScope, type MailSettings, type StepId } from "#shared";
 import { adminClient, emailOTPClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/client";
 import { hc, type InferRequestType, parseResponse } from "hono/client";
@@ -78,6 +78,7 @@ export const api = {
 	config: () => parseResponse(client.config.$get()),
 	me: () => parseResponse(client.me.$get()),
 	saveSignature: (address: string, text: string) => parseResponse(client.signatures.$put({ json: { address, text } })),
+	saveHotkeys: (hotkeys: CustomHotkeys) => parseResponse(client.hotkeys.$put({ json: { hotkeys } })),
 	contacts: () => parseResponse(client.contacts.$get()),
 	drafts: () => parseResponse(client.drafts.$get()),
 	draft: (id: string) => parseResponse(client.drafts[":id"].$get({ param: { id } })),

@@ -26,7 +26,7 @@ import {
 	withForward,
 } from "#shared";
 import { noteBody } from "#shared/markdown";
-import { ComposeSchema, JudgeSchema, MarkReadSchema, MAX_ATTACHMENTS, MailSettingsSchema, ModifyThreadsSchema, ShareLinkSchema, SignatureSchema } from "#shared/schemas";
+import { ComposeSchema, JudgeSchema, MarkReadSchema, MAX_ATTACHMENTS, HotkeysSchema, MailSettingsSchema, ModifyThreadsSchema, ShareLinkSchema, SignatureSchema } from "#shared/schemas";
 import { isAPIError } from "better-auth/api";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
@@ -36,7 +36,7 @@ import { ProtonAnswerSchema, ProtonJobRefSchema, ProtonStartSchema } from "#shar
 import { admin } from "./admin";
 import { auth, currentUser, endReplacedSession, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
-import { getSendIdentities, getUserMailboxes, mailboxAccess, mailboxesRestoring, type Reader, resolveRecipient, setSignature } from "./directory";
+import { getCustomHotkeys, getSendIdentities, getUserMailboxes, mailboxAccess, mailboxesRestoring, type Reader, resolveRecipient, setCustomHotkeys, setSignature } from "./directory";
 import { fileHeaders, renderEmailHtml, serveFile } from "./html";
 import type { Mailbox } from "./mailbox/mailbox";
 import { getInstall } from "./settings";
@@ -537,7 +537,14 @@ const routes = app
 
 	.get("/me", async (c) => {
 		const user = c.var.user;
-		return c.json({ user, mailboxes: await getUserMailboxes(c.env.DIRECTORY, c.var.reader) });
+		const [mailboxes, hotkeys] = await Promise.all([getUserMailboxes(c.env.DIRECTORY, c.var.reader), getCustomHotkeys(c.env.DIRECTORY, c.var.reader)]);
+		return c.json({ user, mailboxes, hotkeys });
+	})
+
+	/** Your rebound shortcuts, all of them, replacing what was saved. /me returns them, so every device gets them. */
+	.put("/hotkeys", zValidator("json", HotkeysSchema), async (c) => {
+		await setCustomHotkeys(c.env.DIRECTORY, c.var.reader, c.req.valid("json").hotkeys);
+		return c.body(null, 204);
 	})
 
 	/** Your signature for one of the addresses you send as. /me returns them. */
