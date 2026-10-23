@@ -65,7 +65,7 @@ function Bar({ threads, view, all, onSelectAll, onClear, onDone }: Parameters<ty
 				<TooltipTrigger
 					render={
 						<Button variant="ghost" size="icon-sm" aria-label={label} onClick={onClick} className="text-muted-foreground max-md:size-10">
-							<Icon className="max-md:size-5" />
+							<Icon className="size-4 max-md:size-5" />
 						</Button>
 					}
 				/>,
