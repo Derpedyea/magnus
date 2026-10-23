@@ -124,7 +124,12 @@ export const api = {
 			mailbox.import.$post(
 				{
 					param: { mailboxId },
-					query: { labels: placement.labels.join(","), read: placement.read ? "1" : "0", sent: placement.sent === undefined ? undefined : placement.sent ? "1" : "0" },
+					query: {
+						labels: placement.labels.join(","),
+						paths: placement.paths,
+						read: placement.read ? "1" : "0",
+						sent: placement.sent === undefined ? undefined : placement.sent ? "1" : "0",
+					},
 				},
 				{ init: { body: file, signal }, headers: { "Content-Type": "message/rfc822" } },
 			),

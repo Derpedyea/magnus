@@ -43,7 +43,7 @@ describe("import", () => {
 		const res = await upload(body, query);
 		expect(res.status).toBe(202);
 		const { id } = Accepted.parse(await res.json());
-		const queued = (await f.control.state()).jobs.find((j) => j.ingestId === id);
+		const queued = (await f.control.state()).jobs.findLast((j) => j.ingestId === id);
 		if (!queued) throw new Error("Nothing queued");
 		await f.control.parse(queued);
 		return { id, job: queued };
@@ -182,6 +182,19 @@ describe("import", () => {
 		expect((await alice().getMessage("live-1"))?.message).toMatchObject({ labels: [], isRead: false });
 		expect(await alice().listThreads({ label: "all", limit: 50 })).toMatchObject([{ messageCount: 1 }]);
 		expect((await f.env.MAIL.list()).objects).toEqual([]);
+	});
+
+	it("names a folder as it was there, inside the one it was in, even one an earlier import named after its key", async () => {
+		const labels = async () => (await alice().labels()).map((l) => [l.key, l.name, l.parent]).sort();
+		// As before paths came along, and as jobs queued then still are.
+		await importNow(eml(), "labels=work-clients&read=1");
+		expect(await labels()).toEqual([["work-clients", "work-clients", null]]);
+		await importNow(eml(), "labels=work-clients&read=1&paths=Work%2FClients");
+		expect(await labels()).toEqual([["work", "Work", null], ["work-clients", "Clients", "work"]]);
+		// One the person has named stays as they have it.
+		await alice().updateLabel("work-clients", { name: "Customers", parent: null });
+		await importNow(eml(), "labels=work-clients&read=1&paths=Work%2FClients");
+		expect(await labels()).toEqual([["work", "Work", null], ["work-clients", "Customers", null]]);
 	});
 
 	it("threads a reply imported before the message it answers", async () => {

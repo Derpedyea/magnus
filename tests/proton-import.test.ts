@@ -102,11 +102,15 @@ describe("importing from Proton on the server", () => {
 		const jobs = (await f.control.state()).jobs;
 		expect(jobs.map((j) => j.imported)).toEqual(
 			expect.arrayContaining([
-				{ labels: ["inbox", "work-clients"], read: false, sent: false, addresses: ["alice@example.com"] },
+				{ labels: ["inbox", "work-clients"], paths: ["Work/Clients"], read: false, sent: false, addresses: ["alice@example.com"] },
 				{ labels: ["sent"], read: true, sent: true, addresses: ["alice@example.com"] },
 			]),
 		);
 		expect(jobs).toHaveLength(2);
+		// Its folder comes in as it was named there, inside the one it was in.
+		await f.control.parse(jobs.find((j) => j.imported?.paths)!);
+		const labels = await f.env.MAILBOX.getByName(ids.alice).labels();
+		expect(labels.map((l) => [l.key, l.name, l.parent]).sort()).toEqual([["work", "Work", null], ["work-clients", "Clients", "work"]]);
 		expect((await f.control.exportState()).messages).toEqual([]);
 		expect(await status()).toMatchObject({ phase: "exporting", percent: 40, imported: 2, drafts: 1, unreadable: 1, tooBig: 1 });
 

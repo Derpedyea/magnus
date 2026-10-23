@@ -1,6 +1,6 @@
 import { decodeWords } from "postal-mime";
 import { z } from "zod";
-import { SYSTEM_LABELS, type SystemLabel } from "./types";
+import { type LabelDef, MAX_LABEL_DEPTH, SYSTEM_LABELS, type SystemLabel } from "./types";
 
 /**
  * Importing mail from another provider: the browser uploads each message as it was exported, with where it was there,
@@ -12,6 +12,11 @@ import { SYSTEM_LABELS, type SystemLabel } from "./types";
 export const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
 /** Labels one imported message can bring along. */
 export const MAX_IMPORT_LABELS = 20;
+/**
+ * What an import's labels and paths can take of its URL, counting each byte as percent-encoded. Workers take URLs of up
+ * to 16 KB, and the rest of one is a few hundred bytes.
+ */
+const MAX_IMPORT_QUERY = 15 * 1024;
 
 /**
  * Names Magnus uses itself: the system labels and the views routed like labels. A folder from elsewhere named like one
@@ -41,6 +46,28 @@ export function importLabel(name: string): string | null {
 	return RESERVED.has(label) ? `${label}-imported` : label;
 }
 
+/**
+ * The labels a folder or label from elsewhere makes, outermost first, as Mailbox.ingest() takes them on: `Work/Clients`
+ * is Clients inside Work. Each is keyed by importLabel() of the path to it, so the last is the one mail gets. Labels go
+ * MAX_LABEL_DEPTH deep, so the rest of a deeper path names the innermost (`A/B/C/D` is "C - D" inside B inside A, since a
+ * name can't have a "/" in it). A part importLabel() makes nothing new of (`🙂/Receipts`) isn't a label of its own.
+ */
+export function importLabelChain(path: string): LabelDef[] {
+	const parts = path.split("/").filter((p) => p.trim());
+	const chain: LabelDef[] = [];
+	for (let depth = 0; depth < Math.min(parts.length, MAX_LABEL_DEPTH); depth++) {
+		const end = depth === MAX_LABEL_DEPTH - 1 ? parts.length : depth + 1;
+		const key = importLabel(parts.slice(0, end).join("/"));
+		const parent = chain.at(-1)?.key ?? null;
+		if (!key || key === parent) continue;
+		const name = parts.slice(depth, end).map((p) => p.trim()).join(" - ");
+		// Within LabelNameSchema's 64, with room for the number defineLabels() adds to a name taken, and without half a
+		// character at the end.
+		chain.push({ key, name: name.slice(0, 60).replace(/[\uD800-\uDBFF]$/, "").trimEnd(), parent, color: null });
+	}
+	return chain;
+}
+
 /** What one uploaded message is labelled with: a system label an import can set, or what importLabel() writes. */
 export const ImportLabelSchema = z
 	.string()
@@ -56,6 +83,12 @@ export const ImportQuerySchema = z.object({
 		.default("")
 		.transform((s) => (s ? s.split(",") : []))
 		.pipe(z.array(ImportLabelSchema).max(MAX_IMPORT_LABELS)),
+	/** One each (`paths=Work%2FClients&paths=…`), since a name can have a comma in it. Hono gives one as a string. */
+	paths: z
+		.union([z.string(), z.array(z.string())])
+		.default([])
+		.transform((p) => [p].flat())
+		.pipe(z.array(z.string()).max(MAX_IMPORT_LABELS)),
 	read: z.enum(["0", "1"]).transform((v) => v === "1"),
 	sent: z
 		.enum(["0", "1"])
@@ -66,9 +99,33 @@ export const ImportQuerySchema = z.object({
 /** Where a message was in the export, as the browser sends it. */
 export interface ImportPlacement {
 	labels: string[];
+	/**
+	 * The folders and labels its own labels were made of, as they were named there (`Work/Clients`, "/" between a
+	 * folder's parents and it). A label whose path is left out arrives named after its key.
+	 */
+	paths?: string[];
 	read: boolean;
 	/** Undefined when the export doesn't say. */
 	sent?: boolean;
+}
+
+/**
+ * A placement's labels and the paths of those that have one (`own` maps a label to its path), as many as fit in its URL.
+ * Where it was (Inbox, Sent, Trash…) comes first, so a message with more labels than fit loses only some of its own.
+ */
+function placeLabels(system: Iterable<string>, own: ReadonlyMap<string, string | null>): Pick<ImportPlacement, "labels" | "paths"> {
+	const labels = [...system, ...own.keys()].slice(0, MAX_IMPORT_LABELS);
+	const size = (s: string) => new TextEncoder().encode(s).length * 3;
+	let room = MAX_IMPORT_QUERY - size(labels.join(","));
+	const paths: string[] = [];
+	for (const label of labels) {
+		const path = own.get(label);
+		// `&paths=` and the path.
+		if (!path || size(path) + 7 > room) continue;
+		room -= size(path) + 7;
+		paths.push(path);
+	}
+	return paths.length > 0 ? { labels, paths } : { labels };
 }
 
 // ─── Proton Export Tool ─────────────────────────────────────────────────────
@@ -122,7 +179,7 @@ export type ProtonLabel = z.infer<typeof ProtonLabelsSchema>["Payload"][number];
 export function protonPlacement(meta: ProtonMetadata, labels: ReadonlyMap<string, ProtonLabel>): ImportPlacement | null {
 	if ((meta.Flags & (RECEIVED | SENT)) === 0) return null;
 	const system = new Set<string>();
-	const own = new Set<string>();
+	const own = new Map<string, string>();
 	for (const id of meta.LabelIDs) {
 		// Proton's own ids are numbers; the person's are base64 (proton-mail-export, go-lib/internal/mail/utils.go).
 		if (/^\d+$/.test(id)) {
@@ -132,11 +189,11 @@ export function protonPlacement(meta: ProtonMetadata, labels: ReadonlyMap<string
 		}
 		const label = labels.get(id);
 		if (!label || label.Type === CONTACT_GROUP) continue;
-		const name = importLabel(label.Path || label.Name);
-		if (name) own.add(name);
+		const path = label.Path || label.Name;
+		const name = importLabel(path);
+		if (name && !own.has(name)) own.set(name, path);
 	}
-	// Where it was (Inbox, Sent, Trash…) first, so a message with more labels than fit loses only some of its own.
-	return { labels: [...system, ...own].slice(0, MAX_IMPORT_LABELS), read: meta.Unread === 0, sent: (meta.Flags & SENT) !== 0 };
+	return { ...placeLabels(system, own), read: meta.Unread === 0, sent: (meta.Flags & SENT) !== 0 };
 }
 
 // ─── mbox: Gmail's Takeout, Thunderbird, and the rest ───────────────────────
@@ -160,18 +217,18 @@ export function gmailPlacement(header: string): ImportPlacement | null {
 	const names = Array.from(decodeWords(header).matchAll(/\s*(?:"([^"]*)"|([^,]*))\s*(?:,|$)/g), (m) => (m[1] ?? m[2] ?? "").trim()).filter(Boolean);
 	if (names.includes("Drafts")) return null;
 	const system = new Set<string>();
-	const own = new Set<string>();
+	const own = new Map<string, string>();
 	for (const name of names) {
 		const label = GMAIL_SYSTEM.get(name);
 		if (label !== undefined) {
 			if (label) system.add(label);
 		} else if (!name.startsWith("Category ")) {
 			const imported = importLabel(name);
-			if (imported) own.add(imported);
+			if (imported && !own.has(imported)) own.set(imported, name);
 		}
 	}
 	return {
-		labels: [...system, ...own].slice(0, MAX_IMPORT_LABELS),
+		...placeLabels(system, own),
 		// Takeout writes one or the other; with neither, it's read, like an .eml with nothing to say.
 		read: names.includes("Opened") || !names.includes("Unread"),
 		// Gmail labels everything you sent Sent. Without it, the Worker still counts mail from your addresses as sent.
@@ -222,23 +279,23 @@ export function mboxPlacement(headers: ReadonlyMap<string, string>, folder: read
 	const top = FOLDERS.get(name) ?? (gmailImap ? GMAIL_FOLDERS.get(name) : undefined);
 	if (top === "draft") return "draft";
 	const system = new Set<string>();
-	const own = new Set<string>();
+	const own = new Map<string, string | null>();
 	if (path.length === 1 && top && top !== "archive") system.add(top);
 	// A subfolder of Inbox is the person's own; Archives files by year, and those are archived mail. One of Sent
 	// (`Sent.sbd/2024`) is still mail you sent.
 	else if (path.length > 0 && top !== "archive") {
 		if (top === "sent") system.add("sent");
 		const label = importLabel(path.join("/"));
-		if (label) own.add(label);
+		if (label) own.set(label, path.join("/"));
 	}
 	const read = mozilla !== null ? (mozilla & MOZILLA_READ) !== 0 : (headers.get("status")?.includes("R") ?? true);
 	if ((mozilla !== null && mozilla & MOZILLA_MARKED) || headers.get("x-status")?.includes("F")) system.add("starred");
 	for (const key of (headers.get("x-mozilla-keys") ?? "").split(/\s+/)) {
 		const tag = MOZILLA_TAGS.get(key.toLowerCase()) ?? (key.startsWith("$") || NOT_TAGS.has(key.toLowerCase()) ? null : importLabel(key));
-		if (tag) own.add(tag);
+		if (tag && !own.has(tag)) own.set(tag, null);
 	}
 	return {
-		labels: [...system, ...own].slice(0, MAX_IMPORT_LABELS),
+		...placeLabels(system, own),
 		read,
 		...(top === "sent" ? { sent: true } : {}),
 	};
@@ -268,8 +325,10 @@ export function parseHeaders(block: string): Map<string, string> {
  */
 export function mergePlacements(a: ImportPlacement, b: ImportPlacement): ImportPlacement {
 	const labels = [...new Set([...a.labels, ...b.labels])];
+	const paths = new Map([...(a.paths ?? []), ...(b.paths ?? [])].map((p) => [importLabel(p), p]));
+	const own = new Map(labels.filter((l) => !IMPORT_SYSTEM.has(l)).map((l) => [l, paths.get(l) ?? null]));
 	return {
-		labels: [...labels.filter((l) => IMPORT_SYSTEM.has(l)), ...labels.filter((l) => !IMPORT_SYSTEM.has(l))].slice(0, MAX_IMPORT_LABELS),
+		...placeLabels(labels.filter((l) => IMPORT_SYSTEM.has(l)), own),
 		read: a.read && b.read,
 		...(a.sent || b.sent ? { sent: true } : {}),
 	};

@@ -334,8 +334,8 @@ mbox per folder; any other folder of `.eml` or mbox files works too. Code: `shar
 `src/mbox.ts`, `worker/mail/import.ts`.
 
 1. **The browser reads the folder** and pairs each message with Proton's details: Inbox, Sent, Trash, Spam, and
-   Starred become those labels, the person's own folders and labels become labels (`Work/Clients` →
-   `work-clients`), Archive and All mail need none, and Unread carries over. Where a message was comes first among
+   Starred become those labels, the person's own folders and labels become labels, named and nested as they were
+   (`Work/Clients` is Clients inside Work, keyed `work-clients`), Archive and All mail need none, and Unread carries over. Where a message was comes first among
    its labels, so one with more than 20 loses only some of its own. Drafts are left out, since drafts here live in
    the directory (§3), and so is mail Proton couldn't export as a message. A folder counts as Proton's export when
    one of these files in it is shaped like Proton's (`{ "Version": …, "Payload": … }`); another program's
@@ -353,7 +353,7 @@ mbox per folder; any other folder of `.eml` or mbox files works too. Code: `shar
    label isn't ASCII, and split on commas outside quotes, then Inbox, Sent, Spam, Trash, and Starred become those labels, Unread carries over, Drafts
    are left out, Gmail's other labels (Important, Opened, Archived, the inbox categories) need none, and the person's
    become labels. Without it, the file's folder places it: Thunderbird keeps subfolders in `<name>.sbd/`
-   (`Work.sbd/Clients` → `work-clients`; one under Sent is still sent mail), names its own folders Inbox, Sent, Trash, Junk, Archives (by year, all
+   (`Work.sbd/Clients` is `Work/Clients`; one under Sent is still sent mail), names its own folders Inbox, Sent, Trash, Junk, Archives (by year, all
    archived), Drafts, and Templates (left out), and Gmail's over IMAP under `[Gmail]`. Thunderbird's
    `X-Mozilla-Status` says read, starred, and deleted but not yet compacted away (left out), and `X-Mozilla-Keys`
    holds its tags; other programs write `Status: R` and `X-Status: F`. With none of them, mail is read. The same
@@ -361,7 +361,9 @@ mbox per folder; any other folder of `.eml` or mbox files works too. Code: `shar
    both places, and read only if both say so; when one copy is a draft (Gmail keeps those in All Mail too), it's left
    out, unless another copy says it was sent. Leaving the page stops the reading.
 2. **It sends each message on its own**, newest first and four at a time (big ones alone, since the Worker reads
-   each whole), to `POST /api/mailboxes/:id/import`, with where it goes in the query (one schema checks each label). Failures on the way are retried; being signed out or
+   each whole), to `POST /api/mailboxes/:id/import`, with where it goes in the query (one schema checks each label),
+   and each of its own labels' paths as a parameter of its own, since a name can have a comma in it. Paths that would
+   take the URL past Workers' 16 KB are left out, and their labels arrive named after their keys. Failures on the way are retried; being signed out or
    losing the mailbox stops the import. The page has to stay open, and says so.
 3. **The Worker reads only the headers** to refuse what isn't mail and to fill in the envelope the message never had:
    the mailbox's enabled addresses it reached (Delivered-To, then the recipients, and Bcc for sent mail), and for
@@ -376,7 +378,10 @@ mbox per folder; any other folder of `.eml` or mbox files works too. Code: `shar
    file, or deleted with the mailbox. It's never deleted on the spot: another upload of the same file can have
    queued it.
 4. **`ingest()` places it as it was there**: its labels instead of a verdict (§5.6), its read state, and
-   `direction = 'out'` for sent mail, which keeps its Bcc. Its recipients join the contacts, and are trusted unless
+   `direction = 'out'` for sent mail, which keeps its Bcc. Each label's path defines it and the labels it sits in
+   (`importLabelChain()`; past three deep, the rest of the path names the innermost: `A/B/C/D` is "C - D"). Labels
+   the person has named stay as they are, but one still named after its key, as an earlier import left it, takes on
+   its name and place, even when the mail itself is already here, so importing again fixes it. Its recipients join the contacts, and are trusted unless
    this mailbox has judged them already, since the import is older than that judgment. The `Authentication-Results`
    in the file aren't kept, even one naming Cloudflare, since nobody here checked them; so imported mail has no
    verified sender, and marking it as spam judges nobody. A message already here by Message-ID stays as it is:

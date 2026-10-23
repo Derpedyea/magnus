@@ -24,7 +24,7 @@ describe("planImport", () => {
 		expect(plan).toMatchObject({ proton: true, drafts: 1, unexported: 1, tooBig: [], unreadable: [] });
 		expect(plan.items.map((i) => [i.name, i.placement, i.at])).toEqual([
 			["new.eml", { labels: [], read: false, sent: false }, 200_000],
-			["old.eml", { labels: ["inbox", "work"], read: false, sent: false }, 100_000],
+			["old.eml", { labels: ["inbox", "work"], paths: ["Work"], read: false, sent: false }, 100_000],
 		]);
 		expect(plan.bytes).toBe(plan.items.reduce((n, i) => n + i.size, 0));
 	});
@@ -124,7 +124,7 @@ describe("planImport with mbox files", () => {
 		]), (f) => fractions.push(f));
 		expect(plan).toMatchObject({ mbox: true, gmail: false, drafts: 1, deleted: 1, tooBig: [] });
 		expect(plan.items.map((i) => [i.path, i.name, i.placement])).toEqual([
-			["Local Folders/Work.sbd/Clients #1", "b", { labels: ["starred", "work-clients"], read: false }],
+			["Local Folders/Work.sbd/Clients #1", "b", { labels: ["starred", "work-clients"], paths: ["Work/Clients"], read: false }],
 			["Local Folders/Inbox #1", "a", { labels: ["inbox"], read: true }],
 		]);
 		expect(await (await importBody(plan.items[1]!)).text()).toBe(message("a", "Mon, 1 Jan 2024 10:00:00 +0000", "X-Mozilla-Status: 0001") + "\n");

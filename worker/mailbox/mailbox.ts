@@ -51,6 +51,7 @@ import {
 	type Verdict,
 	withForward,
 } from "#shared";
+import { importLabelChain } from "#shared/import";
 import { noteBody } from "#shared/markdown";
 import { hasMember, isRevokedSend, mailboxInUse, mailboxState } from "../directory";
 import { retryAddressing } from "./retry";
@@ -636,17 +637,21 @@ export class Mailbox extends DurableObject<Env> {
 			// The parser may already have rewritten these objects before it reached the tombstone.
 			// Arm recovery before recording cleanup, so a crash cannot strand those bytes.
 			await this.ctx.storage.setAlarm(Date.now());
-			this.ctx.storage.transactionSync(() => {
+			const renamed = this.ctx.storage.transactionSync(() => {
 				if (input.htmlKey) this.queueTrash(input.htmlKey);
 				for (const a of input.attachments) this.queueTrash(a.r2Key);
 				this.sql.exec(`UPDATE deleted_messages SET raw_key = ?2 WHERE id = ?1`, input.id, input.rawKey);
+				// A copy an earlier import dropped for the one already here can still name its labels.
+				return this.nameImported(input, false);
 			});
+			if (renamed) this.broadcast({ type: "labels.changed" });
 			await this.emptyTrash();
 			await this.scheduleOutbox();
 			return { deleted: true };
 		}
 		const existing = this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM messages WHERE id = ?1`, input.id).toArray()[0];
 		if (existing) {
+			if (this.ctx.storage.transactionSync(() => this.nameImported(input, false))) this.broadcast({ type: "labels.changed" });
 			this.clearFailed(input.id);
 			return { threadId: existing.thread_id, duplicate: true, inbox: false };
 		}
@@ -672,10 +677,12 @@ export class Mailbox extends DurableObject<Env> {
 				// Its id is tombstoned like deleted mail's, so importing the same file once the mail here is deleted for good
 				// doesn't bring it back.
 				await this.ctx.storage.setAlarm(Date.now());
-				this.ctx.storage.transactionSync(() => {
+				const renamed = this.ctx.storage.transactionSync(() => {
 					for (const key of [input.rawKey, ...(input.htmlKey ? [input.htmlKey] : []), ...input.attachments.map((a) => a.r2Key)]) this.queueTrash(key);
 					this.sql.exec(`INSERT OR IGNORE INTO deleted_messages (id, raw_key, received_at) VALUES (?1, NULL, ?2)`, input.id, input.receivedAt);
+					return this.nameImported(input, false);
 				});
+				if (renamed) this.broadcast({ type: "labels.changed" });
 				this.clearFailed(input.id);
 				await this.emptyTrash();
 				await this.scheduleOutbox();
@@ -738,6 +745,7 @@ export class Mailbox extends DurableObject<Env> {
 				)
 				.one();
 
+			this.nameImported(input, true);
 			this.addLabels([input.id], placed);
 			// Imported mail says which of the mailbox's addresses it belongs to, which can be none.
 			const filed = input.imported ? input.imported.addresses : [stripSubaddress(input.envelopeTo).base];
@@ -1334,19 +1342,58 @@ export class Mailbox extends DurableObject<Env> {
 	/**
 	 * Adds the labels this mailbox doesn't have yet, outermost first, each last among those beside it. One whose parent
 	 * it doesn't have (or that would go too deep) goes at the top, and one named like a label beside it gets a number.
-	 * Whether it added any.
+	 * With `rename`, one it has that nobody's named (unnamed()) takes on the name and place given too. Whether it added
+	 * or renamed any.
 	 */
-	private defineLabels(defs: LabelDef[]): boolean {
+	private defineLabels(defs: LabelDef[], rename = false): boolean {
 		let added = false;
 		for (const def of defs) {
-			if (this.label(def.key)) continue;
+			if (this.label(def.key) && !(rename && this.unnamed(def.key))) continue;
 			const parent = def.parent !== null && this.label(def.parent) && this.depth(def.parent) < MAX_LABEL_DEPTH ? def.parent : null;
 			let name = def.name;
-			for (let n = 2; this.nameTaken(parent, name, []); n++) name = numbered(def.name, n);
-			this.sql.exec(`INSERT INTO labels (key, name, parent, color, position) VALUES (?1, ?2, ?3, ?4, ${LAST_POSITION("?3")})`, def.key, name, parent, def.color);
+			for (let n = 2; this.nameTaken(parent, name, [def.key]); n++) name = numbered(def.name, n);
+			// A renamed one stays where it was among the labels beside it, unless it moves.
+			this.sql.exec(
+				`INSERT INTO labels (key, name, parent, color, position) VALUES (?1, ?2, ?3, ?4, ${LAST_POSITION("?3")})
+				 ON CONFLICT (key) DO UPDATE SET name = excluded.name, parent = excluded.parent,
+					position = CASE WHEN parent IS excluded.parent THEN position ELSE excluded.position END`,
+				def.key,
+				name,
+				parent,
+				def.color,
+			);
 			added = true;
 		}
 		return added;
+	}
+
+	/**
+	 * Takes on the folders and labels imported mail was in as they were named there, inside the ones they were in
+	 * (importLabelChain()). From the label mail gets outwards, only as far as labels nobody's named: one an earlier import
+	 * left named after its key is named now, and the person's own stay as they have them. Only for labels it's imported
+	 * with, since what else a path says isn't the import's to define. Mail it doesn't store (`stored` false: it's here
+	 * already, or was dropped) brings no labels, so for it, only labels this mailbox has. Whether it added or renamed any.
+	 */
+	private nameImported(input: Pick<IngestInput, "labels" | "imported">, stored: boolean): boolean {
+		let changed = false;
+		for (const path of input.imported?.paths ?? []) {
+			const chain = importLabelChain(path);
+			const key = chain.at(-1)?.key;
+			if (!key || !input.labels.includes(key) || !(stored || this.label(key))) continue;
+			let from = chain.length;
+			while (from > 0 && this.unnamed(chain[from - 1]!.key)) from--;
+			if (this.defineLabels(chain.slice(from), true)) changed = true;
+		}
+		return changed;
+	}
+
+	/**
+	 * Whether nobody's named this label: there's none, or it's still as addLabels() made it, named after its key at the
+	 * top, with no color and nothing inside.
+	 */
+	private unnamed(key: string): boolean {
+		const label = this.label(key);
+		return !label || (label.name === key && label.parent === null && label.color === null && this.height(key) === 1);
 	}
 
 	private label(key: string): Label | undefined {
