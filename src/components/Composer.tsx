@@ -169,7 +169,15 @@ export function Composer(props: {
 			if (failures.length) throw new Error(failures.map((failure) => errorMessage(failure.reason)).join("; "));
 		},
 	});
-	const [showRecipients, setShowRecipients] = useState(false);
+	// The reply box shows who it goes to as a line, until there's something to fix: a message with no usable From
+	// (some bounces) leaves nothing to reply to.
+	const [showRecipients, setShowRecipients] = useState(() => props.initial.to.length === 0 || Boolean(invalidAddresses(props.initial.to)));
+	// Whether To and Cc are everyone on the message, for the reply box's Reply all.
+	const addressKey = (list: Address[]) => list.map((a) => a.address.toLowerCase()).sort().join(",");
+	const everyone = useSelector(form.store, (s) => {
+		const all = props.inline?.replyAll;
+		return Boolean(all) && addressKey(s.values.to) === addressKey(all?.to ?? []) && addressKey(s.values.cc) === addressKey(all?.cc ?? []);
+	});
 	const [showCc, setShowCc] = useState(Boolean(props.initial.cc.length + props.initial.bcc.length || props.initial.recipientInputs?.cc || props.initial.recipientInputs?.bcc));
 	const filePicker = useRef<HTMLInputElement>(null);
 	const sheet = useRef<HTMLFormElement>(null);
@@ -201,7 +209,8 @@ export function Composer(props: {
 			const forward = s.values.forward;
 			const files = [...s.values.attachments, ...(forward?.files ?? [])];
 			if (files.length === 0) return [];
-			const note = noteBody(s.values.text);
+			// The reply box's quote goes out too (`inline`), so it counts toward the size.
+			const note = noteBody(s.values.text + (props.inline?.quote ?? ""));
 			const body = { text: note.text + (forward?.message.text ?? ""), html: note.html };
 			const embedded = forward?.message.hasHtml ? forward.message.attachments.reduce((n, a) => n + (a.inline && a.contentId ? a.size : 0), 0) : 0;
 			return planAttachments(files, body, `${location.origin}/f/${s.values.mailboxId}/`, embedded).linked.map(fileKey);
@@ -260,7 +269,9 @@ export function Composer(props: {
 
 	if (props.inline) {
 		const replyAll = props.inline.replyAll;
-		const everyone = Boolean(replyAll) && recipients.length === (replyAll?.to.length ?? 0) + (replyAll?.cc.length ?? 0);
+		// Something written, from an address that may send, to someone: what Send and ⌘/Ctrl+Enter both wait for.
+		const ready = (v: Draft) => v.from !== "" && v.to.length > 0 && !invalidAddresses(v.to) && (v.text.trim() !== props.initial.text.trim() || v.attachments.length > 0);
+		const busy = send.isPending || upload.isPending || discard.isPending || entry?.removing || entry?.status === "conflict";
 		return (
 			// Stays at the bottom of the thread as it scrolls, like a chat's. ⌘/Ctrl+Enter sends; Enter is a new line.
 			<form
@@ -272,7 +283,7 @@ export function Composer(props: {
 				onKeyDown={(e) => {
 					if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
 						e.preventDefault();
-						void form.handleSubmit();
+						if (ready(form.state.values) && !busy) void form.handleSubmit();
 					}
 				}}
 				aria-label="Reply"
@@ -374,9 +385,9 @@ export function Composer(props: {
 									<TooltipContent>Discard draft</TooltipContent>
 								</Tooltip>
 							) : null}
-							<form.Subscribe selector={(s) => s.values.text.trim() !== props.initial.text.trim() || s.values.attachments.length > 0}>
-								{(written) => (
-									<Button type="submit" size="sm" disabled={!written || send.isPending || upload.isPending || discard.isPending || entry?.removing || entry?.status === "conflict"} className="rounded-full px-3.5">
+							<form.Subscribe selector={(s) => ready(s.values)}>
+								{(canSend) => (
+									<Button type="submit" size="sm" disabled={!canSend || busy} className="rounded-full px-3.5">
 										{send.isPending ? <Spinner data-icon="inline-start" /> : <SendIcon data-icon="inline-start" />}
 										{entry?.state === "sending" && !send.isPending ? "Retry" : "Send"}
 									</Button>
