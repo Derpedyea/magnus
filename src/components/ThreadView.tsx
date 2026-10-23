@@ -4,7 +4,6 @@ import {
 	type DeliveryStatus,
 	formatBytes,
 	type MessageDetail,
-	makeSnippet,
 	type PreviewKind,
 	preview,
 	RETRYABLE,
@@ -13,29 +12,27 @@ import {
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi, Link, useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, ArrowLeftIcon, CheckIcon, CircleAlertIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, ShieldXIcon, StarIcon, StarOffIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, BanIcon, CheckIcon, CircleAlertIcon, ClockIcon, DownloadIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, ShieldXIcon, StarIcon, StarOffIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverDescription, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast-manager";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, errorMessage, formatList, messageUrl } from "../api";
 import { type AnswerContext, answerFrom, isOutgoing, openDraft, quote, replyRecipients, withSignature } from "../compose";
-import { formatDate } from "../dates";
 import { useAccount, useScope } from "../hooks";
 import { threadQuery } from "../queries";
 import { findQuote, isForward, splitQuote } from "../quotes";
 import { type Branch, replyTree } from "../replies";
 import { currentSession } from "../session";
 import { appearance } from "../theme";
-import { BlockSender } from "./BlockSender";
-import type { Draft } from "./Composer";
+import { BlockSender, useCanBlock } from "./BlockSender";
+import { Composer, type Draft } from "./Composer";
 import { FileViewer } from "./FileViewer";
 import { PermanentDelete } from "./PermanentDelete";
 
@@ -91,6 +88,34 @@ export function ThreadView() {
 	const trashed = messages.filter((m) => m.labels.includes("trash")).length;
 	// An inbox conversation with an older trashed message still needs a way to trash its remaining replies.
 	const deleteForever = trashed > 0 && (view === "trash" || trashed === messages.length);
+	const answerContext = (m: MessageDetail): AnswerContext => ({
+		mailboxId,
+		identities,
+		delivered: summary.addresses,
+		outgoing: isOutgoing(m, ours, inView),
+		inView,
+	});
+	const last = messages.at(-1);
+
+	// After a send from the reply box, the thread follows its end for a few seconds, as a chat does: the new message
+	// comes in, and its frame sizes itself, after the send returns.
+	const ref = useRef<HTMLElement>(null);
+	const followUntil = useRef(0);
+	useEffect(() => {
+		const article = ref.current;
+		const scroller = article && scrollParent(article);
+		if (!article || !scroller) return;
+		const observer = new ResizeObserver(() => {
+			if (Date.now() < followUntil.current) scroller.scrollTo({ top: scroller.scrollHeight });
+		});
+		observer.observe(article);
+		return () => observer.disconnect();
+	}, []);
+	const onSent = () => {
+		followUntil.current = Date.now() + 4000;
+		const scroller = ref.current && scrollParent(ref.current);
+		scroller?.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+	};
 
 	// Phones show icons alone, bigger, like Gmail's toolbar; the label stays for screen readers.
 	const action = (Icon: LucideIcon, label: string, onClick: () => void) => (
@@ -101,7 +126,7 @@ export function ThreadView() {
 	);
 
 	return (
-		<article className="mx-auto max-w-4xl px-4 pb-6 lg:p-6">
+		<article ref={ref} className="mx-auto max-w-4xl px-4 pb-6 lg:p-6">
 			{/* Stacked over the list, the toolbar stays on screen and leads with the way back. */}
 			<div className="sticky top-0 z-10 -mx-4 mb-4 flex items-center gap-1 border-b bg-background px-2 py-2 lg:static lg:mx-0 lg:flex-wrap lg:px-0 lg:pt-0 lg:pb-3">
 				<BackToList className="mr-auto" />
@@ -117,20 +142,17 @@ export function ThreadView() {
 					: action(StarIcon, "Star", () => modify.mutate({ verb: "star", add: ["starred"] }))}
 				{action(MailIcon, "Mark unread", () => (markRead.mutate(false), close()))}
 			</div>
-			<h1 className="mb-6 font-heading text-xl font-semibold break-words">{summary.subject}</h1>
-			<div>
+			<h1 className="font-heading text-xl font-semibold break-words">{summary.subject}</h1>
+			<p className="mt-1 mb-4 text-sm text-muted-foreground">
+				{summary.participants.map((p) => p.name || p.address).join(", ")} · {messages.length} {messages.length === 1 ? "message" : "messages"}
+			</p>
+			<div className="flex flex-col gap-1">
 				{replyTree(messages).map((branch) => (
 					<BranchView
 						key={branch.messages[0]?.id}
 						branch={branch}
 						render={(m, above) => {
-							const ctx: AnswerContext = {
-								mailboxId,
-								identities,
-								delivered: summary.addresses,
-								outgoing: isOutgoing(m, ours, inView),
-								inView,
-							};
+							const ctx = answerContext(m);
 							return (
 								<Message
 									mailboxId={mailboxId}
@@ -138,7 +160,6 @@ export function ThreadView() {
 									outgoing={ctx.outgoing}
 									// Branches that stopped indenting say which message a reply answers when it isn't the one above.
 									replyingTo={above && m.parentId && m.parentId !== above.id ? messages.find((p) => p.id === m.parentId) : undefined}
-									defaultOpen={m === messages.at(-1) || !m.isRead}
 									onReply={(all) => openDraft(replyDraft(m, all, ctx))}
 									onForward={() => openDraft(forwardDraft(m, ctx))}
 								/>
@@ -147,8 +168,46 @@ export function ThreadView() {
 					/>
 				))}
 			</div>
+			{last ? <ReplyDock key={last.id} message={last} ctx={answerContext(last)} onSent={onSent} /> : null}
 		</article>
 	);
+}
+
+/**
+ * The thread's reply box: answers its last message, chat-style, without leaving the thread. Each send or discard
+ * starts a fresh one. Older messages answer from their own menus, in the composer window.
+ */
+function ReplyDock({ message: m, ctx, onSent }: { message: ThreadMessage; ctx: AnswerContext; onSent: () => void }) {
+	const account = useAccount();
+	// A new id for each box, so a sent reply's draft isn't reused by the next.
+	const [draftId, setDraftId] = useState(() => crypto.randomUUID());
+	// Mounted per message (ThreadView keys it), so the starting point stays put while it's typed in.
+	const [{ initial, replyAll }] = useState(() => {
+		const draft = replyDraft(m, false, ctx);
+		const all = replyDraft(m, true, ctx);
+		return {
+			// The quote goes out with it (Composer's `inline`) rather than filling the box.
+			initial: { ...draft, text: withSignature("", null, signatureOf(draft.from, ctx)) },
+			replyAll: { to: all.to, cc: all.cc },
+		};
+	});
+	return (
+		<Composer
+			key={draftId}
+			id={0}
+			draftId={draftId}
+			identities={account.identities}
+			initial={initial}
+			restored={false}
+			inline={{ quote: quote(m), onDone: () => setDraftId(crypto.randomUUID()), onSent, replyAll }}
+		/>
+	);
+}
+
+/** The nearest ancestor that scrolls: the thread's pane, whichever layout it's in (routes/_app._mail.$view.tsx). */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+	for (let p = el.parentElement; p; p = p.parentElement) if (/auto|scroll/.test(getComputedStyle(p).overflowY)) return p;
+	return null;
 }
 
 /** Below lg, where the thread covers the list (routes/_app._mail.$view.tsx). Matches Tailwind's `max-lg:`. */
@@ -179,32 +238,19 @@ export function BackToList({ className }: { className?: string }) {
 	);
 }
 
-/*
- * Geometry shared by the rails and elbows: avatars are size-7 (28px) and sit mt-2 (8px) down, so their centres are
- * 14px in and 22px down, level with the card's header. A fork's branches indent pl-7, one avatar's width.
- */
-const RAIL = "absolute left-[13.5px] w-px bg-foreground/15";
-
-/** A branch's messages, joined by a rail through their avatars, then the branches forking off its last message. */
+/** A branch's messages, then the branches forking off its last message, each indented behind a line. */
 function BranchView(props: { branch: Branch<ThreadMessage>; render: (m: ThreadMessage, above: ThreadMessage | undefined) => React.ReactNode }) {
 	const { messages, forks } = props.branch;
 	const last = messages.at(-1);
 	return (
 		<>
 			{messages.map((m, i) => (
-				<div key={m.id} className="relative grid grid-cols-[1.75rem_minmax(0,1fr)] gap-x-2.5 pb-3">
-					{i > 0 ? <span aria-hidden className={cn(RAIL, "top-0 h-2")} /> : null}
-					{m !== last || forks.length > 0 ? <span aria-hidden className={cn(RAIL, "top-9 bottom-0")} /> : null}
-					<Avatar message={m} />
-					{props.render(m, messages[i - 1])}
-				</div>
+				<div key={m.id}>{props.render(m, messages[i - 1])}</div>
 			))}
 			{forks.length > 0 && last ? (
-				<div role="group" aria-label={`Replies to ${last.from.name || last.from.address}`}>
-					{forks.map((fork, i) => (
-						<div key={fork.messages[0]?.id} className="relative pl-7">
-							{i < forks.length - 1 ? <span aria-hidden className={cn(RAIL, "top-0 bottom-0")} /> : null}
-							<span aria-hidden className="absolute top-0 left-[13.5px] h-[22.5px] w-[14.5px] rounded-bl-lg border-b border-l border-foreground/15" />
+				<div role="group" aria-label={`Replies to ${last.from.name || last.from.address}`} className="flex flex-col gap-1">
+					{forks.map((fork) => (
+						<div key={fork.messages[0]?.id} className="ml-[1.875rem] flex flex-col gap-1 border-l border-foreground/15 pl-3">
 							<BranchView branch={fork} render={props.render} />
 						</div>
 					))}
@@ -214,22 +260,15 @@ function BranchView(props: { branch: Branch<ThreadMessage>; render: (m: ThreadMe
 	);
 }
 
-/** Their initial; yours stand out, so your side of the conversation shows at a glance. */
+/** Their initial, with whether their domain vouched for them. */
 function Avatar({ message: m }: { message: MessageDetail }) {
-	const ours = m.direction === "out";
 	const initial = Array.from(m.from.name?.trim() || m.from.address)[0]?.toUpperCase();
 	return (
-		<span className="relative mt-2 size-7">
-			<span
-				aria-hidden
-				className={cn(
-					"flex size-7 items-center justify-center rounded-full text-xs font-medium",
-					ours ? "bg-primary text-primary-foreground" : "bg-muted text-foreground ring-1 ring-foreground/10 ring-inset",
-				)}
-			>
+		<span className="relative size-9">
+			<span aria-hidden className="flex size-9 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground ring-1 ring-foreground/10 ring-inset">
 				{initial}
 			</span>
-			{ours ? null : <SenderBadge message={m} />}
+			<SenderBadge message={m} />
 		</span>
 	);
 }
@@ -314,13 +353,11 @@ function Message(props: {
 	outgoing: boolean;
 	/** The message it answers, when that isn't the one above it. */
 	replyingTo?: MessageDetail;
-	defaultOpen: boolean;
 	onReply: (all: boolean) => void;
 	onForward: () => void;
 }) {
 	const m = props.message;
 	const qc = useQueryClient();
-	const [open, setOpen] = useState(props.defaultOpen);
 	// A layout parent may be an older ancestor. Only fold when the direct parent is here; otherwise the quote
 	// may be all there is of it. Forwards keep what they carry.
 	const fold = m.hasDirectParent && !isForward(m.subject);
@@ -347,15 +384,73 @@ function Message(props: {
 		onSuccess: () => qc.invalidateQueries({ queryKey: ["mail"] }),
 	});
 
+	const canBlock = useCanBlock(m.from.address);
+	const [blocking, setBlocking] = useState(false);
+	const actions = (
+		<div className="-my-1 flex shrink-0 items-center">
+			<Tooltip>
+				<TooltipTrigger
+					render={
+						<Button variant="ghost" size="icon-sm" aria-label="Reply" className="text-muted-foreground" onClick={() => props.onReply(false)}>
+							<ReplyIcon />
+						</Button>
+					}
+				/>
+				<TooltipContent>Reply</TooltipContent>
+			</Tooltip>
+			<DropdownMenu>
+				<DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label="More" className="text-muted-foreground" />}>
+					<EllipsisIcon />
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="end" className="w-44">
+					<DropdownMenuItem onClick={() => props.onReply(true)}>
+						<ReplyAllIcon />
+						Reply all
+					</DropdownMenuItem>
+					<DropdownMenuItem onClick={props.onForward}>
+						<ForwardIcon />
+						Forward
+					</DropdownMenuItem>
+					<DropdownMenuSeparator />
+					<DropdownMenuItem render={<a href={`${messageUrl(props.mailboxId, m.id)}/raw`} />}>
+						<DownloadIcon />
+						Download .eml
+					</DropdownMenuItem>
+					{canBlock && m.direction === "in" ? (
+						<DropdownMenuItem variant="destructive" onClick={() => setBlocking(true)}>
+							<BanIcon />
+							Block sender
+						</DropdownMenuItem>
+					) : null}
+				</DropdownMenuContent>
+			</DropdownMenu>
+			{canBlock && m.direction === "in" ? <BlockSender address={m.from.address} open={blocking} onOpenChange={setBlocking} /> : null}
+		</div>
+	);
+
+	// Theirs read like a thread, full width beside their avatar; yours are bubbles on the right, so your side of the
+	// conversation shows at a glance.
 	return (
-		<Collapsible open={open} onOpenChange={setOpen} render={<Card size="sm" />}>
-			<CardHeader>
-				<MessageHeader message={m} open={open} fold={fold} outgoing={props.outgoing} replyingTo={props.replyingTo} />
-			</CardHeader>
-			<CollapsibleContent render={<CardContent />}>
-				<p className="pb-2 text-xs text-muted-foreground">
-						{recipientsLine(m)}
-				</p>
+		<article
+			className={
+				props.outgoing
+					? // HTML bodies are frames, which can't size to their text, so bubbles take a set share of the width.
+						"ml-auto flex w-[88%] min-w-0 flex-col items-end gap-1.5 py-2.5 lg:w-[72%]"
+					: "grid grid-cols-[2.25rem_minmax(0,1fr)] gap-x-3 rounded-xl py-3"
+			}
+		>
+			{props.outgoing ? null : <Avatar message={m} />}
+			<div className={cn("flex min-w-0 items-start gap-2", props.outgoing && "max-w-full self-stretch")}>
+				<MessageHeader message={m} outgoing={props.outgoing} replyingTo={props.replyingTo} />
+				{actions}
+			</div>
+			<div
+				className={cn(
+					props.outgoing ? "w-full rounded-2xl bg-blue-500/15 px-4 py-3" : "col-span-2 pt-1 md:col-span-1 md:col-start-2",
+					// Plain text reads best at about 70 characters a line; HTML mail lays itself out.
+					!m.hasHtml && !props.outgoing && "max-w-[70ch]",
+				)}
+			>
 				{props.outgoing ? <Undelivered mailboxId={props.mailboxId} message={m} /> : null}
 				<Triage mailboxId={props.mailboxId} message={m} />
 				{m.hasHtml ? (
@@ -364,7 +459,7 @@ function Message(props: {
 					<TextBody text={m.text ?? ""} fold={fold} />
 				)}
 				{files.length ? (
-					<ul className="mt-4 flex flex-wrap gap-2">
+					<ul className={cn("mt-3 flex flex-wrap gap-2", props.outgoing && "justify-end")}>
 						{files.map((a) => {
 							const Icon = a.link ? (a.link.shared ? LinkIcon : Link2OffIcon) : PaperclipIcon;
 							const label = (
@@ -419,57 +514,47 @@ function Message(props: {
 						onOpenChange={(open) => setViewing({ ...viewing, open })}
 					/>
 				) : null}
-				{/* On phones the three answers share one row evenly. */}
-				<div className="mt-4 flex flex-wrap items-center gap-2 max-md:gap-1.5">
-					<Button variant="outline" size="sm" onClick={() => props.onReply(false)} className="max-md:flex-1 max-md:px-2">
-						<ReplyIcon />
-						Reply
-					</Button>
-					<Button variant="outline" size="sm" onClick={() => props.onReply(true)} className="max-md:flex-1 max-md:px-2">
-						<ReplyAllIcon />
-						Reply all
-					</Button>
-					<Button variant="outline" size="sm" onClick={props.onForward} className="max-md:flex-1 max-md:px-2">
-						<ForwardIcon />
-						Forward
-					</Button>
-					<div className="ml-auto flex items-center">
-						{m.direction === "in" ? <BlockSender address={m.from.address} /> : null}
-						<a href={`${messageUrl(props.mailboxId, m.id)}/raw`} className={cn(buttonVariants({ variant: "link", size: "xs" }), "text-muted-foreground")}>
-							Download .eml
-						</a>
-					</div>
-				</div>
-			</CollapsibleContent>
-		</Collapsible>
+			</div>
+		</article>
 	);
 }
 
-/** Opens and closes the message. Closed, it previews what's new in it; open, it shows the sender's address. */
-function MessageHeader(props: { message: MessageDetail; open: boolean; fold: boolean; outgoing: boolean; replyingTo?: MessageDetail }) {
+/** Who sent it, to whom, and when, like a letter's heading. */
+function MessageHeader(props: { message: MessageDetail; outgoing: boolean; replyingTo?: MessageDetail }) {
 	const m = props.message;
+	const date = new Date(m.date);
 	return (
-		<CollapsibleTrigger className="-my-1 flex w-full min-w-0 items-center gap-2 rounded-md py-1 text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
-			<span className="shrink-0 font-medium">{m.from.name || m.from.address}</span>
-			{props.replyingTo ? (
-				<span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-					<ReplyIcon className="size-3" />
-					{props.replyingTo.from.name || props.replyingTo.from.address}
-				</span>
-			) : null}
-			{!props.open ? (
-				<span className="truncate text-muted-foreground">{makeSnippet(props.fold ? splitQuote(m.text ?? "").body : m.text)}</span>
-			) : m.from.name ? (
-				<span className="truncate text-xs text-muted-foreground">{m.from.address}</span>
-			) : null}
-			{props.outgoing ? <DeliveryBadge message={m} /> : null}
-			{/* Phones have room for the short form only. */}
-			<time dateTime={new Date(m.date).toISOString()} className="ml-auto shrink-0 text-xs text-muted-foreground">
-				<span className="md:hidden">{formatDate(m.date)}</span>
-				<span className="max-md:hidden">{new Date(m.date).toLocaleString()}</span>
-			</time>
-		</CollapsibleTrigger>
+		<div className={cn("flex min-w-0 flex-1 flex-col gap-0.5", props.outgoing && "items-end")}>
+			<span className={cn("flex w-full min-w-0 items-baseline gap-2", props.outgoing && "justify-end")}>
+				<span className="truncate text-[15px] font-semibold">{m.from.name || m.from.address}</span>
+				{props.replyingTo ? (
+					<span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+						<ReplyIcon className="size-3" />
+						{props.replyingTo.from.name || props.replyingTo.from.address}
+					</span>
+				) : null}
+				{props.outgoing ? <DeliveryBadge message={m} /> : null}
+				<time dateTime={date.toISOString()} className={cn("shrink-0 text-xs text-muted-foreground", !props.outgoing && "ml-auto")}>
+					{letterDate(date)}
+				</time>
+			</span>
+			<span className="max-w-full truncate text-sm text-muted-foreground" title={recipientsLine(m)}>
+				{toLine(m)}
+			</span>
+		</div>
 	);
+}
+
+/** "Sat, Oct 18, 9:12 AM", with the year once it isn't this one: a letter's date, without the seconds. */
+function letterDate(d: Date): string {
+	const year = d.getFullYear() === new Date().getFullYear() ? undefined : "numeric";
+	return d.toLocaleString(undefined, { weekday: "short", year, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+/** "to Maya Chen, Bo": who it went to, by name. The full addresses are in recipientsLine(), on hover. */
+function toLine(m: MessageDetail): string {
+	const names = [...m.to, ...m.cc].map((a) => a.name || a.address);
+	return names.length ? `to ${names.join(", ")}` : "";
 }
 
 /** Gmail's "•••": shows or hides the quoted history folded off the end of a reply. */
@@ -494,7 +579,7 @@ function TextBody({ text, fold }: { text: string; fold: boolean }) {
 	const { body, quote } = fold ? splitQuote(text) : { body: text, quote: "" };
 	return (
 		<>
-			<pre className="font-sans break-words whitespace-pre-wrap">{body}</pre>
+			<pre className="font-sans text-[15px] leading-relaxed break-words whitespace-pre-wrap">{body}</pre>
 			{/* Below the quote once shown, like HTML bodies, whose toggle sits under the frame. */}
 			{quote && showQuote ? <pre className="mt-4 font-sans break-words whitespace-pre-wrap text-muted-foreground">{quote}</pre> : null}
 			{quote ? <QuoteToggle open={showQuote} onToggle={() => setShowQuote(!showQuote)} /> : null}
@@ -803,25 +888,31 @@ const setsColors = (doc: Document) =>
 	doc.querySelector("[bgcolor], [background], [text], font[color], [style*='color' i], [style*='background' i]") !== null ||
 	Array.from(doc.querySelectorAll("style")).some((s) => /color|background/i.test(s.textContent));
 
-const DONE = "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300";
-const WAITING = "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300";
-const DELIVERY_TONES: Partial<Record<DeliveryStatus, string>> = { delivered: DONE, sent: DONE, queued: WAITING, sending: WAITING, deferred: WAITING };
+/** How a sent message is getting on, as an icon: what each status means is in its tooltip. Nothing once it's gone out. */
+const DELIVERY: Partial<Record<DeliveryStatus, { Icon: LucideIcon; tone: string; label: string }>> = {
+	queued: { Icon: ClockIcon, tone: "text-amber-600 dark:text-amber-400", label: "Waiting to send" },
+	sending: { Icon: ClockIcon, tone: "text-amber-600 dark:text-amber-400", label: "Sending" },
+	deferred: { Icon: ClockIcon, tone: "text-amber-600 dark:text-amber-400", label: "Delayed: their server asked to try again later" },
+	bounced: { Icon: CircleAlertIcon, tone: "text-destructive", label: "Bounced" },
+	failed: { Icon: CircleAlertIcon, tone: "text-destructive", label: "Couldn't send" },
+	rejected: { Icon: CircleAlertIcon, tone: "text-destructive", label: "Rejected by their server" },
+	complained: { Icon: CircleAlertIcon, tone: "text-destructive", label: "They marked it as spam" },
+	cancelled: { Icon: BanIcon, tone: "text-muted-foreground", label: "Cancelled" },
+};
 
 function DeliveryBadge({ message }: { message: MessageDetail }) {
-	if (!message.delivery) return null;
-	const { status, detail } = message.delivery;
-	const tone = DELIVERY_TONES[status];
-	// Anything without a tone didn't make it.
-	const badge = (
-		<Badge variant={tone ? "secondary" : "destructive"} className={tone}>
-			{status}
-		</Badge>
-	);
-	if (!detail) return badge;
+	const shown = message.delivery && DELIVERY[message.delivery.status];
+	if (!message.delivery || !shown) return null;
+	const { Icon, tone, label } = shown;
 	return (
 		<Tooltip>
-			<TooltipTrigger render={badge} />
-			<TooltipContent>{detail}</TooltipContent>
+			<TooltipTrigger render={<span role="img" aria-label={label} className={cn("inline-flex shrink-0 self-center", tone)} />}>
+				<Icon className="size-3.5" />
+			</TooltipTrigger>
+			<TooltipContent>
+				{label}
+				{message.delivery.detail ? `. ${message.delivery.detail}` : ""}
+			</TooltipContent>
 		</Tooltip>
 	);
 }

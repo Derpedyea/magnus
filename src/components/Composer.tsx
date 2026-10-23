@@ -12,7 +12,7 @@ import { noteBody } from "#shared/markdown";
 import { useForm, useSelector } from "@tanstack/react-form";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { shallow } from "@tanstack/react-store";
-import { CheckIcon, CloudOffIcon, ForwardIcon, LinkIcon, PaperclipIcon, Trash2Icon, XIcon } from "lucide-react";
+import { CheckIcon, CloudOffIcon, ForwardIcon, LinkIcon, PaperclipIcon, ReplyAllIcon, SendIcon, Trash2Icon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -47,6 +47,12 @@ export function Composer(props: {
 	initial: Draft;
 	/** Came back through Undo or Reopen (compose.ts). */
 	restored: boolean;
+	/**
+	 * Docked under a thread as its reply box (ThreadView), rather than a window. The quote goes out below the text
+	 * without filling the box; `onDone` empties the box after a send or discard, and `onSent` follows a send. With
+	 * `replyAll`, a toggle swaps To and Cc for everyone on the message.
+	 */
+	inline?: { quote: string; onDone: () => void; onSent?: () => void; replyAll?: { to: Address[]; cc: Address[] } };
 }) {
 	const qc = useQueryClient();
 	const sync = useDraftSync();
@@ -56,8 +62,15 @@ export function Composer(props: {
 		if (draft?.state === "active" && !draft.removing) void sync.flush(props.draftId).catch((error: unknown) => toast.add({ title: `Draft hasn't synced. ${errorMessage(error)}`, type: "error", timeout: 0 }));
 		closeDraft(props.id);
 	};
+	// While the reply box sends, its draft holds the quote too: the box's own text mustn't save over it.
+	const quoting = useRef(false);
 	const send = useMutation({
-		mutationFn: async (draft: Draft) => {
+		mutationFn: async (written: Draft) => {
+			// The reply box's quote joins the text here, so the draft the server checks against is what goes out. A retry
+			// sends what was saved, quote included.
+			const pending = sync.get(props.draftId);
+			const draft = !props.inline ? written : pending?.state === "sending" ? pending.content : { ...written, text: written.text + props.inline.quote };
+			quoting.current = Boolean(props.inline);
 			const session = currentSession();
 			if (sync.get(props.draftId)?.state !== "sending") sync.update(props.draftId, draft);
 			const saved = await sync.flush(props.draftId);
@@ -90,9 +103,17 @@ export function Composer(props: {
 			// Whoever this went to is suggested next time.
 			void qc.invalidateQueries({ queryKey: ["contacts"] });
 			closeDraft(props.id);
-			toastUndoSend(queued, draft, qc);
+			props.inline?.onDone();
+			props.inline?.onSent?.();
+			// Undo reopens it in the window, quote and all, as it went out.
+			toastUndoSend(queued, props.inline ? { ...draft, text: draft.text + props.inline.quote } : draft, qc);
 		},
-		onError: async (_error, _draft, session) => {
+		onError: async (_error, written, session) => {
+			if (quoting.current) {
+				quoting.current = false;
+				// Back to what's in the box, unless the send got as far as locking the draft.
+				sync.update(props.draftId, written);
+			}
 			if (session !== currentSession()) return;
 			// Release the local lock only on the server's word. An uncertain send retains its stable id for retry.
 			try {
@@ -108,10 +129,12 @@ export function Composer(props: {
 		const session = currentSession();
 		if (props.saved) sync.adopt(props.saved);
 		const persist = () => {
-			if (session !== currentSession()) return;
+			if (session !== currentSession() || quoting.current) return;
 			const draft = form.state.values;
 			const initial = { ...props.initial, text: normalizeMarkdown(props.initial.text) };
-			if (sync.get(props.draftId) || props.restored || hasDraftContent(draft, initial)) sync.update(props.draftId, draft);
+			// A reply box is there under every thread, so it's only a draft once something's written in it.
+			const started = props.inline ? draft.text.trim() !== initial.text.trim() || draft.attachments.length > 0 : hasDraftContent(draft, initial);
+			if (sync.get(props.draftId) || props.restored || started) sync.update(props.draftId, draft);
 		};
 		persist();
 		const unsubscribe = form.store.subscribe(persist);
@@ -123,6 +146,7 @@ export function Composer(props: {
 		onSuccess: (_result, _variables, session) => {
 			if (session !== currentSession()) return;
 			closeDraft(props.id);
+			props.inline?.onDone();
 			void qc.invalidateQueries({ queryKey: ["drafts"] });
 		},
 	});
@@ -145,6 +169,7 @@ export function Composer(props: {
 			if (failures.length) throw new Error(failures.map((failure) => errorMessage(failure.reason)).join("; "));
 		},
 	});
+	const [showRecipients, setShowRecipients] = useState(false);
 	const [showCc, setShowCc] = useState(Boolean(props.initial.cc.length + props.initial.bcc.length || props.initial.recipientInputs?.cc || props.initial.recipientInputs?.bcc));
 	const filePicker = useRef<HTMLInputElement>(null);
 	const sheet = useRef<HTMLFormElement>(null);
@@ -232,6 +257,137 @@ export function Composer(props: {
 			)}
 		</form.Subscribe>
 	);
+
+	if (props.inline) {
+		const replyAll = props.inline.replyAll;
+		const everyone = Boolean(replyAll) && recipients.length === (replyAll?.to.length ?? 0) + (replyAll?.cc.length ?? 0);
+		return (
+			// Stays at the bottom of the thread as it scrolls, like a chat's. ⌘/Ctrl+Enter sends; Enter is a new line.
+			<form
+				ref={sheet}
+				onSubmit={(e) => {
+					e.preventDefault();
+					void form.handleSubmit();
+				}}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+						e.preventDefault();
+						void form.handleSubmit();
+					}
+				}}
+				aria-label="Reply"
+				className="sticky bottom-0 z-10 -mx-4 bg-background px-4 pt-3 pb-3 lg:mx-0 lg:px-0 lg:pb-5"
+			>
+				<div className="overflow-hidden rounded-2xl border bg-background shadow-sm transition-colors focus-within:border-ring">
+					<fieldset disabled={locked}>
+						{showRecipients ? (
+							<>
+								{recipientField(
+									"to",
+									"To",
+									showCc ? null : (
+										<Button variant="ghost" size="xs" onClick={() => setShowCc(true)} className="mt-1.5 text-muted-foreground">
+											Cc/Bcc
+										</Button>
+									),
+								)}
+								{showCc ? (
+									<>
+										{recipientField("cc", "Cc")}
+										{recipientField("bcc", "Bcc")}
+									</>
+								) : null}
+							</>
+						) : (
+							<button
+								type="button"
+								onClick={() => setShowRecipients(true)}
+								title="Change who this goes to"
+								className="block max-w-full truncate px-4 pt-3 text-left text-xs text-muted-foreground hover:text-foreground"
+							>
+								To {recipients.map((a) => a.name || a.address).join(", ") || "…"}
+							</button>
+						)}
+						<form.Field name="text">
+							{(f) => (
+								// The editor's own placeholder needs a line to sit on, which an empty box doesn't have yet.
+								<div className="relative">
+									{f.state.value.trim() === "" ? <span aria-hidden className="pointer-events-none absolute top-2 left-4 text-[15px] text-muted-foreground">Write a reply…</span> : null}
+									<MarkdownEditor
+										value={f.state.value}
+										onChange={f.handleChange}
+										aria-label="Reply"
+										editable={!locked}
+										className="max-h-[40vh] min-h-12 overflow-y-auto px-4 py-2 text-[15px]"
+									/>
+								</div>
+							)}
+						</form.Field>
+						<ul className="flex flex-wrap gap-1.5 px-3 pb-2 empty:hidden">
+							<form.Field name="attachments">
+								{(f) =>
+									f.state.value.map((a) => (
+										<FileChip key={a.r2Key} file={a} linked={linked.has(a.r2Key)} onRemove={() => f.handleChange((prev) => prev.filter((x) => x !== a))} />
+									))
+								}
+							</form.Field>
+						</ul>
+					</fieldset>
+					{error ? <p className="px-4 pb-2 text-sm text-destructive">{error.message}</p> : null}
+					{entry?.status === "conflict" || entry?.status === "error" ? <p role="alert" className="px-4 pb-2 text-xs text-destructive">{entry.error}</p> : null}
+					<div className="flex items-center gap-0.5 px-2 pb-2">
+						<Tooltip>
+							<TooltipTrigger
+								render={
+									<Button variant="ghost" size="icon-sm" aria-label="Attach files" disabled={upload.isPending || locked} onClick={() => filePicker.current?.click()} className="text-muted-foreground">
+										{upload.isPending ? <Spinner /> : <PaperclipIcon />}
+									</Button>
+								}
+							/>
+							<TooltipContent>Attach files</TooltipContent>
+						</Tooltip>
+						<input ref={filePicker} type="file" multiple hidden onChange={(e) => { if (e.target.files?.length) upload.mutate([...e.target.files]); e.target.value = ""; }} />
+						{replyAll && replyAll.to.length + replyAll.cc.length > props.initial.to.length + props.initial.cc.length ? (
+							<Button
+								variant="ghost"
+								size="sm"
+								aria-pressed={everyone}
+								disabled={locked}
+								className={cn("text-muted-foreground", everyone && "text-foreground")}
+								onClick={() => {
+									const next = everyone ? props.initial : replyAll;
+									form.setFieldValue("to", next.to);
+									form.setFieldValue("cc", next.cc);
+								}}
+							>
+								<ReplyAllIcon />
+								Reply all
+							</Button>
+						) : null}
+						<span role="status" aria-live="polite" className="ml-2 flex items-center gap-1 text-xs text-muted-foreground">
+							{entry?.status === "saving" || entry?.status === "pending" ? <><Spinner className="size-3" />Saving…</> : entry?.status === "saved" ? "Draft saved" : null}
+						</span>
+						<div className="ml-auto flex items-center gap-1">
+							{entry ? (
+								<Tooltip>
+									<TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="Discard draft" disabled={upload.isPending || locked} onClick={() => discard.mutate()} className="text-muted-foreground"><Trash2Icon /></Button>} />
+									<TooltipContent>Discard draft</TooltipContent>
+								</Tooltip>
+							) : null}
+							<form.Subscribe selector={(s) => s.values.text.trim() !== props.initial.text.trim() || s.values.attachments.length > 0}>
+								{(written) => (
+									<Button type="submit" size="sm" disabled={!written || send.isPending || upload.isPending || discard.isPending || entry?.removing || entry?.status === "conflict"} className="rounded-full px-3.5">
+										{send.isPending ? <Spinner data-icon="inline-start" /> : <SendIcon data-icon="inline-start" />}
+										{entry?.state === "sending" && !send.isPending ? "Retry" : "Send"}
+									</Button>
+								)}
+							</form.Subscribe>
+						</div>
+					</div>
+				</div>
+			</form>
+		);
+	}
 
 	return (
 		// A sheet over the whole screen on phones, like every phone mail app's; a window docked bottom right elsewhere.

@@ -11,71 +11,64 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
 import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { toast } from "@/components/ui/toast-manager";
 import { adminApi, errorMessage } from "../api";
 import { useAccount } from "../hooks";
 
-/**
- * Blocks a message's sender, or everyone at their domain. Only admins see it: a block refuses their mail for
- * every mailbox here.
- */
-export function BlockSender({ address }: { address: string }) {
+/** Whether the signed-in user may block this sender: only admins, since a block refuses their mail for every mailbox here. */
+export function useCanBlock(address: string) {
 	const { user } = useAccount();
+	// Mail without a From address (some bounces) has no one to block.
+	return user.isAdmin && isValidAddress(address);
+}
+
+/** Asks to block a message's sender, or everyone at their domain. Opened from the message's menu (ThreadView). */
+export function BlockSender({ address, open, onOpenChange }: { address: string; open: boolean; onOpenChange: (open: boolean) => void }) {
 	const qc = useQueryClient();
-	const [open, setOpen] = useState(false);
 	const id = useId();
 	const domain = address.slice(address.lastIndexOf("@") + 1);
 	const [wholeDomain, setWholeDomain] = useState(false);
 	const block = useMutation({
 		mutationFn: () => adminApi.blockSender(wholeDomain ? `*@${domain}` : address),
 		onSuccess: () => {
-			setOpen(false);
+			onOpenChange(false);
 			toast.add({ title: `Blocked ${wholeDomain ? `everyone at ${domain}` : address}` });
 			return qc.invalidateQueries({ queryKey: ["admin"] });
 		},
 	});
-	// Mail without a From address (some bounces) has no one to block.
-	if (!user.isAdmin || !isValidAddress(address)) return null;
-
 	return (
-		<>
-			<Button variant="link" size="xs" className="text-muted-foreground" onClick={() => setOpen(true)}>
-				Block sender
-			</Button>
-			<AlertDialog open={open} onOpenChange={setOpen}>
-				<AlertDialogContent>
-					<AlertDialogHeader>
-						<AlertDialogTitle>Block {address}?</AlertDialogTitle>
-						<AlertDialogDescription>
-							New mail is refused for everyone here, and what's already arrived stays. Unblock under Admin › Blocked senders.
-						</AlertDialogDescription>
-					</AlertDialogHeader>
-					<RadioGroup value={wholeDomain ? "domain" : "address"} onValueChange={(value) => setWholeDomain(value === "domain")} aria-label="Block">
-						<Field orientation="horizontal">
-							<RadioGroupItem id={`${id}-address`} value="address" />
-							<FieldLabel htmlFor={`${id}-address`} className="font-normal">
-								Only {address}
-							</FieldLabel>
-						</Field>
-						<Field orientation="horizontal">
-							<RadioGroupItem id={`${id}-domain`} value="domain" />
-							<FieldLabel htmlFor={`${id}-domain`} className="font-normal">
-								Everyone at {domain}
-							</FieldLabel>
-						</Field>
-					</RadioGroup>
-					{block.error ? <FieldError>{errorMessage(block.error)}</FieldError> : null}
-					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
-						<AlertDialogAction variant="destructive" onClick={() => block.mutate()} disabled={block.isPending}>
-							Block
-						</AlertDialogAction>
-					</AlertDialogFooter>
-				</AlertDialogContent>
-			</AlertDialog>
-		</>
+		<AlertDialog open={open} onOpenChange={onOpenChange}>
+			<AlertDialogContent>
+				<AlertDialogHeader>
+					<AlertDialogTitle>Block {address}?</AlertDialogTitle>
+					<AlertDialogDescription>
+						New mail is refused for everyone here, and what's already arrived stays. Unblock under Admin › Blocked senders.
+					</AlertDialogDescription>
+				</AlertDialogHeader>
+				<RadioGroup value={wholeDomain ? "domain" : "address"} onValueChange={(value) => setWholeDomain(value === "domain")} aria-label="Block">
+					<Field orientation="horizontal">
+						<RadioGroupItem id={`${id}-address`} value="address" />
+						<FieldLabel htmlFor={`${id}-address`} className="font-normal">
+							Only {address}
+						</FieldLabel>
+					</Field>
+					<Field orientation="horizontal">
+						<RadioGroupItem id={`${id}-domain`} value="domain" />
+						<FieldLabel htmlFor={`${id}-domain`} className="font-normal">
+							Everyone at {domain}
+						</FieldLabel>
+					</Field>
+				</RadioGroup>
+				{block.error ? <FieldError>{errorMessage(block.error)}</FieldError> : null}
+				<AlertDialogFooter>
+					<AlertDialogCancel>Cancel</AlertDialogCancel>
+					<AlertDialogAction variant="destructive" onClick={() => block.mutate()} disabled={block.isPending}>
+						Block
+					</AlertDialogAction>
+				</AlertDialogFooter>
+			</AlertDialogContent>
+		</AlertDialog>
 	);
 }
