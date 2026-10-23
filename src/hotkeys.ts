@@ -18,6 +18,9 @@ export const appHotkeys = defineAppHotkeys({
 
 	"thread.next": { hotkey: "J", meta: { name: "Next conversation", group: "Conversation" } },
 	"thread.previous": { hotkey: "K", meta: { name: "Previous conversation", group: "Conversation" } },
+	// Selects the open one in the list, or unselects it. While any are selected, Archive, Trash, Spam, Label, and Mark
+	// unread act on them instead (SelectionBar).
+	"thread.select": { hotkey: "X", meta: { name: "Select", group: "Conversation" } },
 	"thread.close": { hotkey: "U", meta: { name: "Back to list", group: "Conversation" } },
 	"thread.reply": { hotkey: "R", meta: { name: "Reply", group: "Conversation" } },
 	"thread.replyAll": { hotkey: "A", meta: { name: "Reply all", group: "Conversation" } },

@@ -75,17 +75,13 @@ export function labelState(threads: readonly Labeled[], key: string): "checked" 
 	return have === 0 ? "unchecked" : have === threads.length ? "checked" : "mixed";
 }
 
-/** The most conversations one api.modify can name (ModifyThreadsSchema). */
+/** The most conversations one api.modify or api.markRead can name (ModifyThreadsSchema, MarkReadSchema). */
 const MODIFY_MAX = 500;
 
-/**
- * The conversations a label goes on (`on`) or comes off that don't have it yet, or do: one api.modify's worth each,
- * since a call goes to one mailbox and names at most MODIFY_MAX.
- */
-export function labelBatches(threads: readonly Labeled[], key: string, on: boolean): { mailboxId: string; threadIds: string[] }[] {
+/** Conversations as api.modify and api.markRead take them: a call goes to one mailbox and names at most MODIFY_MAX. */
+export function batches(threads: readonly { mailboxId: string; id: string }[]): { mailboxId: string; threadIds: string[] }[] {
 	const byMailbox = new Map<string, string[]>();
 	for (const t of threads) {
-		if (t.labels.includes(key) === on) continue;
 		const ids = byMailbox.get(t.mailboxId) ?? [];
 		ids.push(t.id);
 		byMailbox.set(t.mailboxId, ids);
@@ -93,6 +89,11 @@ export function labelBatches(threads: readonly Labeled[], key: string, on: boole
 	return [...byMailbox].flatMap(([mailboxId, ids]) =>
 		Array.from({ length: Math.ceil(ids.length / MODIFY_MAX) }, (_, i) => ({ mailboxId, threadIds: ids.slice(i * MODIFY_MAX, (i + 1) * MODIFY_MAX) })),
 	);
+}
+
+/** The conversations a label goes on (`on`) or comes off that don't have it yet, or do, in batches(). */
+export function labelBatches(threads: readonly Labeled[], key: string, on: boolean): { mailboxId: string; threadIds: string[] }[] {
+	return batches(threads.filter((t) => t.labels.includes(key) !== on));
 }
 
 /** Where a label dropped on another goes: just before or after it, or last inside it. */

@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { type Me, parseScope } from "#shared";
 import type { Identity } from "./api";
 import { subscribe } from "./live";
@@ -31,6 +31,20 @@ function toAccount(me: Me) {
 // Assigned in sidebar order, so a colour stays put unless addresses are added or removed.
 // No green: the header's live indicator owns it.
 const DOT_COLORS = ["bg-sky-500", "bg-amber-500", "bg-violet-500", "bg-rose-500", "bg-teal-600", "bg-orange-500", "bg-fuchsia-500", "bg-slate-500"];
+
+const STACKED = "(width < 64rem)";
+
+/** Below lg, where the thread covers the list (routes/_app._mail.$view.tsx). Matches Tailwind's `max-lg:`. */
+export const stacked = () => matchMedia(STACKED).matches;
+
+/** stacked(), rendering again when the window crosses lg. */
+export function useStacked(): boolean {
+	return useSyncExternalStore((onChange) => {
+		const query = matchMedia(STACKED);
+		query.addEventListener("change", onChange);
+		return () => query.removeEventListener("change", onChange);
+	}, stacked);
+}
 
 const mail = getRouteApi("/_app/_mail");
 
