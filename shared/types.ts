@@ -9,6 +9,33 @@ export type SystemLabel = (typeof SYSTEM_LABELS)[number];
 /** Pseudo-view: every thread not in trash/spam. */
 export const ALL_MAIL = "all";
 
+/** Colors a label can have. Names rather than values, so the app picks shades that suit light and dark. */
+export const LABEL_COLORS = ["gray", "red", "orange", "amber", "green", "teal", "blue", "violet", "pink"] as const;
+export type LabelColor = (typeof LABEL_COLORS)[number];
+/** A label inside a label inside a label, and no deeper. */
+export const MAX_LABEL_DEPTH = 3;
+
+/**
+ * A label of the person's own (system labels have none). Mail carries its `key`, which never changes, so renaming or
+ * moving a label rewrites no mail; a +tag files mail under the label whose key it names (labelFromTag()).
+ */
+export interface Label {
+	key: string;
+	name: string;
+	/** The label it sits inside, by key. */
+	parent: string | null;
+	color: LabelColor | null;
+	/** Order among the labels sharing its parent. */
+	position: number;
+	/** Left out of the sidebar. */
+	hidden: boolean;
+}
+
+/** What one mailbox needs to take on a label another has. */
+export type LabelDef = Pick<Label, "key" | "name" | "parent" | "color">;
+/** A change to a label; what it leaves out stays as it is. */
+export type LabelChange = Partial<Omit<Label, "key">>;
+
 // ─── Queue: magnus-inbound (produced by email(), consumed by queue()) ─────────
 export interface InboundJob {
 	v: 1;
@@ -398,4 +425,5 @@ export const LIVE_RECHECK = "recheck";
 export type LiveEvent =
 	| { type: "threads.changed"; threadIds: string[] }
 	| { type: "delivery.changed"; messageId: string; status: DeliveryStatus }
-	| { type: "failed.changed" };
+	| { type: "failed.changed" }
+	| { type: "labels.changed" };

@@ -3,6 +3,9 @@ import {
 	canMatch,
 	formatBytes,
 	forwardedPart,
+	type Label,
+	labelChain,
+	labelKey,
 	type ListCursor,
 	type ListPage,
 	type LocalRecipient,
@@ -11,7 +14,9 @@ import {
 	MAX_UPLOAD_BYTES,
 	type MessageBody,
 	mergeContacts,
+	MAX_LABEL_DEPTH,
 	mergeCounts,
+	mergeLabels,
 	mergePage,
 	mergeThrough,
 	normalizeAddress,
@@ -26,7 +31,19 @@ import {
 	withForward,
 } from "#shared";
 import { noteBody } from "#shared/markdown";
-import { ComposeSchema, JudgeSchema, MarkReadSchema, MAX_ATTACHMENTS, HotkeysSchema, MailSettingsSchema, ModifyThreadsSchema, ShareLinkSchema, SignatureSchema } from "#shared/schemas";
+import {
+	ComposeSchema,
+	CreateLabelSchema,
+	JudgeSchema,
+	MarkReadSchema,
+	MAX_ATTACHMENTS,
+	HotkeysSchema,
+	MailSettingsSchema,
+	ModifyThreadsSchema,
+	ShareLinkSchema,
+	SignatureSchema,
+	UpdateLabelSchema,
+} from "#shared/schemas";
 import { isAPIError } from "better-auth/api";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
@@ -117,6 +134,24 @@ async function planRequest(c: Context<AppEnv>, scope = ""): Promise<MailboxQuery
 	);
 }
 
+/** What a mailbox needs to take on these labels (Mailbox.addLabelDefs()). */
+const defs = (labels: Label[]) => labels.map(({ key, name, parent, color }) => ({ key, name, parent, color }));
+
+/**
+ * Each of the user's mailboxes with its labels, for changing a label in every one that has it. Null while one is being
+ * restored, which would undo the change.
+ */
+async function labelsByMailbox(c: Context<AppEnv>, scope?: string) {
+	const queries = (await planRequest(c, scope)).filter(canMatch);
+	if ((await mailboxesRestoring(c.env.DIRECTORY, queries.map((q) => q.mailboxId), Date.now())).length > 0) return null;
+	return Promise.all(
+		queries.map(async (q) => {
+			const stub = c.env.MAILBOX.getByName(q.mailboxId);
+			return { stub, labels: await stub.labels() };
+		}),
+	);
+}
+
 /** A page of threads from every mailbox the request can match, each tagged with where it lives. With `through`, every thread down to it. */
 async function readPage(
 	c: Context<AppEnv>,
@@ -173,6 +208,63 @@ const views = new Hono<AppEnv>()
 			queries.map(async (q) => (await c.env.MAILBOX.getByName(q.mailboxId).listFailed({ addresses: q.addresses })).map((m) => ({ ...m, mailboxId: q.mailboxId }))),
 		);
 		return c.json({ failed: lists.flat().sort((a, b) => b.receivedAt - a.receivedAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)) });
+	})
+
+	/** The labels of every mailbox the user belongs to, as one list (mergeLabels()). */
+	.get("/labels", async (c) => {
+		const queries = await planRequest(c);
+		const lists = await Promise.all(queries.map((q) => c.env.MAILBOX.getByName(q.mailboxId).labels()));
+		return c.json({ labels: mergeLabels(lists) });
+	})
+
+	/**
+	 * A new label, in the mailboxes of the addresses in view, with the labels it goes inside. Another mailbox takes it on
+	 * when mail there gets it (ModifyThreadsSchema's `define`).
+	 */
+	.post("/labels", zValidator("query", ScopeQuery), zValidator("json", CreateLabelSchema), async (c) => {
+		const { name, parent, color } = c.req.valid("json");
+		const [all, targets] = await Promise.all([labelsByMailbox(c), labelsByMailbox(c, c.req.valid("query").in)]);
+		if (!all || !targets) return c.json({ error: RESTORING }, 503);
+		if (targets.length === 0) return c.json({ error: "None of these addresses has a mailbox" }, 400);
+		const labels = mergeLabels(all.map((m) => m.labels));
+		const chain = parent === null ? [] : labelChain(labels, parent);
+		if (parent !== null && chain.length === 0) return c.json({ error: "There's no such label to put it in" }, 404);
+		if (chain.length >= MAX_LABEL_DEPTH) return c.json({ error: `Labels go at most ${MAX_LABEL_DEPTH} deep` }, 409);
+		if (labels.some((l) => l.parent === parent && l.name.toLowerCase() === name.toLowerCase())) {
+			return c.json({ error: `There's already a label called “${name}” there` }, 409);
+		}
+		const key = labelKey([...chain.map((l) => l.name), name], new Set(labels.map((l) => l.key)));
+		const label = { key, name, parent, color };
+		await Promise.all(targets.map((m) => m.stub.addLabelDefs([...defs(chain), label])));
+		return c.json(label, 201);
+	})
+
+	/** Changes a label in every mailbox of the user's that has it, putting the label it moves into there too. */
+	.patch("/labels/:key", zValidator("json", UpdateLabelSchema), async (c) => {
+		const key = c.req.param("key");
+		const change = c.req.valid("json");
+		const mailboxes = await labelsByMailbox(c);
+		if (!mailboxes) return c.json({ error: RESTORING }, 503);
+		const holding = mailboxes.filter((m) => m.labels.some((l) => l.key === key));
+		if (holding.length === 0) return c.json({ error: "Not found" }, 404);
+		const into = change.parent ? labelChain(mergeLabels(mailboxes.map((m) => m.labels)), change.parent) : [];
+		if (change.parent && into.length === 0) return c.json({ error: "There's no such label to put it in" }, 404);
+		// One at a time, so a mailbox that refuses (two labels can't share a name there) stops the rest from changing.
+		for (const m of holding) {
+			if (change.parent && !m.labels.some((l) => l.key === change.parent)) await m.stub.addLabelDefs(defs(into));
+			const refused = await m.stub.updateLabel(key, change);
+			if (refused) return c.json(refused, 409);
+		}
+		return c.body(null, 204);
+	})
+
+	/** Takes a label off all mail in every mailbox of the user's that has it, and deletes it. */
+	.delete("/labels/:key", async (c) => {
+		const key = c.req.param("key");
+		const mailboxes = await labelsByMailbox(c);
+		if (!mailboxes) return c.json({ error: RESTORING }, 503);
+		const deleted = await Promise.all(mailboxes.map((m) => m.stub.deleteLabel(key)));
+		return deleted.includes(true) ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
 	})
 
 	/** Everyone the user's mailboxes have written to or heard from, best first, for the composer to suggest. */

@@ -1,4 +1,4 @@
-import { type Address, type CustomHotkeys, formatScope, type MailSettings, type StepId } from "#shared";
+import { type Address, type CustomHotkeys, formatScope, type LabelChange, type LabelDef, type MailSettings, type StepId } from "#shared";
 import { adminClient, emailOTPClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/client";
 import { hc, type InferRequestType, parseResponse } from "hono/client";
@@ -93,8 +93,16 @@ export const api = {
 	thread: (mailboxId: string, threadId: string) => parseResponse(mailbox.threads[":threadId"].$get({ param: { mailboxId, threadId } })),
 	deleteThread: (mailboxId: string, threadId: string) => parseResponse(mailbox.threads[":threadId"].$delete({ param: { mailboxId, threadId } })),
 	emptyTrash: (scope: string[]) => parseResponse(client.trash.$delete({ query: { in: formatScope(scope) } })),
-	modify: (mailboxId: string, threadIds: string[], add: string[], remove: string[]) =>
-		parseResponse(mailbox.threads.modify.$post({ param: { mailboxId }, json: { threadIds, add, remove } })),
+	/** `define`: the labels being added as the user has them, outermost first, for a mailbox that doesn't have them yet. */
+	modify: (mailboxId: string, threadIds: string[], add: string[], remove: string[], define: LabelDef[] = []) =>
+		parseResponse(mailbox.threads.modify.$post({ param: { mailboxId }, json: { threadIds, add, remove, define } })),
+	/** The labels of every mailbox the user belongs to. */
+	labels: () => parseResponse(client.labels.$get()),
+	/** A new label in the mailboxes of the addresses in view. */
+	createLabel: (scope: string[], label: Json<typeof client.labels.$post>) => parseResponse(client.labels.$post({ query: { in: formatScope(scope) }, json: label })),
+	updateLabel: (key: string, change: LabelChange) => parseResponse(client.labels[":key"].$patch({ param: { key }, json: change })),
+	/** Takes it off all mail and deletes it; the labels inside it move up. */
+	deleteLabel: (key: string) => parseResponse(client.labels[":key"].$delete({ param: { key } })),
 	/** Not spam (trusted) or Spam for one message and its sender, not the whole thread. */
 	judge: (mailboxId: string, messageId: string, verdict: "trusted" | "spam") =>
 		parseResponse(mailbox.messages[":messageId"].judge.$post({ param: { mailboxId, messageId }, json: { verdict } })),

@@ -1,7 +1,7 @@
 import { ALL_MAIL, type LocalRecipient, SYSTEM_LABELS } from "./types";
 
-/** Names a tag can't take as its label: system labels and the app's other views. */
-const RESERVED_LABELS = new Set<string>([...SYSTEM_LABELS, ALL_MAIL, "drafts", "failed", "search"]);
+/** Keys no label of the person's own can have: system labels and the app's other views. */
+export const RESERVED_LABELS: ReadonlySet<string> = new Set<string>([...SYSTEM_LABELS, ALL_MAIL, "drafts", "failed", "search"]);
 
 export interface Address {
 	address: string;

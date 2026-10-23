@@ -13,7 +13,12 @@ import {
 	type FailedMail,
 	type InboundJob,
 	type IngestInput,
+	isOwnLabel,
 	isValidAddress,
+	type Label,
+	type LabelChange,
+	type LabelColor,
+	type LabelDef,
 	type ListCursor,
 	type ListPage,
 	LIVE_RECHECK,
@@ -24,6 +29,7 @@ import {
 	type MessageBlobs,
 	type MessageDetail,
 	makeSnippet,
+	MAX_LABEL_DEPTH,
 	newLinkToken,
 	normalizeAddress,
 	normalizeSubject,
@@ -36,6 +42,7 @@ import {
 	type SendQueued,
 	type StoredAttachment,
 	stripSubaddress,
+	SYSTEM_LABELS,
 	THROUGH_MAX,
 	type ThreadDetail,
 	type ThreadSummary,
@@ -154,6 +161,15 @@ interface MessageRow extends Row {
 
 interface ContactRow extends Row, Contact {}
 
+interface LabelRow extends Row {
+	key: string;
+	name: string;
+	parent: string | null;
+	color: LabelColor | null;
+	position: number;
+	hidden: number;
+}
+
 interface FailedRow extends Row {
 	id: string;
 	raw_key: string;
@@ -223,6 +239,12 @@ const IN_ADDRESSES = (param: string) =>
 	`(${param} IS NULL OR EXISTS (SELECT 1 FROM message_addresses a
 		WHERE a.message_id = m.id AND a.address IN (SELECT value FROM json_each(${param}))))`;
 const addressParam = (filter: AddressFilter) => (filter.addresses ? JSON.stringify(filter.addresses) : null);
+/** The key in `param` and the keys of every label inside it, at any depth: what a label's view lists. */
+const SUBTREE = (param: string) =>
+	`WITH RECURSIVE sub(key, depth) AS (SELECT ${param}, 1 UNION SELECT l.key, sub.depth + 1 FROM labels l JOIN sub ON l.parent = sub.key WHERE sub.depth < ${MAX_LABEL_DEPTH})
+	 SELECT key FROM sub`;
+/** Where a label goes last among those inside the label in `param` (NULL for the top). */
+const LAST_POSITION = (param: string) => `(SELECT coalesce(max(position), 0) + 1 FROM labels WHERE parent IS ${param})`;
 /** IN_ADDRESSES for the failed table, whose rows carry the one address they were delivered to. */
 const FAILED_IN_ADDRESSES = (param: string) =>
 	`(${param} IS NULL OR address IN (SELECT value FROM json_each(${param}))
@@ -995,7 +1017,11 @@ export class Mailbox extends DurableObject<Env> {
 		);
 	}
 
+	/** Labels of the person's own that mail gets and this mailbox didn't have (a +tag's, an import's) are named after their keys. */
 	private addLabels(messageIds: string[], labels: string[]): void {
+		for (const key of labels.filter(isOwnLabel)) {
+			this.sql.exec(`INSERT OR IGNORE INTO labels (key, name, position) VALUES (?1, ?1, ${LAST_POSITION("NULL")})`, key);
+		}
 		for (const id of messageIds) {
 			for (const label of labels) {
 				this.sql.exec(`INSERT OR IGNORE INTO message_labels (message_id, label) VALUES (?1, ?2)`, id, label);
@@ -1049,14 +1075,17 @@ export class Mailbox extends DurableObject<Env> {
 
 	// ─── Reads ──────────────────────────────────────────────────────────────
 
-	/** A thread is listed when one of its messages carries the label and belongs to the filtered addresses. */
+	/**
+	 * A thread is listed when one of its messages carries the label, or a label inside it, and belongs to the filtered
+	 * addresses.
+	 */
 	async listThreads(query: { label: string } & ListPage & AddressFilter): Promise<ThreadSummary[]> {
 		const filter =
 			query.label === ALL_MAIL
 				? `EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id AND ${IN_ADDRESSES("?2")} AND NOT EXISTS (
 						SELECT 1 FROM message_labels l WHERE l.message_id = m.id AND l.label IN ('trash', 'spam')))`
 				: `EXISTS (SELECT 1 FROM messages m JOIN message_labels l ON l.message_id = m.id
-						WHERE m.thread_id = t.id AND l.label = ?1 AND ${IN_ADDRESSES("?2")})`;
+						WHERE m.thread_id = t.id AND l.label IN (${SUBTREE("?1")}) AND ${IN_ADDRESSES("?2")})`;
 		return this.page(filter, query.label, query);
 	}
 
@@ -1205,13 +1234,20 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	async counts(query: AddressFilter): Promise<Counts> {
+		// A label of the person's own counts what its view lists: its mail and the mail of the labels inside it.
 		const labels = this.sql
 			.exec<{ label: string; threads: number; unread: number }>(
-				`SELECT l.label, count(DISTINCT m.thread_id) AS threads,
+				`WITH RECURSIVE views(label, key, depth) AS (
+					SELECT value, value, 1 FROM json_each(?2)
+					UNION ALL SELECT key, key, 1 FROM labels
+					UNION SELECT v.label, l.key, v.depth + 1 FROM views v JOIN labels l ON l.parent = v.key WHERE v.depth < ${MAX_LABEL_DEPTH}
+				 )
+				 SELECT v.label, count(DISTINCT m.thread_id) AS threads,
 					count(DISTINCT CASE WHEN m.is_read = 0 THEN m.thread_id END) AS unread
-				 FROM message_labels l JOIN messages m ON m.id = l.message_id
-				 WHERE ${IN_ADDRESSES("?1")} GROUP BY l.label`,
+				 FROM views v JOIN message_labels l ON l.label = v.key JOIN messages m ON m.id = l.message_id
+				 WHERE ${IN_ADDRESSES("?1")} GROUP BY v.label`,
 				addressParam(query),
+				JSON.stringify(SYSTEM_LABELS),
 			)
 			.toArray();
 		const addresses = this.sql
@@ -1224,6 +1260,138 @@ export class Mailbox extends DurableObject<Env> {
 			.toArray();
 		const failed = this.sql.exec<{ n: number }>(`SELECT count(*) AS n FROM failed WHERE ${FAILED_IN_ADDRESSES("?1")}`, addressParam(query)).one().n;
 		return { labels, addresses, failed };
+	}
+
+	// ─── Labels ─────────────────────────────────────────────────────────────
+
+	/** The person's own labels, in no particular order. */
+	async labels(): Promise<Label[]> {
+		return this.sql.exec<LabelRow>(`SELECT key, name, parent, color, position, hidden FROM labels`).toArray().map(toLabel);
+	}
+
+	/** Takes on labels another mailbox has, or a new one (defineLabels()). */
+	async addLabelDefs(defs: LabelDef[]): Promise<void> {
+		if (this.ctx.storage.transactionSync(() => this.defineLabels(defs))) this.broadcast({ type: "labels.changed" });
+	}
+
+	/**
+	 * Renames, recolors, moves, reorders, or hides a label. Says why when it can't: a label can't go inside itself, deeper
+	 * than MAX_LABEL_DEPTH, or beside one with the same name.
+	 */
+	async updateLabel(key: string, change: LabelChange): Promise<{ error: string } | null> {
+		const refused = this.ctx.storage.transactionSync(() => {
+			const label = this.label(key);
+			if (!label) return { error: "There's no such label" };
+			const parent = change.parent === undefined ? label.parent : change.parent;
+			const moved = parent !== label.parent;
+			if (moved && parent !== null) {
+				if (!this.label(parent)) return { error: "There's no such label to put it in" };
+				if (this.subtree(key).includes(parent)) return { error: "A label can't go inside itself" };
+				if (this.depth(parent) + this.height(key) > MAX_LABEL_DEPTH) return { error: `Labels go at most ${MAX_LABEL_DEPTH} deep` };
+			}
+			const name = change.name ?? label.name;
+			if ((moved || change.name !== undefined) && this.nameTaken(parent, name, key)) return { error: `There's already a label called “${name}” there` };
+			this.sql.exec(
+				`UPDATE labels SET name = ?2, parent = ?3, color = ?4, hidden = ?5, position = coalesce(?6, ${LAST_POSITION("?3")}) WHERE key = ?1`,
+				key,
+				name,
+				parent,
+				change.color === undefined ? label.color : change.color,
+				(change.hidden ?? label.hidden) ? 1 : 0,
+				change.position ?? (moved ? null : label.position),
+			);
+			return null;
+		});
+		if (!refused) this.broadcast({ type: "labels.changed" });
+		return refused;
+	}
+
+	/**
+	 * Takes a label off all mail and deletes it; the mail stays where else it is. Labels inside it move up to where it
+	 * was. False if there's no such label.
+	 */
+	async deleteLabel(key: string): Promise<boolean> {
+		const deleted = this.ctx.storage.transactionSync(() => {
+			const label = this.label(key);
+			if (!label) return false;
+			const children = this.sql.exec<LabelRow>(`SELECT * FROM labels WHERE parent = ?1 ORDER BY position, name`, key).toArray();
+			// Into the gap it leaves, before the label that came after it.
+			const after = this.sql
+				.exec<{ position: number | null }>(`SELECT min(position) AS position FROM labels WHERE parent IS ?1 AND position > ?2`, label.parent, label.position)
+				.one().position;
+			const step = ((after ?? label.position + 1) - label.position) / (children.length + 1);
+			children.forEach((child, i) => {
+				let name = child.name;
+				for (let n = 2; this.nameTaken(label.parent, name, child.key); n++) name = `${child.name} ${n}`;
+				this.sql.exec(`UPDATE labels SET parent = ?2, name = ?3, position = ?4 WHERE key = ?1`, child.key, label.parent, name, label.position + step * (i + 1));
+			});
+			this.sql.exec(`DELETE FROM message_labels WHERE label = ?1`, key);
+			this.sql.exec(`DELETE FROM labels WHERE key = ?1`, key);
+			return true;
+		});
+		if (deleted) this.broadcast({ type: "labels.changed" });
+		return deleted;
+	}
+
+	/**
+	 * Adds the labels this mailbox doesn't have yet, outermost first, each last among those beside it. One whose parent
+	 * it doesn't have (or that would go too deep) goes at the top, and one named like a label beside it gets a number.
+	 * Whether it added any.
+	 */
+	private defineLabels(defs: LabelDef[]): boolean {
+		let added = false;
+		for (const def of defs) {
+			if (this.label(def.key)) continue;
+			const parent = def.parent !== null && this.label(def.parent) && this.depth(def.parent) < MAX_LABEL_DEPTH ? def.parent : null;
+			let name = def.name;
+			for (let n = 2; this.nameTaken(parent, name, null); n++) name = `${def.name} ${n}`;
+			this.sql.exec(`INSERT INTO labels (key, name, parent, color, position) VALUES (?1, ?2, ?3, ?4, ${LAST_POSITION("?3")})`, def.key, name, parent, def.color);
+			added = true;
+		}
+		return added;
+	}
+
+	private label(key: string): Label | undefined {
+		const row = this.sql.exec<LabelRow>(`SELECT * FROM labels WHERE key = ?1`, key).toArray()[0];
+		return row && toLabel(row);
+	}
+
+	/** Whether a label beside `parent`'s others, other than `except`, has this name, whatever its case. */
+	private nameTaken(parent: string | null, name: string, except: string | null): boolean {
+		const wanted = name.toLowerCase();
+		return this.sql
+			.exec<{ key: string; name: string }>(`SELECT key, name FROM labels WHERE parent IS ?1`, parent)
+			.toArray()
+			.some((l) => l.key !== except && l.name.toLowerCase() === wanted);
+	}
+
+	/** The label and every label inside it. */
+	private subtree(key: string): string[] {
+		return this.sql.exec<{ key: string }>(SUBTREE("?1"), key).toArray().map((r) => r.key);
+	}
+
+	/** How many labels deep it sits: 1 at the top. */
+	private depth(key: string): number {
+		return this.sql
+			.exec<{ depth: number }>(
+				`WITH RECURSIVE up(key, depth) AS (SELECT ?1, 1 UNION SELECT l.parent, up.depth + 1 FROM labels l JOIN up ON l.key = up.key
+					WHERE l.parent IS NOT NULL AND up.depth <= ${MAX_LABEL_DEPTH})
+				 SELECT max(depth) AS depth FROM up`,
+				key,
+			)
+			.one().depth;
+	}
+
+	/** How many levels it and the labels inside it take up: 1 with none inside. */
+	private height(key: string): number {
+		return this.sql
+			.exec<{ depth: number }>(
+				`WITH RECURSIVE down(key, depth) AS (SELECT ?1, 1 UNION SELECT l.key, down.depth + 1 FROM labels l JOIN down ON l.parent = down.key
+					WHERE down.depth <= ${MAX_LABEL_DEPTH})
+				 SELECT max(depth) AS depth FROM down`,
+				key,
+			)
+			.one().depth;
 	}
 
 	// ─── Failed ─────────────────────────────────────────────────────────────
@@ -1407,7 +1575,8 @@ export class Mailbox extends DurableObject<Env> {
 		for (const m of left) this.touchThread(threadId, m.date, m.snippet, [JSON.parse(m.from_json), ...JSON.parse(m.to_json), ...JSON.parse(m.cc_json)]);
 	}
 
-	async modifyThreads(input: { threadIds: string[]; add?: string[]; remove?: string[] }): Promise<void> {
+	/** `define`: labels being added that this mailbox may not have yet (LabelDefSchema). */
+	async modifyThreads(input: { threadIds: string[]; add?: string[]; remove?: string[]; define?: LabelDef[] }): Promise<void> {
 		const add = input.add ?? [];
 		// Trash and spam imply leaving the inbox, and the Screener.
 		const remove = [...(input.remove ?? []), ...(add.some((l) => l === "trash" || l === "spam") ? ["inbox", "screener"] : [])];
@@ -1429,6 +1598,7 @@ export class Mailbox extends DurableObject<Env> {
 			const corrected = this.verdictsOf(wrong);
 			if (add.includes("spam") || remove.includes("spam")) this.forgetSetting(ids);
 			this.removeLabels(ids, remove);
+			this.defineLabels(input.define ?? []);
 			this.addLabels(ids, add);
 			return { corrected, released };
 		});
@@ -2222,6 +2392,10 @@ function toFtsQuery(input: string): string | null {
 		.slice(0, 12);
 	if (terms.length === 0) return null;
 	return terms.map((t, i) => (i === terms.length - 1 ? `"${t}"*` : `"${t}"`)).join(" ");
+}
+
+function toLabel(r: LabelRow): Label {
+	return { key: r.key, name: r.name, parent: r.parent, color: r.color, position: r.position, hidden: r.hidden === 1 };
 }
 
 function toThreadSummary(r: ThreadRow): ThreadSummary {

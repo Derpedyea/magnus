@@ -8,6 +8,7 @@ export * from "./files";
 export * from "./forward";
 export * from "./ids";
 export * from "./keys";
+export * from "./labels";
 export * from "./links";
 export * from "./plaintext";
 export * from "./scope";

@@ -108,7 +108,7 @@ push_subscriptions(endpoint, session_id, p256dh, auth, origin) ← a browser to 
 
 ### Mailbox DO schema (`worker/mailbox/schema.ts`)
 
-`threads`, `messages`, `message_labels`, `message_addresses`, `attachments`, `thread_refs`, `outbox`, `deliveries`,
+`threads`, `messages`, `message_labels`, `labels`, `message_addresses`, `attachments`, `thread_refs`, `outbox`, `deliveries`,
 `contacts`, `sends` (every id Email Sending gave a message), `messages_fts` (FTS5, porter + unicode61). Migrations are an append-only array applied in `blockConcurrencyWhile`.
 
 Labels follow the Gmail model: they live on messages, and a thread appears in a view if any of its messages
@@ -116,6 +116,12 @@ has the label. System labels are `inbox`, `sent`, `outbox`, `spam`, `trash`, `st
 removing `inbox`, and "All mail" is a pseudo-view. `+tag` subaddresses become labels automatically
 (`me+receipts@…` → `receipts`). A tag that names a view gets a suffix, so it can't file mail there
 (`me+spam@…` → `spam-tag`, not Spam).
+
+Each of the person's own labels has a row in `labels`: its name, color, position, and the label it sits inside (three
+deep at most). Mail names a label by its key, which never changes, so renaming or moving a label rewrites no mail, and
+a `+tag` keeps filing under the label it named. A label's view and count include the mail of the labels inside it.
+Labels belong to a mailbox, so everyone sharing one sees the same labels. The app shows the labels of all of a person's
+mailboxes as one list, merged by key, and a label goes into another mailbox when mail there first gets it.
 
 ### Mailboxes vs. addresses
 
