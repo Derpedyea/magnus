@@ -1,5 +1,21 @@
+import type { Label } from "#shared";
 import { describe, expect, it } from "vitest";
-import { labelBatches, labelState } from "./labels";
+import { labelBatches, labelMove, labelState } from "./labels";
+
+const label = (key: string, position: number, parent: string | null = null): Label => ({ key, name: key, parent, color: null, position, hidden: false });
+
+describe("labelMove", () => {
+	it("goes between neighbours, a step past the ends, or last inside, and nowhere when it's already there", () => {
+		const labels = [label("a", 1), label("b", 2), label("c", 3), label("d", 1, "c")];
+		expect(labelMove(labels, "c", "b", "before")).toEqual({ position: 1.5 });
+		expect(labelMove(labels, "a", "c", "after")).toEqual({ position: 4 });
+		expect(labelMove(labels, "a", "c", "inside")).toEqual({ parent: "c", position: 2 });
+		expect(labelMove(labels, "d", "a", "before")).toEqual({ parent: null, position: 0 });
+		expect(labelMove(labels, "a", "b", "before")).toBeNull();
+		expect(labelMove(labels, "d", "c", "inside")).toBeNull();
+	});
+});
+
 
 describe("labeling several conversations", () => {
 	const threads = [

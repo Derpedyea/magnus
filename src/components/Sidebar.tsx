@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { SettingsIcon, ShieldIcon, SquarePenIcon, TagIcon, type LucideIcon } from "lucide-react";
+import { ChevronRightIcon, PlusIcon, SettingsIcon, ShieldIcon, SquarePenIcon, type LucideIcon } from "lucide-react";
 import { useAppHotkeys, useHotkeys } from "@tanstack/react-hotkeys";
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
@@ -10,9 +10,11 @@ import {
 	SidebarContent,
 	SidebarFooter,
 	SidebarGroup,
+	SidebarGroupAction,
 	SidebarGroupLabel,
 	SidebarHeader,
 	SidebarMenu,
+	SidebarMenuAction,
 	SidebarMenuBadge,
 	SidebarMenuButton,
 	SidebarMenuItem,
@@ -23,11 +25,13 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { type Counts, formatScope, type Me, parseScope } from "#shared";
 import { useScope } from "../hooks";
+import { type LabelNode, labelPath, useLabels } from "../labels";
 import { countsQuery } from "../queries";
 import { DIGITS } from "../hotkeys";
 import { SYSTEM, SYSTEM_VIEWS } from "../views";
 import { Shortcut } from "./Shortcut";
 import { useDraftList } from "./DraftList";
+import { LabelDialog, LabelMenu, Swatch } from "./LabelMenu";
 
 export function Sidebar(props: {
 	mailboxes: Me["mailboxes"];
@@ -51,7 +55,9 @@ export function Sidebar(props: {
 	const counts = useQuery(countsQuery(scope));
 	const draftList = useDraftList(scope);
 	const unreadByAddress = new Map(counts.data?.addresses.map((a) => [a.address, a.unread]));
-	const userLabels = counts.data?.labels.filter((c) => !SYSTEM.has(c.label)).map((c) => c.label) ?? [];
+	const labels = useLabels();
+	const [collapsed, toggle] = useCollapsed();
+	const [creating, setCreating] = useState(false);
 	// Failed and the Screener show while they hold mail, or while open so they don't vanish once emptied.
 	const systemViews = SYSTEM_VIEWS.filter((v) => !v.transient || view === v.label || rowCount(v.label, counts.data) > 0);
 
@@ -142,6 +148,57 @@ export function Sidebar(props: {
 		);
 	};
 
+	// Hidden labels leave the labels inside them out too, and collapsed ones their sublabels.
+	const opens = (node: LabelNode) => node.children.some((c) => !c.label.hidden);
+	const shown = (nodes: LabelNode[]): LabelNode[] =>
+		nodes.filter((n) => !n.label.hidden).flatMap((n) => [n, ...(collapsed.has(n.label.key) ? [] : shown(n.children))]);
+	// Room for chevrons before the swatches once any label has others inside it.
+	const nested = labels.tree.some((n) => !n.label.hidden && opens(n));
+
+	const labelRow = (node: LabelNode) => {
+		const { label, depth } = node;
+		const unread = rowCount(label.key, counts.data);
+		const open = !collapsed.has(label.key);
+		return (
+			<SidebarMenuItem key={label.key}>
+				{/* First, so Tab reaches it in the order you see it. */}
+				{opens(node) ? (
+					<SidebarMenuAction aria-label={`Labels inside ${label.name}`} aria-expanded={open} onClick={() => toggle(label.key)} className="right-auto" style={{ left: 4 + depth * 16 }}>
+						<ChevronRightIcon className={cn("transition-transform", open && "rotate-90")} />
+					</SidebarMenuAction>
+				) : null}
+				{/* The rail's own padding wins over this indent, so it lists every label flush. */}
+				<SidebarMenuButton
+					isActive={view === label.key}
+					tooltip={labelPath(labels.byKey, label.key)}
+					onClick={() => setOpenMobile(false)}
+					render={<Link to="/$view" params={{ view: label.key }} activeOptions={{ includeSearch: false }} />}
+					className={unread > 0 ? "max-md:pr-14" : undefined}
+					style={{ paddingLeft: 8 + depth * 16 + (nested ? 20 : 0) }}
+				>
+					<RowIcon unread={unread}>
+						<Swatch color={label.color} />
+					</RowIcon>
+					<span>{label.name}</span>
+				</SidebarMenuButton>
+				{/*
+				 * The ⋯ takes the count's place while you point at the row or tab into it, and phones show both. Not on any
+				 * focus, as showOnHover does: a click on the row would hide its count until you clicked elsewhere.
+				 */}
+				{unread > 0 ? (
+					<SidebarMenuBadge className="max-md:right-7 md:group-hover/menu-item:opacity-0 md:group-has-[:focus-visible]/menu-item:opacity-0 md:group-has-data-popup-open/menu-item:opacity-0">
+						{unread}
+					</SidebarMenuBadge>
+				) : null}
+				<LabelMenu
+					node={node}
+					scope={scope}
+					trigger={<SidebarMenuAction className="md:opacity-0 md:group-hover/menu-item:opacity-100 md:group-has-[:focus-visible]/menu-item:opacity-100 md:data-popup-open:opacity-100" />}
+				/>
+			</SidebarMenuItem>
+		);
+	};
+
 	return (
 		// Collapses to an icon rail: the header's toggle or Ctrl/⌘+B.
 		<SidebarRoot collapsible="icon">
@@ -206,12 +263,22 @@ export function Sidebar(props: {
 					<SidebarGroup>
 						<SidebarMenu>{systemViews.map((v) => viewRow(v.label, v.name, v.icon, v.alert))}</SidebarMenu>
 					</SidebarGroup>
-					{userLabels.length > 0 ? (
-						<SidebarGroup>
-							<SidebarGroupLabel>Labels</SidebarGroupLabel>
-							<SidebarMenu>{userLabels.map((l) => viewRow(l, l, TagIcon))}</SidebarMenu>
-						</SidebarGroup>
-					) : null}
+					{/* Shown with no labels yet too, for its +. */}
+					<SidebarGroup>
+						<SidebarGroupLabel>Labels</SidebarGroupLabel>
+						<Tooltip>
+							<TooltipTrigger
+								render={
+									<SidebarGroupAction aria-label="New label" onClick={() => setCreating(true)}>
+										<PlusIcon />
+									</SidebarGroupAction>
+								}
+							/>
+							<TooltipContent side="right">New label</TooltipContent>
+						</Tooltip>
+						<SidebarMenu>{shown(labels.tree).map(labelRow)}</SidebarMenu>
+					</SidebarGroup>
+					<LabelDialog open={creating} onOpenChange={setCreating} scope={scope} />
 				</nav>
 			</SidebarContent>
 			{/* Icon bar, after T3 Code's: Settings for everyone, Admin for admins, both in the settings sidebar. Stacks in the rail. */}
@@ -252,6 +319,21 @@ function rowCount(label: string, counts: Counts | undefined): number {
 	if (label === "screener") return counts?.labels.find((c) => c.label === label)?.threads ?? 0;
 	if (label !== "inbox" && SYSTEM.has(label)) return 0;
 	return counts?.labels.find((c) => c.label === label)?.unread ?? 0;
+}
+
+// Per device, like the sidebar's own open state. Keys never hold a line break.
+const COLLAPSED = "labels-collapsed";
+
+/** The labels whose sublabels the sidebar leaves out, and a way to flip one. */
+function useCollapsed() {
+	const [collapsed, setCollapsed] = useState(() => new Set(localStorage.getItem(COLLAPSED)?.split("\n")));
+	const toggle = (key: string) => {
+		const next = new Set(collapsed);
+		if (!next.delete(key)) next.add(key);
+		localStorage.setItem(COLLAPSED, [...next].join("\n"));
+		setCollapsed(next);
+	};
+	return [collapsed, toggle] as const;
 }
 
 /** A row's icon. Collapsed, the unread count is hidden, so a dot on the icon stands in for it. */

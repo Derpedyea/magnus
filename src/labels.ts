@@ -1,4 +1,4 @@
-import type { Label, LabelColor } from "#shared";
+import type { Label, LabelChange, LabelColor } from "#shared";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { labelsQuery } from "./queries";
@@ -94,3 +94,34 @@ export function labelBatches(threads: readonly Labeled[], key: string, on: boole
 		Array.from({ length: Math.ceil(ids.length / MODIFY_MAX) }, (_, i) => ({ mailboxId, threadIds: ids.slice(i * MODIFY_MAX, (i + 1) * MODIFY_MAX) })),
 	);
 }
+
+/** Where a label dropped on another goes: just before or after it, or last inside it. */
+export type Drop = "before" | "after" | "inside";
+
+/**
+ * What moves label `key` to `drop` of label `target`: between the target and its neighbour (or a step past the target at
+ * the end), so no other label changes. Null when that's where it already is.
+ */
+export function labelMove(labels: readonly Label[], key: string, target: string, drop: Drop): LabelChange | null {
+	const label = labels.find((l) => l.key === key);
+	const to = labels.find((l) => l.key === target);
+	if (!label || !to || label === to) return null;
+	// A label whose parent is missing sits at the top (labelTree()).
+	const keys = new Set(labels.map((l) => l.key));
+	const parentOf = (l: Label) => (l.parent !== null && keys.has(l.parent) ? l.parent : null);
+	const parent = drop === "inside" ? to.key : parentOf(to);
+	const beside = labels.filter((l) => parentOf(l) === parent).sort(byPlace);
+	const at = beside.indexOf(to);
+	if (parentOf(label) === parent && (drop === "inside" || beside[drop === "before" ? at - 1 : at + 1] === label)) return null;
+	const others = beside.filter((l) => l !== label);
+	let position: number;
+	if (drop === "inside") position = (others.at(-1)?.position ?? 0) + 1;
+	else {
+		const next = others[others.indexOf(to) + (drop === "before" ? -1 : 1)];
+		position = next ? (to.position + next.position) / 2 : to.position + (drop === "before" ? -1 : 1);
+	}
+	return parentOf(label) === parent ? { position } : { parent, position };
+}
+
+/** A tree's labels in order, each just before the labels inside it, with the labels beside it. */
+export const labelRows = (nodes: LabelNode[]): { node: LabelNode; beside: LabelNode[] }[] => nodes.flatMap((node) => [{ node, beside: nodes }, ...labelRows(node.children)]);
