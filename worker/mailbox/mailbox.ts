@@ -1320,7 +1320,7 @@ export class Mailbox extends DurableObject<Env> {
 			const step = ((after ?? label.position + 1) - label.position) / (children.length + 1);
 			children.forEach((child, i) => {
 				let name = child.name;
-				for (let n = 2; this.nameTaken(label.parent, name, [child.key, key]); n++) name = `${child.name} ${n}`;
+				for (let n = 2; this.nameTaken(label.parent, name, [child.key, key]); n++) name = numbered(child.name, n);
 				this.sql.exec(`UPDATE labels SET parent = ?2, name = ?3, position = ?4 WHERE key = ?1`, child.key, label.parent, name, label.position + step * (i + 1));
 			});
 			this.sql.exec(`DELETE FROM message_labels WHERE label = ?1`, key);
@@ -1342,7 +1342,7 @@ export class Mailbox extends DurableObject<Env> {
 			if (this.label(def.key)) continue;
 			const parent = def.parent !== null && this.label(def.parent) && this.depth(def.parent) < MAX_LABEL_DEPTH ? def.parent : null;
 			let name = def.name;
-			for (let n = 2; this.nameTaken(parent, name, []); n++) name = `${def.name} ${n}`;
+			for (let n = 2; this.nameTaken(parent, name, []); n++) name = numbered(def.name, n);
 			this.sql.exec(`INSERT INTO labels (key, name, parent, color, position) VALUES (?1, ?2, ?3, ?4, ${LAST_POSITION("?3")})`, def.key, name, parent, def.color);
 			added = true;
 		}
@@ -2390,6 +2390,12 @@ function toFtsQuery(input: string): string | null {
 		.slice(0, 12);
 	if (terms.length === 0) return null;
 	return terms.map((t, i) => (i === terms.length - 1 ? `"${t}"*` : `"${t}"`)).join(" ");
+}
+
+/** A label's name with a number after it, for one beside a label of the same name: still a name LabelNameSchema takes. */
+function numbered(name: string, n: number): string {
+	const suffix = ` ${n}`;
+	return `${name.slice(0, 64 - suffix.length).trimEnd()}${suffix}`;
 }
 
 function toLabel(r: LabelRow): Label {
