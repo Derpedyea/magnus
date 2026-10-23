@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { SettingsIcon, ShieldIcon, SquarePenIcon, TagIcon, type LucideIcon } from "lucide-react";
-import { useEffect, useEffectEvent, type ReactNode } from "react";
+import { useAppHotkeys, useHotkeys } from "@tanstack/react-hotkeys";
+import { type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
@@ -23,7 +24,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { type Counts, formatScope, type Me, parseScope } from "#shared";
 import { useScope } from "../hooks";
 import { countsQuery } from "../queries";
+import { DIGITS } from "../hotkeys";
 import { SYSTEM, SYSTEM_VIEWS } from "../views";
+import { Shortcut } from "./Shortcut";
 import { useDraftList } from "./DraftList";
 
 export function Sidebar(props: {
@@ -73,20 +76,18 @@ export function Sidebar(props: {
 		});
 	};
 
-	// 0 = all addresses, 1–9 = that address, Shift+digit = add/remove it.
-	const onKey = useEffectEvent((e: KeyboardEvent) => {
-		if (e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target)) return;
-		const digit = /^Digit(\d)$/.exec(e.code)?.[1];
-		if (digit === undefined || addresses.length < 2) return;
-		const address = digit === "0" ? null : addresses[Number(digit) - 1];
-		if (address === undefined) return;
-		e.preventDefault();
-		pick(address, e.shiftKey);
-	});
-	useEffect(() => {
-		window.addEventListener("keydown", onKey);
-		return () => window.removeEventListener("keydown", onKey);
-	}, []);
+	// 0 = all addresses, 1–9 = that address, Shift+digit = add/remove it. By position (hotkeys.ts).
+	const byDigit = (digit: (typeof DIGITS)[number]) => (digit === "0" ? null : addresses[Number(digit) - 1]);
+	useHotkeys(
+		DIGITS.flatMap((digit) => {
+			const enabled = addresses.length > 1 && byDigit(digit) !== undefined;
+			return [
+				{ hotkey: `[Digit${digit}]` as const, callback: () => pick(byDigit(digit) ?? null, false), options: { enabled } },
+				{ hotkey: `Shift+[Digit${digit}]` as const, callback: () => pick(byDigit(digit) ?? null, true), options: { enabled } },
+			];
+		}),
+	);
+	const composeKey = useAppHotkeys()["compose.new"];
 
 	/** Collapsed to a dot, an address row's tooltip leads with the address it hides. */
 	const scopeTip = (name: string, hint: string) => (
@@ -152,7 +153,7 @@ export function Sidebar(props: {
 				</div>
 				{/* Phones compose from the button floating over the list (App). */}
 				{isMobile ? null : (
-					<Tooltip disabled={!iconsOnly}>
+					<Tooltip>
 						<TooltipTrigger
 							render={
 								<Button aria-label="Compose" className="group-data-[collapsible=icon]:px-0!" onClick={props.onCompose}>
@@ -161,7 +162,9 @@ export function Sidebar(props: {
 								</Button>
 							}
 						/>
-						<TooltipContent side="right">Compose</TooltipContent>
+						<TooltipContent side="right">
+							Compose <Shortcut hotkey={composeKey} />
+						</TooltipContent>
 					</Tooltip>
 				)}
 			</SidebarHeader>
@@ -260,6 +263,3 @@ function RowIcon(props: { unread: number; children: ReactNode }) {
 		</span>
 	);
 }
-
-const isTyping = (target: EventTarget | null) =>
-	target instanceof HTMLElement && (target.isContentEditable || target.matches("input, textarea, select"));

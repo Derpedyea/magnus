@@ -7,6 +7,7 @@ import { configQuery, meQuery } from "../queries";
 import { endSession } from "../session";
 import { DraftProvider } from "../drafts";
 import { useAccount } from "../hooks";
+import { HotkeysRoot } from "../components/KeyboardShortcuts";
 
 /** Everything behind sign-in. Its guard runs before any child loads, so nothing fetches mail while signed out. */
 export const Route = createFileRoute("/_app")({
@@ -41,6 +42,12 @@ export const Route = createFileRoute("/_app")({
 });
 
 function SignedIn() {
-	const { user } = useAccount();
-	return <DraftProvider key={user.id} userId={user.id}><Outlet /></DraftProvider>;
+	const { user, hotkeys } = useAccount();
+	return (
+		<DraftProvider key={user.id} userId={user.id}>
+			<HotkeysRoot key={user.id} hotkeys={hotkeys}>
+				<Outlet />
+			</HotkeysRoot>
+		</DraftProvider>
+	);
 }

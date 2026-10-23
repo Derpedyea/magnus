@@ -13,6 +13,7 @@ import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-q
 import { getRouteApi, Link, useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
 import { ArchiveIcon, ArrowLeftIcon, BanIcon, CheckIcon, CircleAlertIcon, ClockIcon, DownloadIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, ShieldXIcon, StarIcon, StarOffIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
+import { type AppHotkey, useAppHotkeys, useHotkey } from "@tanstack/react-hotkeys";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +37,7 @@ import { BlockSender, useCanBlock } from "./BlockSender";
 import { Composer, type Draft } from "./Composer";
 import { FileViewer } from "./FileViewer";
 import { PermanentDelete } from "./PermanentDelete";
+import { Shortcut } from "./Shortcut";
 
 const route = getRouteApi("/_app/_mail/$view/$mailboxId/$threadId");
 
@@ -118,12 +120,39 @@ export function ThreadView() {
 		scroller?.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
 	};
 
+	const hotkeys = useAppHotkeys();
+	const archive = () => (modify.mutate({ verb: "archive", remove: ["inbox"] }), close());
+	const moveToInbox = () => modify.mutate({ verb: "move to inbox", add: ["inbox"], remove: ["trash", "spam", "screener"] });
+	const trash = () => (modify.mutate({ verb: "move to trash", add: ["trash"] }), close());
+	const spam = () => (modify.mutate({ verb: "mark as spam", add: ["spam"] }), close());
+	const toggleStar = () => (starred ? modify.mutate({ verb: "unstar", remove: ["starred"] }) : modify.mutate({ verb: "star", add: ["starred"] }));
+	const markUnread = () => (markRead.mutate(false), close());
+	useHotkey(hotkeys["thread.close"], close);
+	// Archive takes it out of the inbox; elsewhere there's nothing to take it out of.
+	useHotkey(hotkeys["thread.archive"], () => inInbox && archive());
+	// Trash for good asks first (PermanentDelete), so the key leaves that to a click.
+	useHotkey(hotkeys["thread.trash"], () => !deleteForever && trash());
+	useHotkey(hotkeys["thread.spam"], spam);
+	useHotkey(hotkeys["thread.star"], toggleStar);
+	useHotkey(hotkeys["thread.unread"], markUnread);
+	// Reply and Reply all go to the reply box (Composer), which answers the last message too.
+	useHotkey(hotkeys["thread.forward"], () => last && openDraft(forwardDraft(last, answerContext(last))));
+
 	// Phones show icons alone, bigger, like Gmail's toolbar; the label stays for screen readers.
-	const action = (Icon: LucideIcon, label: string, onClick: () => void) => (
-		<Button variant="ghost" size="sm" onClick={onClick} className="text-muted-foreground max-md:size-10 max-md:px-0">
-			<Icon className="size-3.5 max-md:size-5" />
-			<span className="max-md:sr-only">{label}</span>
-		</Button>
+	const action = (Icon: LucideIcon, label: string, onClick: () => void, hotkey: AppHotkey) => (
+		<Tooltip>
+			<TooltipTrigger
+				render={
+					<Button variant="ghost" size="sm" onClick={onClick} className="text-muted-foreground max-md:size-10 max-md:px-0">
+						<Icon className="size-3.5 max-md:size-5" />
+						<span className="max-md:sr-only">{label}</span>
+					</Button>
+				}
+			/>
+			<TooltipContent>
+				{label} <Shortcut hotkey={hotkey} />
+			</TooltipContent>
+		</Tooltip>
 	);
 
 	return (
@@ -131,17 +160,18 @@ export function ThreadView() {
 			{/* Stacked over the list, the toolbar stays on screen and leads with the way back. */}
 			<div className="sticky top-0 z-10 -mx-4 mb-4 flex items-center gap-1 border-b bg-background px-2 py-2 lg:static lg:mx-0 lg:flex-wrap lg:px-0 lg:pt-0 lg:pb-3">
 				<BackToList className="mr-auto" />
-				{inInbox
-					? action(ArchiveIcon, "Archive", () => (modify.mutate({ verb: "archive", remove: ["inbox"] }), close()))
-					: action(InboxIcon, "Move to inbox", () => modify.mutate({ verb: "move to inbox", add: ["inbox"], remove: ["trash", "spam", "screener"] }))}
+				{inInbox ? action(ArchiveIcon, "Archive", archive, hotkeys["thread.archive"]) : (
+					<Button variant="ghost" size="sm" onClick={moveToInbox} className="text-muted-foreground max-md:size-10 max-md:px-0">
+						<InboxIcon className="size-3.5 max-md:size-5" />
+						<span className="max-md:sr-only">Move to inbox</span>
+					</Button>
+				)}
 				{deleteForever
 					? <PermanentDelete key={`${mailboxId}/${threadId}`} thread={{ mailboxId, id: threadId, subject: summary.subject, count: trashed }} />
-					: action(Trash2Icon, "Trash", () => (modify.mutate({ verb: "move to trash", add: ["trash"] }), close()))}
-				{action(OctagonAlertIcon, "Spam", () => (modify.mutate({ verb: "mark as spam", add: ["spam"] }), close()))}
-				{starred
-					? action(StarOffIcon, "Unstar", () => modify.mutate({ verb: "unstar", remove: ["starred"] }))
-					: action(StarIcon, "Star", () => modify.mutate({ verb: "star", add: ["starred"] }))}
-				{action(MailIcon, "Mark unread", () => (markRead.mutate(false), close()))}
+					: action(Trash2Icon, "Trash", trash, hotkeys["thread.trash"])}
+				{action(OctagonAlertIcon, "Spam", spam, hotkeys["thread.spam"])}
+				{action(starred ? StarOffIcon : StarIcon, starred ? "Unstar" : "Star", toggleStar, hotkeys["thread.star"])}
+				{action(MailIcon, "Mark unread", markUnread, hotkeys["thread.unread"])}
 			</div>
 			<h1 className="font-heading text-xl font-semibold break-words">{summary.subject}</h1>
 			<p className="mt-1 mb-4 text-sm text-muted-foreground">

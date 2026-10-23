@@ -41,7 +41,11 @@ export interface MailboxMembership {
 export interface Me {
 	user: User;
 	mailboxes: MailboxMembership[];
+	/** Shortcuts they've rebound, by id: a key, a sequence of keys, or null for none. The rest keep their defaults. */
+	hotkeys: CustomHotkeys;
 }
+
+export type CustomHotkeys = Record<string, string | string[] | null>;
 
 /** GET /api/config: all the app knows before anyone signs in. */
 export interface AppConfig {

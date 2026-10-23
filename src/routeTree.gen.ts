@@ -27,6 +27,7 @@ import { Route as AppSettingsSettingsIndexRouteImport } from './routes/_app._set
 import { Route as AppSettingsSettingsAppearanceRouteImport } from './routes/_app._settings.settings.appearance'
 import { Route as AppSettingsSettingsImportRouteImport } from './routes/_app._settings.settings.import'
 import { Route as AppSettingsSettingsNotificationsRouteImport } from './routes/_app._settings.settings.notifications'
+import { Route as AppSettingsSettingsShortcutsRouteImport } from './routes/_app._settings.settings.shortcuts'
 import { Route as AppSettingsSettingsSignInRouteImport } from './routes/_app._settings.settings.sign-in'
 import { Route as AppSettingsSettingsSignaturesRouteImport } from './routes/_app._settings.settings.signatures'
 import { Route as AppSettingsSettingsSpamRouteImport } from './routes/_app._settings.settings.spam'
@@ -125,6 +126,12 @@ const AppSettingsSettingsNotificationsRoute =
     path: '/settings/notifications',
     getParentRoute: () => AppSettingsRoute,
   } as any)
+const AppSettingsSettingsShortcutsRoute =
+  AppSettingsSettingsShortcutsRouteImport.update({
+    id: '/settings/shortcuts',
+    path: '/settings/shortcuts',
+    getParentRoute: () => AppSettingsRoute,
+  } as any)
 const AppSettingsSettingsSignInRoute =
   AppSettingsSettingsSignInRouteImport.update({
     id: '/settings/sign-in',
@@ -162,6 +169,7 @@ export interface FileRoutesByFullPath {
   '/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
   '/settings/import': typeof AppSettingsSettingsImportRoute
   '/settings/notifications': typeof AppSettingsSettingsNotificationsRoute
+  '/settings/shortcuts': typeof AppSettingsSettingsShortcutsRoute
   '/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
   '/settings/spam': typeof AppSettingsSettingsSpamRoute
@@ -181,6 +189,7 @@ export interface FileRoutesByTo {
   '/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
   '/settings/import': typeof AppSettingsSettingsImportRoute
   '/settings/notifications': typeof AppSettingsSettingsNotificationsRoute
+  '/settings/shortcuts': typeof AppSettingsSettingsShortcutsRoute
   '/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
   '/settings/spam': typeof AppSettingsSettingsSpamRoute
@@ -206,6 +215,7 @@ export interface FileRoutesById {
   '/_app/_settings/settings/appearance': typeof AppSettingsSettingsAppearanceRoute
   '/_app/_settings/settings/import': typeof AppSettingsSettingsImportRoute
   '/_app/_settings/settings/notifications': typeof AppSettingsSettingsNotificationsRoute
+  '/_app/_settings/settings/shortcuts': typeof AppSettingsSettingsShortcutsRoute
   '/_app/_settings/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/_app/_settings/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
   '/_app/_settings/settings/spam': typeof AppSettingsSettingsSpamRoute
@@ -229,6 +239,7 @@ export interface FileRouteTypes {
     | '/settings/appearance'
     | '/settings/import'
     | '/settings/notifications'
+    | '/settings/shortcuts'
     | '/settings/sign-in'
     | '/settings/signatures'
     | '/settings/spam'
@@ -248,6 +259,7 @@ export interface FileRouteTypes {
     | '/settings/appearance'
     | '/settings/import'
     | '/settings/notifications'
+    | '/settings/shortcuts'
     | '/settings/sign-in'
     | '/settings/signatures'
     | '/settings/spam'
@@ -272,6 +284,7 @@ export interface FileRouteTypes {
     | '/_app/_settings/settings/appearance'
     | '/_app/_settings/settings/import'
     | '/_app/_settings/settings/notifications'
+    | '/_app/_settings/settings/shortcuts'
     | '/_app/_settings/settings/sign-in'
     | '/_app/_settings/settings/signatures'
     | '/_app/_settings/settings/spam'
@@ -415,6 +428,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsSettingsNotificationsRouteImport
       parentRoute: typeof AppSettingsRoute
     }
+    '/_app/_settings/settings/shortcuts': {
+      id: '/_app/_settings/settings/shortcuts'
+      path: '/settings/shortcuts'
+      fullPath: '/settings/shortcuts'
+      preLoaderRoute: typeof AppSettingsSettingsShortcutsRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
     '/_app/_settings/settings/sign-in': {
       id: '/_app/_settings/settings/sign-in'
       path: '/settings/sign-in'
@@ -497,6 +517,7 @@ interface AppSettingsRouteChildren {
   AppSettingsSettingsAppearanceRoute: typeof AppSettingsSettingsAppearanceRoute
   AppSettingsSettingsImportRoute: typeof AppSettingsSettingsImportRoute
   AppSettingsSettingsNotificationsRoute: typeof AppSettingsSettingsNotificationsRoute
+  AppSettingsSettingsShortcutsRoute: typeof AppSettingsSettingsShortcutsRoute
   AppSettingsSettingsSignInRoute: typeof AppSettingsSettingsSignInRoute
   AppSettingsSettingsSignaturesRoute: typeof AppSettingsSettingsSignaturesRoute
   AppSettingsSettingsSpamRoute: typeof AppSettingsSettingsSpamRoute
@@ -508,6 +529,7 @@ const AppSettingsRouteChildren: AppSettingsRouteChildren = {
   AppSettingsSettingsAppearanceRoute: AppSettingsSettingsAppearanceRoute,
   AppSettingsSettingsImportRoute: AppSettingsSettingsImportRoute,
   AppSettingsSettingsNotificationsRoute: AppSettingsSettingsNotificationsRoute,
+  AppSettingsSettingsShortcutsRoute: AppSettingsSettingsShortcutsRoute,
   AppSettingsSettingsSignInRoute: AppSettingsSettingsSignInRoute,
   AppSettingsSettingsSignaturesRoute: AppSettingsSettingsSignaturesRoute,
   AppSettingsSettingsSpamRoute: AppSettingsSettingsSpamRoute,

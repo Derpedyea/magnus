@@ -1,7 +1,8 @@
 import { useSelector } from "@tanstack/react-store";
 import { Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { SearchIcon, SquarePenIcon } from "lucide-react";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { useAppHotkeys, useHotkey, useHotkeys } from "@tanstack/react-hotkeys";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
@@ -11,6 +12,7 @@ import type { Identity } from "./api";
 import { compose, openDraft, withSignature } from "./compose";
 import { AccountMenu } from "./components/AccountMenu";
 import { Centered } from "./components/Centered";
+import { Shortcut } from "./components/Shortcut";
 import { Sidebar } from "./components/Sidebar";
 import { useAccount, useLive, useScope, useUnreadTitle } from "./hooks";
 
@@ -19,6 +21,15 @@ const Devtools = import.meta.env.DEV ? lazy(() => import("./devtools")) : () => 
 // The composer brings the editor, the app's largest dependency, so it loads after the mail rather than before.
 const loadComposer = () => import("./components/Composer");
 const Composer = lazy(() => loadComposer().then((m) => ({ default: m.Composer })));
+
+/** G then a letter, after Gmail's. */
+const GO_TO = [
+	["go.inbox", "inbox"],
+	["go.starred", "starred"],
+	["go.drafts", "drafts"],
+	["go.sent", "sent"],
+	["go.all", "all"],
+] as const;
 
 /** The signed-in layout: sidebar and header around the current view, plus the composer floating above it. */
 export function App() {
@@ -35,10 +46,17 @@ export function App() {
 	// Fetched now, so it opens at once.
 	useEffect(() => void loadComposer(), []);
 
-	const [firstMailbox] = mailboxes;
-	if (!firstMailbox) return <Centered>No mailboxes are assigned to {user.email} yet.</Centered>;
+	const hotkeys = useAppHotkeys();
+	const searchInput = useRef<HTMLInputElement>(null);
+	useHotkey(hotkeys["search.focus"], () => searchInput.current?.select());
+	useHotkeys(
+		GO_TO.map(([id, view]) => ({ hotkey: hotkeys[id], callback: () => void navigate({ to: "/$view", params: { view }, search: (prev) => ({ in: prev.in }) }) })),
+	);
+	// Below the early return, so hooks stay in order; does nothing until there's a mailbox to write from.
+	useHotkey(hotkeys["compose.new"], () => newDraft?.());
 
-	const newDraft = () => {
+	const [firstMailbox] = mailboxes;
+	const newDraft = firstMailbox && (() => {
 		const selected = new Set(scope);
 		const from = identities.find((i) => selected.has(i.address)) ?? identities[0];
 		openDraft({
@@ -51,7 +69,8 @@ export function App() {
 			text: withSignature("", null, from?.signature ?? null),
 			attachments: [],
 		});
-	};
+	});
+	if (!newDraft) return <Centered>No mailboxes are assigned to {user.email} yet.</Centered>;
 
 	return (
 		// The sidebar saves its open state in this cookie; read it back so a collapsed rail stays collapsed.
@@ -72,7 +91,12 @@ export function App() {
 							<InputGroupAddon>
 								<SearchIcon />
 							</InputGroupAddon>
-							<InputGroupInput type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search mail" />
+							<InputGroupInput ref={searchInput} type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search mail" />
+							{search ? null : (
+								<InputGroupAddon align="inline-end" className="max-md:hidden">
+									<Shortcut hotkey={hotkeys["search.focus"]} />
+								</InputGroupAddon>
+							)}
 						</InputGroup>
 					</form>
 					<div className="ml-auto flex items-center gap-3 text-muted-foreground">

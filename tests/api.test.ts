@@ -163,6 +163,13 @@ describe("API permissions", () => {
 		expect((await f.env.DIRECTORY.prepare("SELECT user_id, text FROM signatures ORDER BY user_id").all()).results).toEqual([{ user_id: "alice", text: "Alice" }, { user_id: "bob", text: "Bob" }]);
 	});
 
+	it("gives rebound shortcuts to the same person's other sessions only", async () => {
+		const hotkeys = (session?: string) => request("/me", "GET", undefined, session).then(async (r) => z.object({ hotkeys: z.unknown() }).parse(await r.json()).hotkeys);
+		expect((await request("/hotkeys", "PUT", { hotkeys: { "thread.archive": "Y", "go.inbox": ["G", "H"], "thread.spam": null } })).status).toBe(204);
+		expect(await hotkeys(await f.login("alice"))).toEqual({ "thread.archive": "Y", "go.inbox": ["G", "H"], "thread.spam": null });
+		expect(await hotkeys(await f.login("bob"))).toEqual({});
+	});
+
 	it("checks current admin status after a cached admin session is demoted", async () => {
 		const admin = await f.login("admin");
 		expect((await request("/admin/directory", "GET", undefined, cookie)).status).toBe(403);
