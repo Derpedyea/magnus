@@ -1,6 +1,6 @@
 import { useSelector } from "@tanstack/react-store";
 import { Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { SearchIcon, SquarePenIcon } from "lucide-react";
+import { SearchIcon, SparklesIcon, SquarePenIcon } from "lucide-react";
 import { useAppHotkeys, useHotkey, useHotkeys } from "@tanstack/react-hotkeys";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -8,9 +8,11 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/in
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { agentOpen, toggleAgent } from "./agent";
 import type { Identity } from "./api";
 import { compose, openDraft, withSignature } from "./compose";
 import { AccountMenu } from "./components/AccountMenu";
+import { AgentPanel } from "./components/AgentPanel";
 import { Centered } from "./components/Centered";
 import { Shortcut } from "./components/Shortcut";
 import { Sidebar } from "./components/Sidebar";
@@ -54,6 +56,8 @@ export function App() {
 	);
 	// Below the early return, so hooks stay in order; does nothing until there's a mailbox to write from.
 	useHotkey(hotkeys["compose.new"], () => newDraft?.());
+	useHotkey(hotkeys["agent.toggle"], () => toggleAgent());
+	const agent = useSelector(agentOpen, (s) => s);
 
 	const [firstMailbox] = mailboxes;
 	const newDraft = firstMailbox && (() => {
@@ -104,6 +108,14 @@ export function App() {
 							<TooltipTrigger render={<span role="img" aria-label={status} className={`size-2 rounded-full ${live ? "bg-emerald-500" : "bg-amber-400"}`} />} />
 							<TooltipContent>{status}</TooltipContent>
 						</Tooltip>
+						<Tooltip>
+							<TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="Assistant" aria-pressed={agent} onClick={() => toggleAgent()} className={cn(agent && "bg-muted text-foreground")} />}>
+								<SparklesIcon />
+							</TooltipTrigger>
+							<TooltipContent>
+								Assistant <Shortcut hotkey={hotkeys["agent.toggle"]} />
+							</TooltipContent>
+						</Tooltip>
 						<AccountMenu />
 					</div>
 				</header>
@@ -111,6 +123,8 @@ export function App() {
 					<Outlet />
 				</div>
 			</SidebarInset>
+			{/* Beside the inset rather than in a sidebar of its own: a second SidebarProvider would take Mod+B and its cookie too. */}
+			<AgentPanel />
 
 			{/* Phones keep the sidebar in a drawer, so Compose floats over the list instead, like Gmail's. */}
 			{threadOpen ? null : (

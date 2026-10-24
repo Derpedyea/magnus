@@ -162,6 +162,31 @@ export const RuleInputSchema = z
 /** Every rule of a mailbox, in the order they run. */
 export const RuleOrderSchema = z.object({ ids: z.array(z.string()).max(MAX_RULES) });
 
+/** How much of a conversation with the mail agent the app sends back, at most (worker/agent.ts bounds what it says). */
+export const MAX_AGENT_MESSAGES = 40;
+export const MAX_AGENT_QUESTION = 4000;
+const AgentId = z.string().min(1).max(200);
+
+/** What the model reads of each message: the panel's own parts of a tool's (AgentMessage) are dropped. */
+const AgentMessageSchema = z.discriminatedUnion("role", [
+	z.object({ role: z.literal("user"), content: z.string().trim().min(1).max(MAX_AGENT_QUESTION) }),
+	z.object({
+		role: z.literal("assistant"),
+		content: z.string().max(10_000),
+		toolCalls: z.array(z.object({ id: AgentId, name: z.string().max(64), arguments: z.string().max(20_000) })).max(10).optional(),
+	}),
+	z.object({ role: z.literal("tool"), toolCallId: AgentId, content: z.string().max(60_000) }),
+]);
+
+export const AgentRequestSchema = z.object({
+	messages: z.array(AgentMessageSchema).min(1).max(MAX_AGENT_MESSAGES),
+	/** The conversation open beside the panel, if any. */
+	context: z.object({ mailboxId: AgentId, threadId: AgentId }).nullable().default(null),
+});
+
+/** A PendingAction the person approved, which is checked again as if the model had just asked for it. */
+export const AgentApproveSchema = z.object({ action: z.object({ id: AgentId, name: z.string().max(64), args: z.record(z.string(), z.unknown()) }) });
+
 /** `bytes` long once decoded, as a browser writes a subscription's keys. */
 const base64url = (bytes: number, check: (decoded: Uint8Array) => boolean = () => true) =>
 	z

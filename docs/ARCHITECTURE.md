@@ -669,6 +669,18 @@ apart for one person's mailbox is who you know, and what you've said about who y
   twice; after the third, the mail is delivered with those rules unmatched (logged as `rules unchecked`). A rule
   can be tried on the newest 1,000 inbound messages outside Trash and Spam (`/rules/preview`, its AI condition
   unchecked) and, without an AI condition, applied to what it matches (`/rules/:id/apply`).
+- **Mail agent** (`worker/agent.ts`, `POST /api/agent`, the app's right-hand panel). The same DeepSeek V4.1 Flash,
+  with function calling, answers in a loop of at most 8 model calls per question: it can search, list, and read
+  conversations (a read gives the newest 10 messages, 4,000 characters of each), list and make labels, label,
+  archive, star, and mark read, and list, try, write, delete, and apply rules. Each tool acts as the signed-in
+  person through `mailboxAccess()`, as the API does, so an id from someone else's mailbox is refused, and a call
+  naming one changes nothing. It reads hostile mail, so mail is passed as untrusted data and the instructions say
+  never to act on what mail asks; and anything that could lose mail or teach the spam filter (Trash, Spam, the
+  Screener, deleting or applying a rule, a rule that sends mail to Spam or Trash) never runs from `/api/agent`. It
+  comes back as a `pending` action, with what it'll do in plain words, and runs only from `/api/agent/approve`,
+  which checks it again. The app keeps the conversation (40 messages, in the tab's sessionStorage, cleared on sign
+  out) and sends it with each question; the server keeps nothing, and rereads at most 120,000 characters of
+  earlier tool results.
 
 ### 5.7 Reliability summary
 
@@ -698,6 +710,8 @@ apart for one person's mailbox is who you know, and what you've said about who y
 - Rules cost nothing unless one has an AI condition. Then DeepSeek V4.1 Flash on Workers AI ($0.30/M input, $1.20/M
   output) reads a message once, for all such rules, only when one's other conditions match and the mail isn't
   going to Spam: about 1,500 tokens in, a few hundred out.
+- The mail agent costs only when asked: each question is one to eight calls of the same model, each rereading the
+  conversation and its tools' results.
 
 ## 7. Checked on the pilot install
 
@@ -742,8 +756,9 @@ The web app is the only client, so it has to be good on phones and good enough t
 **Later**
 
 6. **Rules and filters** per mailbox: implemented (§5.6, Rules), with plain-English AI conditions. Not yet: Settings ›
-   Rules and "Filed by rule" in the thread (the API is in), the mail agent, forwarding and auto-reply actions,
-   person and admin scopes, and Sieve (docs/RULES.md).
+   Rules and "Filed by rule" in the thread (the API is in), forwarding and auto-reply actions, person and admin
+   scopes, and Sieve (docs/RULES.md). The mail agent is in (§5.6, Mail agent); not yet: drafting replies, an undo
+   for what it did, suggesting and cleaning up rules.
 7. **Image proxy** through the Worker so "Show images" doesn't leak your IP.
 8. **Workers AI**: category labels and thread summaries (spam and phishing checks are in, §5.6). Use
    **Vectorize** for semantic search next to FTS5.
