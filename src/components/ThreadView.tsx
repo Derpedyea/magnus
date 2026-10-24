@@ -13,7 +13,7 @@ import {
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi, Link, useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, ArrowLeftIcon, BanIcon, CheckIcon, CircleAlertIcon, ClockIcon, DownloadIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, ShieldXIcon, StarIcon, StarOffIcon, TagIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, BanIcon, CheckIcon, CircleAlertIcon, ClockIcon, DownloadIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, ListFilterIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, ShieldXIcon, StarIcon, StarOffIcon, TagIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
 import { type AppHotkey, useAppHotkeys, useHotkey } from "@tanstack/react-hotkeys";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -510,6 +510,7 @@ function Message(props: {
 			>
 				{props.outgoing ? <Undelivered mailboxId={props.mailboxId} message={m} /> : null}
 				<Triage mailboxId={props.mailboxId} message={m} />
+				<FiledBy message={m} />
 				{m.hasHtml ? (
 					<HtmlBody src={`${messageUrl(props.mailboxId, m.id)}/body`} fold={fold} onLink={openLinked} />
 				) : (
@@ -690,6 +691,30 @@ function Triage(props: { mailboxId: string; message: MessageDetail }) {
 	if (props.message.labels.includes("spam")) return <SpamReason {...props} />;
 	if (props.message.labels.includes("screener")) return <Screening {...props} />;
 	return null;
+}
+
+/** The model's reason, cut to a line or two: it can run to 200 characters. */
+const REASON_MAX = 140;
+
+/** Which of your rules filed inbound mail, and for one with an AI condition, what the model said of it. Nothing otherwise. */
+function FiledBy({ message }: { message: MessageDetail }) {
+	if (message.direction !== "in" || message.rules.length === 0) return null;
+	return (
+		<div className="mb-3 flex flex-col gap-0.5 text-xs text-muted-foreground">
+			{message.rules.map((hit) => (
+				<p key={hit.id} className="flex items-start gap-1.5">
+					<ListFilterIcon aria-hidden className="mt-px size-3.5 shrink-0" />
+					<span className="min-w-0 break-words">
+						Filed by rule{" "}
+						<Link to="/settings/rules" className="font-medium text-foreground underline-offset-2 hover:underline">
+							{hit.name}
+						</Link>
+						{hit.reason ? <span title={hit.reason}> · “{hit.reason.length > REASON_MAX ? `${hit.reason.slice(0, REASON_MAX).trimEnd()}…` : hit.reason}”</span> : null}
+					</span>
+				</p>
+			))}
+		</div>
+	);
 }
 
 /**
