@@ -15,10 +15,19 @@ import { cn } from "@/lib/utils";
 import { type AgentContext, agentChat, agentOpen, approve, ask, decline, newChat, retry, toggleAgent } from "../agent";
 import { formatDate } from "../dates";
 
+/**
+ * Open as the app loads, left open from the last visit: its box doesn't take the keyboard from the mail's shortcuts
+ * then. Opened since, it does.
+ */
+let leftOpen = agentOpen.state;
+
 /** The assistant, beside the mail on wider screens and over it on a phone. */
 export function AgentPanel() {
 	const open = useSelector(agentOpen, (s) => s);
 	const mobile = useIsMobile();
+	useEffect(() => {
+		if (!open) leftOpen = false;
+	}, [open]);
 	if (mobile) {
 		return (
 			<Sheet open={open} onOpenChange={(next) => toggleAgent(next)}>
@@ -128,7 +137,7 @@ function Chat({ mobile }: { mobile: boolean }) {
 			>
 				<div className="relative">
 					<Textarea
-						autoFocus
+						autoFocus={!leftOpen}
 						rows={1}
 						value={text}
 						onChange={(e) => setText(e.target.value)}

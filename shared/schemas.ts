@@ -165,6 +165,9 @@ export const RuleOrderSchema = z.object({ ids: z.array(z.string()).max(MAX_RULES
 /** How much of a conversation with the mail agent the app sends back, at most (worker/agent.ts bounds what it says). */
 export const MAX_AGENT_MESSAGES = 40;
 export const MAX_AGENT_QUESTION = 4000;
+/** Characters of the agent's own text, and of a call's arguments, that it can send back. */
+export const MAX_AGENT_TEXT = 10_000;
+export const MAX_AGENT_ARGUMENTS = 20_000;
 const AgentId = z.string().min(1).max(200);
 
 /** What the model reads of each message: the panel's own parts of a tool's (AgentMessage) are dropped. */
@@ -172,8 +175,8 @@ const AgentMessageSchema = z.discriminatedUnion("role", [
 	z.object({ role: z.literal("user"), content: z.string().trim().min(1).max(MAX_AGENT_QUESTION) }),
 	z.object({
 		role: z.literal("assistant"),
-		content: z.string().max(10_000),
-		toolCalls: z.array(z.object({ id: AgentId, name: z.string().max(64), arguments: z.string().max(20_000) })).max(10).optional(),
+		content: z.string().max(MAX_AGENT_TEXT),
+		toolCalls: z.array(z.object({ id: AgentId, name: z.string().max(64), arguments: z.string().max(MAX_AGENT_ARGUMENTS) })).max(10).optional(),
 	}),
 	z.object({ role: z.literal("tool"), toolCallId: AgentId, content: z.string().max(60_000) }),
 ]);

@@ -40,9 +40,9 @@ export const appHotkeys = defineAppHotkeys({
 	"go.all": { hotkey: ["G", "A"], meta: { name: "All mail", group: "Go to" } },
 
 	"sidebar.toggle": { hotkey: "Mod+B", meta: { name: "Toggle sidebar", group: "App" } },
-	// With Mod, so it works from the assistant's own box too. Not Mod+J or Mod+K, which Chrome keeps for Downloads and
-	// search.
-	"agent.toggle": { hotkey: "Mod+.", meta: { name: "Toggle assistant", group: "App" }, options: { ignoreInputs: false } },
+	// With Mod, so it works from the assistant's own box too ("auto": a Ctrl or ⌘ chord does, rebound to a plain key it
+	// waits). Not Mod+J or Mod+K, which Chrome keeps for Downloads and search.
+	"agent.toggle": { hotkey: "Mod+.", meta: { name: "Toggle assistant", group: "App" }, options: { ignoreInputs: "auto" } },
 	"help.shortcuts": { hotkey: "?", meta: { name: "Keyboard shortcuts", group: "App" } },
 });
 

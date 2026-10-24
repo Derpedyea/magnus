@@ -70,7 +70,8 @@ describe("Mail agent", () => {
 
 	it("asks before what could lose mail, one thing at a time, and does it once approved", async () => {
 		const mine = await deliver(ids.alice, "mine", "Old newsletter");
-		const rule = { name: "Bin it", conditions: [{ field: "subject", op: "contains", value: "newsletter" }], actions: [{ do: "trash" }] };
+		// Safe on its own, but after a call that asks: run at once, it could change what the person approves.
+		const rule = { name: "Skip them", conditions: [{ field: "subject", op: "contains", value: "newsletter" }], actions: [{ do: "skip-inbox" }] };
 		await f.control.setModels({
 			agent: [
 				{
@@ -85,7 +86,7 @@ describe("Mail agent", () => {
 
 		const { body } = (await ask("Bin my newsletters")) as { body: AgentReply };
 		expect(body).toMatchObject({
-			messages: [{ role: "assistant" }, { role: "tool", name: "create_rule", summary: "Waiting to ask about another change" }],
+			messages: [{ role: "assistant" }, { role: "tool", name: "create_rule", summary: "Not done yet: waiting for your answer" }],
 			pending: { name: "modify_threads", summary: "Move to Trash: 1 conversation.", threads: [{ id: mine }] },
 		});
 		expect(await labelsOf(ids.alice, mine)).toEqual(["inbox"]);

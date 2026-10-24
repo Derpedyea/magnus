@@ -44,8 +44,21 @@ function restore(): Chat {
 export const agentChat = createStore<Chat>(restore());
 agentChat.subscribe(() => {
 	const { messages, pending } = agentChat.state;
-	if (messages.length === 0) sessionStorage.removeItem(CHAT);
-	else sessionStorage.setItem(CHAT, JSON.stringify({ messages, pending }));
+	if (messages.length === 0) {
+		sessionStorage.removeItem(CHAT);
+		return;
+	}
+	// Thrown here, a full quota would come out of setState(), and stop whatever set it from asking: past it, the end of
+	// the conversation is kept, or none.
+	try {
+		sessionStorage.setItem(CHAT, JSON.stringify({ messages, pending }));
+	} catch {
+		try {
+			sessionStorage.setItem(CHAT, JSON.stringify({ messages: recent(messages), pending }));
+		} catch {
+			sessionStorage.removeItem(CHAT);
+		}
+	}
 });
 
 /** Counts conversations, so an answer to one that's gone (New chat, signing out) is dropped. */
@@ -91,8 +104,8 @@ export function decline(qc: QueryClient, context: AgentContext) {
 	void converse(qc, context);
 }
 
-/** Sends the conversation again after it failed. */
-export const retry = (qc: QueryClient, context: AgentContext) => void converse(qc, context);
+/** Tries again what failed: the approval, if it waits still, or else the conversation. */
+export const retry = (qc: QueryClient, context: AgentContext) => void (agentChat.state.pending ? approve(qc, context) : converse(qc, context));
 
 function declined(pending: PendingAction): AgentMessage {
 	return { role: "tool", toolCallId: pending.id, name: pending.name, content: "The user declined.", summary: `Rejected: ${pending.summary}` };
@@ -115,5 +128,10 @@ async function converse(qc: QueryClient, context: AgentContext) {
 function recent(messages: AgentMessage[]): AgentMessage[] {
 	const tail = messages.slice(-MAX_AGENT_MESSAGES);
 	const start = tail.findIndex((m) => m.role === "user");
-	return start === -1 ? tail.slice(-1) : tail.slice(start);
+	if (start !== -1) return tail.slice(start);
+	// One question's answer, approvals and all, can run longer: then it's the question, and its latest steps that fit, whole.
+	const question = messages.findLastIndex((m) => m.role === "user");
+	let from = messages.length - (MAX_AGENT_MESSAGES - 1);
+	while (from < messages.length && messages[from]!.role !== "assistant") from++;
+	return [...(question === -1 ? [] : [messages[question]!]), ...messages.slice(from)];
 }

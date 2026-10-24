@@ -19,7 +19,7 @@ import {
 	type ThreadSummary,
 	type User,
 } from "#shared";
-import { AgentRequestSchema, LabelNameSchema, MarkReadSchema, ModifyThreadsSchema, RuleInputSchema } from "#shared/schemas";
+import { AgentRequestSchema, LabelNameSchema, MAX_AGENT_ARGUMENTS, MAX_AGENT_TEXT, MarkReadSchema, ModifyThreadsSchema, RuleInputSchema } from "#shared/schemas";
 import { z } from "zod";
 import { mailboxAccess, type Reader } from "./directory";
 import { type Models, parsedJson } from "./mail/checks";
@@ -33,12 +33,10 @@ import type { Mailbox } from "./mailbox/mailbox";
 
 /** Model calls per question, at most, tools in between. */
 const MAX_STEPS = 8;
-/** Characters of tool results the model rereads from earlier in the conversation; older ones are left out. */
+/** Characters of tool results the model rereads, from earlier in the conversation and this answer; older ones are left out. */
 const MAX_HISTORY = 120_000;
 /** Characters of one tool result, at most. */
 const MAX_RESULT = 50_000;
-/** Of the model's own text, kept. */
-const MAX_TEXT = 10_000;
 /** Tool calls one answer can make. */
 const MAX_CALLS = 10;
 /** Threads a list or search gives, at most. */
@@ -202,9 +200,8 @@ const TOOLS: Record<string, AgentTool> = {
 				if (chain.length === 0) throw new ToolError(`There's no label with the key “${key}”. list_labels gives their keys, and create_label makes one.`);
 				return chain.map(({ key, name, parent, color }) => ({ key, name, parent, color }));
 			});
-			const byMailbox = await grouped(agent, threads);
-			for (const [stub, threadIds] of byMailbox) await stub.modifyThreads({ threadIds, add, remove, define });
-			return { content: { changed: threads.length }, summary: `${capitalize(await changes(agent, add, remove, true))} · ${count(threads.length, "conversation")}`, threads: await peek(agent, threads) };
+			const { content, found } = await changeThreads(agent, threads, (stub, threadIds) => stub.modifyThreads({ threadIds, add, remove, define }));
+			return { content, summary: `${capitalize(await changes(agent, add, remove, true))} · ${count(found.length, "conversation")}`, threads: await peek(agent, found) };
 		},
 	}),
 
@@ -212,8 +209,8 @@ const TOOLS: Record<string, AgentTool> = {
 		description: "Marks conversations read, or unread.",
 		args: z.object({ threads: Threads, read: MarkReadSchema.shape.read }),
 		run: async (agent, { threads, read }) => {
-			for (const [stub, threadIds] of await grouped(agent, threads)) await stub.markRead({ threadIds, read });
-			return { content: { changed: threads.length }, summary: `Marked ${read ? "read" : "unread"} · ${count(threads.length, "conversation")}`, threads: await peek(agent, threads) };
+			const { content, found } = await changeThreads(agent, threads, (stub, threadIds) => stub.markRead({ threadIds, read }));
+			return { content, summary: `Marked ${read ? "read" : "unread"} · ${count(found.length, "conversation")}`, threads: await peek(agent, found) };
 		},
 	}),
 
@@ -310,46 +307,86 @@ const Reply = z.object({
 				message: z.object({
 					content: z.string().nullish(),
 					reasoning_content: z.string().nullish(),
-					tool_calls: z
-						.array(
-							z.object({
-								id: z.string().min(1).max(200),
-								// A string of JSON, as Workers AI gives it; an object, as some providers do.
-								function: z.object({ name: z.string().max(64), arguments: z.union([z.string(), z.record(z.string(), z.unknown())]).transform((a) => (typeof a === "string" ? a : JSON.stringify(a))) }),
-							}),
-						)
-						.nullish(),
+					// Each read on its own (readCall()), so one Magnus can't read is refused to the model rather than failing the answer.
+					tool_calls: z.array(z.unknown()).nullish(),
 				}),
 			}),
 		)
 		.min(1),
 });
 
+/** A tool call, as the request takes it back (AgentRequestSchema). */
+const Call = z.object({
+	id: z.string().min(1).max(200),
+	function: z.object({
+		name: z.string().max(64),
+		// A string of JSON, as Workers AI gives it; an object, as some providers do; nothing, for a tool that takes none.
+		arguments: z
+			.union([z.string(), z.record(z.string(), z.unknown())])
+			.optional()
+			.transform((a) => (a === undefined ? "{}" : typeof a === "string" ? a : JSON.stringify(a)))
+			.pipe(z.string().max(MAX_AGENT_ARGUMENTS)),
+	}),
+});
+
+interface ModelCall {
+	id: string;
+	name: string;
+	arguments: string;
+	/** Not as Call has it: refused, and kept in a shape the request takes back. */
+	unreadable?: true;
+}
+
+function readCall(raw: unknown): ModelCall {
+	const call = Call.safeParse(raw);
+	if (call.success) return { id: call.data.id, name: call.data.function.name, arguments: call.data.function.arguments };
+	const name = (raw as { function?: { name?: unknown } } | null)?.function?.name;
+	return { id: crypto.randomUUID(), name: typeof name === "string" ? cut(name, 64) : "", arguments: "{}", unreadable: true };
+}
+
 /**
  * Answers the person's last message: asks the model, runs the tools it calls, and asks again, until it answers, or
- * calls one that needs their approval, which waits (PendingAction). Throws AgentError when the model can't be had.
+ * calls one that needs their approval, which waits (PendingAction). Throws AgentError when the model can't be had
+ * before any tool has run.
  */
 export async function converse(agent: Agent, request: z.output<typeof AgentRequestSchema>): Promise<AgentReply> {
-	const messages: Record<string, unknown>[] = [{ role: "system", content: await instructions(agent, request.context) }, ...forModel(request.messages)];
+	const history = forModel(request.messages);
+	const messages: Record<string, unknown>[] = [{ role: "system", content: await instructions(agent, request.context) }, ...history.messages];
+	let room = history.room;
 	const added: AgentMessage[] = [];
 	for (let step = 0; step < MAX_STEPS; step++) {
-		const reply = await ask(agent.models, messages);
-		const calls = (reply.tool_calls ?? []).slice(0, MAX_CALLS).map((c) => ({ id: c.id, name: c.function.name, arguments: c.function.arguments }));
-		const content = cut(reply.content?.trim() ?? "", MAX_TEXT);
-		added.push(calls.length > 0 ? { role: "assistant", content, toolCalls: calls } : { role: "assistant", content });
+		let reply: Awaited<ReturnType<typeof ask>>;
+		try {
+			reply = await ask(agent.models, messages);
+		} catch (error) {
+			// Its tools may have changed their mail already: what they did stays in the conversation, for the person to see
+			// and the model to know of when it's asked to go on.
+			if (!(error instanceof AgentError) || added.length === 0) throw error;
+			added.push({ role: "assistant", content: "I couldn't finish: the assistant stopped answering partway, after what's above. Say “go on” to carry on from here." });
+			return { messages: added, pending: null };
+		}
+		const calls = (reply.tool_calls ?? []).slice(0, MAX_CALLS).map(readCall);
+		const content = cut(reply.content?.trim() ?? "", MAX_AGENT_TEXT);
+		added.push(calls.length > 0 ? { role: "assistant", content, toolCalls: calls.map(({ id, name, arguments: a }) => ({ id, name, arguments: a })) } : { role: "assistant", content });
 		// The model's reasoning goes back to it while it's still working on this question, as DeepSeek asks.
 		messages.push({ role: "assistant", content, ...(reply.reasoning_content ? { reasoning_content: reply.reasoning_content } : {}), ...(calls.length > 0 ? { tool_calls: toolCalls(calls) } : {}) });
 		if (calls.length === 0) return { messages: added, pending: null };
 
 		let pending: PendingAction | null = null;
 		for (const call of calls) {
-			const result = await prepared(agent, call, pending !== null);
+			// Nothing after a call that asks runs before they answer, so what they approve is what it said it'd do.
+			const result: Awaited<ReturnType<typeof prepared>> = pending
+				? toolMessage(call.id, call.name, { error: "Not done: it waits for their answer about the change you asked for. Make the call again once they've answered." }, "Not done yet: waiting for your answer")
+				: await prepared(agent, call);
 			if ("ask" in result) {
 				pending = { id: call.id, name: call.name, args: result.args, ...result.ask };
 				continue;
 			}
 			added.push(result);
-			messages.push({ role: "tool", tool_call_id: call.id, content: result.content });
+			// The panel shows it whole; past MAX_HISTORY, the model reads that it's left out.
+			const fits = result.content.length <= room;
+			if (fits) room -= result.content.length;
+			messages.push({ role: "tool", tool_call_id: call.id, content: fits ? result.content : JSON.stringify({ note: "Left out to save room: this answer has read all it can. Say what you found, or read less." }) });
 		}
 		if (pending) return { messages: added, pending };
 	}
@@ -369,18 +406,16 @@ export async function approveAction(agent: Agent, action: Pick<PendingAction, "i
 	return toolMessage(action.id, action.name, { approved: "They approved it, and it's done.", result: result.content }, result.summary, result.threads);
 }
 
-/** A call's result, or what it'd ask the person first. One that'd ask, after one already did, waits its turn. */
-async function prepared(agent: Agent, call: { id: string; name: string; arguments: string }, asked: boolean): Promise<Extract<AgentMessage, { role: "tool" }> | { args: Record<string, unknown>; ask: Ask }> {
+/** A call's result, or what it'd ask the person first. */
+async function prepared(agent: Agent, call: ModelCall): Promise<Extract<AgentMessage, { role: "tool" }> | { args: Record<string, unknown>; ask: Ask }> {
+	if (call.unreadable) return toolMessage(call.id, call.name, { error: `That call couldn't be read: it needs an id, a tool's name, and arguments of JSON up to ${MAX_AGENT_ARGUMENTS} characters` }, "Couldn't do that");
 	const t = named(call.name);
 	if (!t) return toolMessage(call.id, call.name, { error: `There's no tool called ${JSON.stringify(cut(call.name, 64))}` }, "Couldn't do that");
 	const args = parsedJson(call.arguments || "{}");
-	if (args === undefined) return toolMessage(call.id, call.name, { error: "Its arguments weren't JSON" }, "Couldn't do that");
+	if (args === null) return toolMessage(call.id, call.name, { error: "Its arguments weren't JSON" }, "Couldn't do that");
 	const ready = await t.prepare(agent, args).catch(failed);
 	if ("error" in ready) return toolMessage(call.id, call.name, ready, `Couldn't do that: ${ready.error}`);
-	if (ready.ask) {
-		if (!asked) return { args: ready.args, ask: ready.ask };
-		return toolMessage(call.id, call.name, { error: "Not done: they approve one thing at a time. Ask for it again once they've answered." }, "Waiting to ask about another change");
-	}
+	if (ready.ask) return { args: ready.args, ask: ready.ask };
 	const result = await ready.run().catch(failed);
 	if ("error" in result) return toolMessage(call.id, call.name, result, `Couldn't do that: ${result.error}`);
 	return toolMessage(call.id, call.name, result.content, result.summary, result.threads);
@@ -412,9 +447,9 @@ async function ask(models: Models, messages: Record<string, unknown>[]) {
 /**
  * The conversation as the model reads it. Tool results from long ago are left out once they'd go past MAX_HISTORY, and
  * a call that has no result (the person moved on from a question) says it wasn't made, as the model needs every call
- * answered. A result whose call isn't there any more goes too.
+ * answered. A result whose call isn't there any more goes too. `room`: what's left of MAX_HISTORY for this answer's own.
  */
-function forModel(history: z.output<typeof AgentRequestSchema>["messages"]): Record<string, unknown>[] {
+function forModel(history: z.output<typeof AgentRequestSchema>["messages"]): { messages: Record<string, unknown>[]; room: number } {
 	const answered = new Set(history.flatMap((m) => (m.role === "tool" ? [m.toolCallId] : [])));
 	const called = new Set(history.flatMap((m) => (m.role === "assistant" ? (m.toolCalls ?? []).map((c) => c.id) : [])));
 	// Counted from the newest, so it's the oldest results that go.
@@ -426,7 +461,7 @@ function forModel(history: z.output<typeof AgentRequestSchema>["messages"]): Rec
 		budget -= m.content.length;
 		fits.add(i);
 	}
-	return history.flatMap((m, i): Record<string, unknown>[] => {
+	const messages = history.flatMap((m, i): Record<string, unknown>[] => {
 		if (m.role === "user") return [{ role: "user", content: m.content }];
 		if (m.role === "tool") {
 			if (!called.has(m.toolCallId)) return [];
@@ -437,6 +472,7 @@ function forModel(history: z.output<typeof AgentRequestSchema>["messages"]): Rec
 		const unanswered = calls.filter((c) => !answered.has(c.id)).map((c) => ({ role: "tool", tool_call_id: c.id, content: JSON.stringify({ error: "Not done." }) }));
 		return [{ role: "assistant", content: m.content, tool_calls: toolCalls(calls) }, ...unanswered];
 	});
+	return { messages, room: budget };
 }
 
 const toolCalls = (calls: { id: string; name: string; arguments: string }[]) => calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }));
@@ -472,11 +508,24 @@ async function mailbox(agent: Agent, mailboxId: string): Promise<Stub> {
 	return agent.env.MAILBOX.getByName(mailboxId);
 }
 
+/**
+ * Changes their threads, a mailbox at a time, and says which there were (`found`): the model's told of the rest, as a
+ * mistyped id would otherwise read as done.
+ */
+async function changeThreads(agent: Agent, threads: { mailboxId: string; threadId: string }[], change: (stub: Stub, threadIds: string[]) => Promise<string[]>) {
+	const here = new Set<string>();
+	for (const [mailboxId, stub, threadIds] of await grouped(agent, threads)) for (const id of await change(stub, threadIds)) here.add(JSON.stringify([mailboxId, id]));
+	const unique = [...new Map(threads.map((t) => [JSON.stringify([t.mailboxId, t.threadId]), t]))];
+	const found = unique.filter(([key]) => here.has(key)).map(([, t]) => t);
+	const notFound = unique.filter(([key]) => !here.has(key)).map(([, t]) => t);
+	return { content: { changed: found.length, ...(notFound.length > 0 ? { notFound } : {}) }, found };
+}
+
 /** Threads by mailbox, every mailbox checked before anything changes, so a call naming someone else's changes nothing. */
-async function grouped(agent: Agent, threads: { mailboxId: string; threadId: string }[]): Promise<[Stub, string[]][]> {
+async function grouped(agent: Agent, threads: { mailboxId: string; threadId: string }[]): Promise<[string, Stub, string[]][]> {
 	const ids = new Map<string, string[]>();
 	for (const t of threads) ids.set(t.mailboxId, [...(ids.get(t.mailboxId) ?? []), t.threadId]);
-	return Promise.all([...ids].map(async ([mailboxId, threadIds]): Promise<[Stub, string[]]> => [await mailbox(agent, mailboxId), [...new Set(threadIds)]]));
+	return Promise.all([...ids].map(async ([mailboxId, threadIds]): Promise<[string, Stub, string[]]> => [mailboxId, await mailbox(agent, mailboxId), [...new Set(threadIds)]]));
 }
 
 /** Newest first, from every one of their mailboxes. */
@@ -590,6 +639,7 @@ function shown(t: MailboxThread): AgentThread {
 }
 
 const address = (a: Address) => (a.name ? `${cut(a.name, 100)} <${cut(a.address, 200)}>` : cut(a.address, 200));
-const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
+/** At most `max` characters, the ellipsis too. */
+const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
