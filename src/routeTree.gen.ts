@@ -28,6 +28,7 @@ import { Route as AppSettingsSettingsAppearanceRouteImport } from './routes/_app
 import { Route as AppSettingsSettingsImportRouteImport } from './routes/_app._settings.settings.import'
 import { Route as AppSettingsSettingsLabelsRouteImport } from './routes/_app._settings.settings.labels'
 import { Route as AppSettingsSettingsNotificationsRouteImport } from './routes/_app._settings.settings.notifications'
+import { Route as AppSettingsSettingsRulesRouteImport } from './routes/_app._settings.settings.rules'
 import { Route as AppSettingsSettingsShortcutsRouteImport } from './routes/_app._settings.settings.shortcuts'
 import { Route as AppSettingsSettingsSignInRouteImport } from './routes/_app._settings.settings.sign-in'
 import { Route as AppSettingsSettingsSignaturesRouteImport } from './routes/_app._settings.settings.signatures'
@@ -133,6 +134,12 @@ const AppSettingsSettingsNotificationsRoute =
     path: '/settings/notifications',
     getParentRoute: () => AppSettingsRoute,
   } as any)
+const AppSettingsSettingsRulesRoute =
+  AppSettingsSettingsRulesRouteImport.update({
+    id: '/settings/rules',
+    path: '/settings/rules',
+    getParentRoute: () => AppSettingsRoute,
+  } as any)
 const AppSettingsSettingsShortcutsRoute =
   AppSettingsSettingsShortcutsRouteImport.update({
     id: '/settings/shortcuts',
@@ -177,6 +184,7 @@ export interface FileRoutesByFullPath {
   '/settings/import': typeof AppSettingsSettingsImportRoute
   '/settings/labels': typeof AppSettingsSettingsLabelsRoute
   '/settings/notifications': typeof AppSettingsSettingsNotificationsRoute
+  '/settings/rules': typeof AppSettingsSettingsRulesRoute
   '/settings/shortcuts': typeof AppSettingsSettingsShortcutsRoute
   '/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
@@ -198,6 +206,7 @@ export interface FileRoutesByTo {
   '/settings/import': typeof AppSettingsSettingsImportRoute
   '/settings/labels': typeof AppSettingsSettingsLabelsRoute
   '/settings/notifications': typeof AppSettingsSettingsNotificationsRoute
+  '/settings/rules': typeof AppSettingsSettingsRulesRoute
   '/settings/shortcuts': typeof AppSettingsSettingsShortcutsRoute
   '/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
@@ -225,6 +234,7 @@ export interface FileRoutesById {
   '/_app/_settings/settings/import': typeof AppSettingsSettingsImportRoute
   '/_app/_settings/settings/labels': typeof AppSettingsSettingsLabelsRoute
   '/_app/_settings/settings/notifications': typeof AppSettingsSettingsNotificationsRoute
+  '/_app/_settings/settings/rules': typeof AppSettingsSettingsRulesRoute
   '/_app/_settings/settings/shortcuts': typeof AppSettingsSettingsShortcutsRoute
   '/_app/_settings/settings/sign-in': typeof AppSettingsSettingsSignInRoute
   '/_app/_settings/settings/signatures': typeof AppSettingsSettingsSignaturesRoute
@@ -250,6 +260,7 @@ export interface FileRouteTypes {
     | '/settings/import'
     | '/settings/labels'
     | '/settings/notifications'
+    | '/settings/rules'
     | '/settings/shortcuts'
     | '/settings/sign-in'
     | '/settings/signatures'
@@ -271,6 +282,7 @@ export interface FileRouteTypes {
     | '/settings/import'
     | '/settings/labels'
     | '/settings/notifications'
+    | '/settings/rules'
     | '/settings/shortcuts'
     | '/settings/sign-in'
     | '/settings/signatures'
@@ -297,6 +309,7 @@ export interface FileRouteTypes {
     | '/_app/_settings/settings/import'
     | '/_app/_settings/settings/labels'
     | '/_app/_settings/settings/notifications'
+    | '/_app/_settings/settings/rules'
     | '/_app/_settings/settings/shortcuts'
     | '/_app/_settings/settings/sign-in'
     | '/_app/_settings/settings/signatures'
@@ -448,6 +461,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsSettingsNotificationsRouteImport
       parentRoute: typeof AppSettingsRoute
     }
+    '/_app/_settings/settings/rules': {
+      id: '/_app/_settings/settings/rules'
+      path: '/settings/rules'
+      fullPath: '/settings/rules'
+      preLoaderRoute: typeof AppSettingsSettingsRulesRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
     '/_app/_settings/settings/shortcuts': {
       id: '/_app/_settings/settings/shortcuts'
       path: '/settings/shortcuts'
@@ -538,6 +558,7 @@ interface AppSettingsRouteChildren {
   AppSettingsSettingsImportRoute: typeof AppSettingsSettingsImportRoute
   AppSettingsSettingsLabelsRoute: typeof AppSettingsSettingsLabelsRoute
   AppSettingsSettingsNotificationsRoute: typeof AppSettingsSettingsNotificationsRoute
+  AppSettingsSettingsRulesRoute: typeof AppSettingsSettingsRulesRoute
   AppSettingsSettingsShortcutsRoute: typeof AppSettingsSettingsShortcutsRoute
   AppSettingsSettingsSignInRoute: typeof AppSettingsSettingsSignInRoute
   AppSettingsSettingsSignaturesRoute: typeof AppSettingsSettingsSignaturesRoute
@@ -551,6 +572,7 @@ const AppSettingsRouteChildren: AppSettingsRouteChildren = {
   AppSettingsSettingsImportRoute: AppSettingsSettingsImportRoute,
   AppSettingsSettingsLabelsRoute: AppSettingsSettingsLabelsRoute,
   AppSettingsSettingsNotificationsRoute: AppSettingsSettingsNotificationsRoute,
+  AppSettingsSettingsRulesRoute: AppSettingsSettingsRulesRoute,
   AppSettingsSettingsShortcutsRoute: AppSettingsSettingsShortcutsRoute,
   AppSettingsSettingsSignInRoute: AppSettingsSettingsSignInRoute,
   AppSettingsSettingsSignaturesRoute: AppSettingsSettingsSignaturesRoute,
