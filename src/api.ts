@@ -1,4 +1,4 @@
-import { type Address, type CustomHotkeys, formatScope, type LabelChange, type LabelDef, type MailSettings, type StepId } from "#shared";
+import { type Address, type CustomHotkeys, formatScope, type LabelChange, type LabelDef, type MailSettings, type RuleInput, type StepId } from "#shared";
 import { adminClient, emailOTPClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/client";
 import { hc, type InferRequestType, parseResponse } from "hono/client";
@@ -109,6 +109,17 @@ export const api = {
 		parseResponse(mailbox.messages[":messageId"].judge.$post({ param: { mailboxId, messageId }, json: { verdict } })),
 	settings: (mailboxId: string) => parseResponse(mailbox.settings.$get({ param: { mailboxId } })),
 	updateSettings: (mailboxId: string, change: Partial<MailSettings>) => parseResponse(mailbox.settings.$patch({ param: { mailboxId }, json: change })),
+	/** A mailbox's rules, in the order they run. */
+	rules: (mailboxId: string) => parseResponse(mailbox.rules.$get({ param: { mailboxId } })),
+	createRule: (mailboxId: string, rule: RuleInput) => parseResponse(mailbox.rules.$post({ param: { mailboxId }, json: rule })),
+	updateRule: (mailboxId: string, ruleId: string, rule: RuleInput) => parseResponse(mailbox.rules[":ruleId"].$put({ param: { mailboxId, ruleId }, json: rule })),
+	deleteRule: (mailboxId: string, ruleId: string) => parseResponse(mailbox.rules[":ruleId"].$delete({ param: { mailboxId, ruleId } })),
+	/** Every rule's id, in their new order. Refused if the rules changed meanwhile. */
+	reorderRules: (mailboxId: string, ids: string[]) => parseResponse(mailbox.rules.order.$post({ param: { mailboxId }, json: { ids } })),
+	/** What a rule would match of the newest mail here, AI condition aside, before it's saved. */
+	previewRule: (mailboxId: string, rule: RuleInput) => parseResponse(mailbox.rules.preview.$post({ param: { mailboxId }, json: rule })),
+	/** Files the mail already here that a saved rule, one without an AI condition, matches. */
+	applyRule: (mailboxId: string, ruleId: string) => parseResponse(mailbox.rules[":ruleId"].apply.$post({ param: { mailboxId, ruleId } })),
 	markRead: (mailboxId: string, threadIds: string[], read: boolean) =>
 		parseResponse(mailbox.threads.read.$post({ param: { mailboxId }, json: { threadIds, read } })),
 	upload: (mailboxId: string, file: File) =>

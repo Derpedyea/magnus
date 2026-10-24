@@ -72,6 +72,9 @@ export const failedQuery = (scope: string[]) => queryOptions({ queryKey: ["mail"
 /** How a mailbox filters mail from senders it doesn't know (Settings › Spam). */
 export const mailSettingsQuery = (mailboxId: string) => queryOptions({ queryKey: ["mail-settings", mailboxId], queryFn: () => api.settings(mailboxId) });
 
+/** A mailbox's rules, in the order they run (Settings › Rules). Under ["mail"], so a change in another tab or by someone sharing the mailbox shows. */
+export const rulesQuery = (mailboxId: string) => queryOptions({ queryKey: ["mail", "rules", mailboxId], queryFn: () => api.rules(mailboxId), select: (r) => r.rules });
+
 export const countsQuery = (scope: string[]) => queryOptions({ queryKey: ["mail", "counts", scope], queryFn: () => api.counts(scope) });
 
 /** The user's own labels across their mailboxes. Under ["mail"], so a change in another tab or by someone sharing a mailbox shows. */
