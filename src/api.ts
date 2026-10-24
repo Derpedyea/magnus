@@ -169,6 +169,9 @@ export const api = {
 	push: () => parseResponse(client.push.$get()),
 	enablePush: (json: Json<typeof client.push.$put>) => parseResponse(client.push.$put({ json })),
 	disablePush: () => parseResponse(client.push.$delete()),
+	/** The mail agent's answer to the conversation so far (src/agent.ts). */
+	agent: (json: Json<typeof client.agent.$post>) => parseResponse(client.agent.$post({ json })),
+	approveAgent: (action: Json<typeof client.agent.approve.$post>["action"]) => parseResponse(client.agent.approve.$post({ json: { action } })),
 };
 
 /** First run: prove ownership with a Cloudflare token, then become the first admin (and get signed in). */

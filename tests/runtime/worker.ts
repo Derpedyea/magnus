@@ -37,12 +37,14 @@ let pushStatus = 201;
 // A push service answering with a body that never ends, as any endpoint someone registers could.
 let pushEndless = false;
 
+/** One answer of the mail agent's model: what it says, and the tools it calls. */
+export type AgentStep = { content?: string; calls?: { name: string; args: unknown }[] };
 /**
- * What the stand-in models answer: Clef's probability of spam, Luna's category, and whether every rule's AI condition
- * matches. "fail" throws; "garbage" is off-schema.
+ * What the stand-in models answer: Clef's probability of spam, Luna's category, whether every rule's AI condition
+ * matches, and the mail agent's answers in turn (then "Done."). "fail" throws; "garbage" is off-schema.
  */
-type ModelAnswers = { quick: number | Record<MailCategory, number> | "fail" | "garbage"; deep: MailCategory | "fail" | "echo"; rules: boolean | "fail" | "garbage" };
-const ANSWERS: ModelAnswers = { quick: 0, deep: "personal", rules: true };
+type ModelAnswers = { quick: number | Record<MailCategory, number> | "fail" | "garbage"; deep: MailCategory | "fail" | "echo"; rules: boolean | "fail" | "garbage"; agent: AgentStep[] };
+const ANSWERS: ModelAnswers = { quick: 0, deep: "personal", rules: true, agent: [] };
 let answers = ANSWERS;
 /** Each model call, its inputs as JSON. */
 let modelCalls: { model: string; inputs: string }[] = [];
@@ -58,6 +60,12 @@ const models: Models = {
 				? { personal: 1 - answers.quick, transactional: 0, newsletter: 0, outreach: 0, spam: answers.quick, phishing: 0 }
 				: answers.quick;
 			return { model: "clef", answers: { category: { type: "choice", choice: "personal", probabilities, confidence: 1 } }, usage: { input_tokens: 1, output_tokens: 0 } };
+		}
+		if (model === RULES_MODEL && "tools" in inputs) {
+			const [step = { content: "Done." }, ...rest] = answers.agent;
+			answers = { ...answers, agent: rest };
+			const calls = step.calls?.map((c, i) => ({ id: `call-${modelCalls.length}-${i}`, type: "function", function: { name: c.name, arguments: JSON.stringify(c.args) } }));
+			return { choices: [{ message: { role: "assistant", content: step.content ?? "", ...(calls ? { tool_calls: calls } : {}) }, finish_reason: calls ? "tool_calls" : "stop" }] };
 		}
 		if (model === RULES_MODEL) {
 			if (answers.rules === "fail") throw new Error("Injected model failure");
@@ -186,7 +194,8 @@ function controlled(env: Env): Env {
 			return { messageId: `provider-${sends.length}@example.net` };
 		},
 	};
-	return { ...env, MAIL, DIRECTORY, INBOUND, EMAIL };
+	// The fixture has no AI binding: the API's mail agent (worker/agent.ts) gets the stand-in.
+	return { ...env, MAIL, DIRECTORY, INBOUND, EMAIL, AI: models as unknown as Ai };
 }
 
 /**

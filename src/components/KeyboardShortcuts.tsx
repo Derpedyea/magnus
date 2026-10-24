@@ -33,7 +33,7 @@ export function HotkeysRoot({ hotkeys, children }: { hotkeys: Me["hotkeys"]; chi
 	};
 	return (
 		// Saved by an older version, an entry may name a shortcut that's gone; the provider skips it. None fire while you
-		// type, even rebound to a Ctrl or ⌘ chord, except Send (hotkeys.ts).
+		// type, even rebound to a Ctrl or ⌘ chord, except Send, and Toggle assistant as a chord (hotkeys.ts).
 		<HotkeysProvider
 			appHotkeys={appHotkeys}
 			customHotkeys={hotkeys as CustomHotkeys}
