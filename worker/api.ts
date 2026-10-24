@@ -33,6 +33,8 @@ import {
 } from "#shared";
 import { noteBody } from "#shared/markdown";
 import {
+	AgentApproveSchema,
+	AgentRequestSchema,
 	ComposeSchema,
 	CreateLabelSchema,
 	JudgeSchema,
@@ -54,6 +56,7 @@ import { DraftSchema } from "#shared/drafts";
 import { ImportQuerySchema, MAX_IMPORT_BYTES } from "#shared/import";
 import { ProtonAnswerSchema, ProtonJobRefSchema, ProtonStartSchema } from "#shared/proton-export";
 import { admin } from "./admin";
+import { type Agent, AgentError, approveAction, converse } from "./agent";
 import { auth, currentUser, endReplacedSession, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
 import { getCustomHotkeys, getSendIdentities, getUserMailboxes, mailboxAccess, mailboxesRestoring, type Reader, resolveRecipient, setCustomHotkeys, setSignature } from "./directory";
@@ -171,6 +174,43 @@ async function defineRuleLabels(c: Context<AppEnv>, actions: RuleInput["actions"
 	if (chains.length > 0) await c.var.mailbox.addLabelDefs(defs(chains));
 }
 
+/**
+ * A new label, in the mailboxes of the addresses in `scope` (all of them without one), with the labels it goes inside.
+ * Another mailbox takes it on when mail there gets it (ModifyThreadsSchema's `define`). Says why when it can't.
+ */
+async function addLabel(c: Context<AppEnv>, scope: string | undefined, { name, parent, color }: z.output<typeof CreateLabelSchema>) {
+	type Refused = { error: string; status: 400 | 404 | 409 | 503 };
+	const [all, targets] = await Promise.all([labelsByMailbox(c), labelsByMailbox(c, scope)]);
+	if (!all || !targets) return { error: RESTORING, status: 503 } satisfies Refused;
+	if (targets.length === 0) return { error: "None of these addresses has a mailbox", status: 400 } satisfies Refused;
+	const labels = mergeLabels(all.map((m) => m.labels));
+	const chain = parent === null ? [] : labelChain(labels, parent);
+	if (parent !== null && chain.length === 0) return { error: "There's no such label to put it in", status: 404 } satisfies Refused;
+	if (chain.length >= MAX_LABEL_DEPTH) return { error: `Labels go at most ${MAX_LABEL_DEPTH} deep`, status: 409 } satisfies Refused;
+	if (labels.some((l) => l.parent === parent && l.name.toLowerCase() === name.toLowerCase())) {
+		return { error: `There's already a label called “${name}” there`, status: 409 } satisfies Refused;
+	}
+	const key = labelKey([...chain.map((l) => l.name), name], new Set(labels.map((l) => l.key)));
+	const label = { key, name, parent, color };
+	await Promise.all(targets.map((m) => m.stub.addLabelDefs([...defs(chain), label])));
+	return label;
+}
+
+/** Who the mail agent acts for (worker/agent.ts): the signed-in person, with what they can do here. */
+async function agentFor(c: Context<AppEnv>): Promise<Agent> {
+	return {
+		env: c.env,
+		reader: c.var.reader,
+		user: c.var.user,
+		models: c.env.AI,
+		mailboxes: await getUserMailboxes(c.env.DIRECTORY, c.var.reader),
+		createLabel: async ({ name, parent }) => {
+			const added = await addLabel(c, undefined, { name, parent, color: null });
+			return "error" in added ? { error: added.error } : added;
+		},
+	};
+}
+
 /** A page of threads from every mailbox the request can match, each tagged with where it lives. With `through`, every thread down to it. */
 async function readPage(
 	c: Context<AppEnv>,
@@ -236,26 +276,10 @@ const views = new Hono<AppEnv>()
 		return c.json({ labels: mergeLabels(lists) });
 	})
 
-	/**
-	 * A new label, in the mailboxes of the addresses in view, with the labels it goes inside. Another mailbox takes it on
-	 * when mail there gets it (ModifyThreadsSchema's `define`).
-	 */
+	/** A new label, in the mailboxes of the addresses in view (addLabel()). */
 	.post("/labels", zValidator("query", ScopeQuery), zValidator("json", CreateLabelSchema), async (c) => {
-		const { name, parent, color } = c.req.valid("json");
-		const [all, targets] = await Promise.all([labelsByMailbox(c), labelsByMailbox(c, c.req.valid("query").in)]);
-		if (!all || !targets) return c.json({ error: RESTORING }, 503);
-		if (targets.length === 0) return c.json({ error: "None of these addresses has a mailbox" }, 400);
-		const labels = mergeLabels(all.map((m) => m.labels));
-		const chain = parent === null ? [] : labelChain(labels, parent);
-		if (parent !== null && chain.length === 0) return c.json({ error: "There's no such label to put it in" }, 404);
-		if (chain.length >= MAX_LABEL_DEPTH) return c.json({ error: `Labels go at most ${MAX_LABEL_DEPTH} deep` }, 409);
-		if (labels.some((l) => l.parent === parent && l.name.toLowerCase() === name.toLowerCase())) {
-			return c.json({ error: `There's already a label called “${name}” there` }, 409);
-		}
-		const key = labelKey([...chain.map((l) => l.name), name], new Set(labels.map((l) => l.key)));
-		const label = { key, name, parent, color };
-		await Promise.all(targets.map((m) => m.stub.addLabelDefs([...defs(chain), label])));
-		return c.json(label, 201);
+		const added = await addLabel(c, c.req.valid("query").in, c.req.valid("json"));
+		return "error" in added ? c.json({ error: added.error }, added.status) : c.json(added, 201);
 	})
 
 	/** Changes a label in every mailbox of the user's that has it, putting the label it moves into there too. */
@@ -291,7 +315,23 @@ const views = new Hono<AppEnv>()
 		const queries = await planRequest(c);
 		const lists = await Promise.all(queries.map((q) => c.env.MAILBOX.getByName(q.mailboxId).contacts(CONTACTS)));
 		return c.json({ contacts: mergeContacts(lists, CONTACTS) });
-	});
+	})
+
+	/**
+	 * The mail agent's answer to the conversation so far, which the app keeps and sends whole. It acts as the person, and
+	 * what needs their approval comes back as `pending`, not done.
+	 */
+	.post("/agent", zValidator("json", AgentRequestSchema), async (c) => {
+		try {
+			return c.json(await converse(await agentFor(c), c.req.valid("json")));
+		} catch (error) {
+			if (error instanceof AgentError) return c.json({ error: error.message }, 502);
+			throw error;
+		}
+	})
+
+	/** Does what the agent asked to and the person approved, checked again first. The app then asks the agent to go on. */
+	.post("/agent/approve", zValidator("json", AgentApproveSchema), async (c) => c.json({ message: await approveAction(await agentFor(c), c.req.valid("json").action) }));
 
 // ─── Mailbox-scoped routes ──────────────────────────────────────────────────
 

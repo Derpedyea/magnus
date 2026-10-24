@@ -2,9 +2,11 @@
 
 Status: v1 engine built, backend only: per-mailbox ordered rules with static conditions, organize actions, `stop`,
 plain-English AI conditions on Workers AI (DeepSeek V4.1 Flash), a `rule_runs` audit on each message
-(`MessageDetail.rules`), preview, and apply to existing mail (docs/ARCHITECTURE.md §5.6, Rules). Not built yet: the
-Settings › Rules UI, forward and auto-reply, Sieve, person and admin scopes, the agent, learned patterns, rule
-versions, and AI budgets. The rest is the design draft of 2026-10-23 (v1's tables are simpler than §2's): decisions
+(`MessageDetail.rules`), preview, and apply to existing mail (docs/ARCHITECTURE.md §5.6, Rules). The agent sidebar
+is built in a simpler form than §9: no Agent DO or Agents SDK, the app keeps the conversation, the same Workers AI
+model with function calling, and §9.2's approval split for the tools that exist (§5.6, Mail agent). Not built yet:
+the Settings › Rules UI, forward and auto-reply, Sieve, person and admin scopes, the agent's drafts, undo,
+suggestions and cleanup, learned patterns, rule versions, and AI budgets. The rest is the design draft of 2026-10-23 (v1's tables are simpler than §2's): decisions
 are marked **[decided]**, open ones **[open]**, and anything not backed by code or a cited doc *guess*.
 
 ## 0. Goals

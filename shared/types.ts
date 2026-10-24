@@ -534,3 +534,44 @@ export type LiveEvent =
 	| { type: "failed.changed" }
 	| { type: "labels.changed" }
 	| { type: "rules.changed" };
+
+// ─── Mail agent (worker/agent.ts) ───────────────────────────────────────────
+// The assistant in the app's side panel. The app keeps the conversation and sends it with each question; the server
+// keeps nothing of it.
+
+/** A tool the model asked for, with its arguments as the JSON it wrote. */
+export interface AgentToolCall {
+	id: string;
+	name: string;
+	arguments: string;
+}
+
+/** A conversation the panel links to, from what a tool found. */
+export type AgentThread = Pick<MailboxThread, "mailboxId" | "id" | "subject" | "participants" | "lastMessageAt" | "unreadCount">;
+
+export type AgentMessage =
+	| { role: "user"; content: string }
+	| { role: "assistant"; content: string; toolCalls?: AgentToolCall[] }
+	/**
+	 * What a tool did. `content` is what the model reads of it; `summary` and `threads` are what the panel shows, and the
+	 * server doesn't take them back.
+	 */
+	| { role: "tool"; toolCallId: string; name: string; content: string; summary: string; threads?: AgentThread[] };
+
+/**
+ * A tool call waiting for the person to approve it (Trash, Spam, deleting or applying a rule, a rule that does those):
+ * POST /api/agent never runs one, only POST /api/agent/approve does. `summary` says all it'll do.
+ */
+export interface PendingAction {
+	id: string;
+	name: string;
+	args: Record<string, unknown>;
+	summary: string;
+	threads?: AgentThread[];
+}
+
+/** POST /api/agent: what the model said and did since the last message, and what it's waiting to be allowed to do. */
+export interface AgentReply {
+	messages: AgentMessage[];
+	pending: PendingAction | null;
+}

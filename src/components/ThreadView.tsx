@@ -13,7 +13,7 @@ import {
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi, Link, useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, ArrowLeftIcon, BanIcon, CheckIcon, CircleAlertIcon, ClockIcon, DownloadIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, ListFilterIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, ShieldXIcon, StarIcon, StarOffIcon, TagIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, BanIcon, CheckIcon, CircleAlertIcon, ClockIcon, DownloadIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, ListFilterIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, SparklesIcon, ShieldXIcon, StarIcon, StarOffIcon, TagIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
 import { type AppHotkey, useAppHotkeys, useHotkey } from "@tanstack/react-hotkeys";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -25,6 +25,7 @@ import { Popover, PopoverContent, PopoverDescription, PopoverTitle, PopoverTrigg
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast-manager";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { toggleAgent } from "../agent";
 import { api, errorMessage, formatList, messageUrl } from "../api";
 import { type AnswerContext, answerFrom, isOutgoing, openDraft, quote, replyRecipients, withSignature } from "../compose";
 import { stacked, useAccount, useScope } from "../hooks";
@@ -188,6 +189,15 @@ export function ThreadView() {
 					<LabelPicker threads={labeled} open={labeling} onOpenChange={setLabeling} trigger={button} />
 				))}
 				{action(MailIcon, "Mark unread", markUnread, hotkeys["thread.unread"])}
+				{/* Stacked, the thread covers the header's way to the assistant. */}
+				<Tooltip>
+					<TooltipTrigger render={<Button variant="ghost" size="icon" aria-label="Assistant" onClick={() => toggleAgent()} className="text-muted-foreground max-md:size-10 lg:hidden" />}>
+						<SparklesIcon className="size-3.5 max-md:size-5" />
+					</TooltipTrigger>
+					<TooltipContent>
+						Assistant <Shortcut hotkey={hotkeys["agent.toggle"]} />
+					</TooltipContent>
+				</Tooltip>
 			</div>
 			<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
 				<h1 className="font-heading text-xl font-semibold break-words">{summary.subject}</h1>
