@@ -1,5 +1,5 @@
 import { createFileRoute, Link, Outlet, useLocation } from "@tanstack/react-router";
-import { ArrowLeftIcon, AtSignIcon, BanIcon, BellIcon, GlobeIcon, ImportIcon, KeyboardIcon, KeyRoundIcon, OctagonAlertIcon, PaletteIcon, SignatureIcon, TagIcon, UsersIcon } from "lucide-react";
+import { ArrowLeftIcon, AtSignIcon, BanIcon, BellIcon, GlobeIcon, ImportIcon, KeyboardIcon, KeyRoundIcon, ListFilterIcon, OctagonAlertIcon, PaletteIcon, SignatureIcon, TagIcon, UsersIcon } from "lucide-react";
 import {
 	Sidebar,
 	SidebarContent,
@@ -27,6 +27,7 @@ const GROUPS = [
 			{ to: "/settings/notifications", label: "Notifications", icon: BellIcon },
 			{ to: "/settings/signatures", label: "Signatures", icon: SignatureIcon },
 			{ to: "/settings/labels", label: "Labels", icon: TagIcon },
+			{ to: "/settings/rules", label: "Rules", icon: ListFilterIcon },
 			{ to: "/settings/shortcuts", label: "Keyboard shortcuts", icon: KeyboardIcon },
 			{ to: "/settings/sign-in", label: "Sign-in", icon: KeyRoundIcon },
 			{ to: "/settings/spam", label: "Spam", icon: OctagonAlertIcon },
