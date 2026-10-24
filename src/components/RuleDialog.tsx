@@ -76,7 +76,8 @@ export function ruleSummary(rule: RuleInput, byKey: ReadonlyMap<string, Label>):
 		const compared = `${c.not ? op?.isNot : op?.is}${c.op === "exists" ? "" : ` ${c.value}`}`;
 		return c.field === "header" ? `Header ${c.name} ${compared}` : `${FIELD_NAMES[c.field]} ${compared}`;
 	};
-	const conditions = [...rule.conditions.map(condition), ...(rule.ai === null ? [] : [`AI: ${rule.ai}`])].join(rule.match === "any" ? " or " : " · ");
+	// The AI is only asked about mail the others match, so it's never one of the "or"s.
+	const conditions = [rule.conditions.map(condition).join(rule.match === "any" ? " or " : " · "), ...(rule.ai === null ? [] : [`AI: ${rule.ai}`])].filter(Boolean).join(" · ");
 	const actions = rule.actions.map((a) => (a.do === "label" ? labelPath(byKey, a.label) : ACTION_NAMES[a.do].short));
 	return `${conditions} → ${actions.join(", ")}${rule.stop ? ", then stop" : ""}`;
 }
@@ -176,11 +177,12 @@ function RuleForm({ edit, onDone }: { edit: { mailboxId: string; rule: Rule } | 
 		},
 	});
 
-	// Any change makes a preview out of date, and the error it was about.
+	// Any change makes a preview out of date, and the error it was about, the server's refusal too.
 	const change = (next: (d: Draft) => Draft) => {
 		setDraft(next);
 		setInvalid(null);
 		preview.reset();
+		save.reset();
 	};
 	const setCondition = (i: number, c: Partial<ConditionDraft>) => change((d) => ({ ...d, conditions: d.conditions.map((old, j) => (j === i ? { ...old, ...c } : old)) }));
 	const setAction = (i: number, a: RuleAction) => change((d) => ({ ...d, actions: d.actions.map((old, j) => (j === i ? a : old)) }));
@@ -245,6 +247,7 @@ function RuleForm({ edit, onDone }: { edit: { mailboxId: string; rule: Rule } | 
 								if (value === null) return;
 								setMailboxId(value);
 								preview.reset();
+								save.reset();
 							}}
 						>
 							<SelectTrigger id={`${id}-mailbox`} className="w-full">
@@ -404,7 +407,7 @@ function RuleForm({ edit, onDone }: { edit: { mailboxId: string; rule: Rule } | 
 								</SelectContent>
 							</Select>
 							{a.do === "label" ? (
-								// The mailbox's own labels, by value: picking one here changes no mail, unlike LabelPicker.
+								// All of your labels, by value: picking one here changes no mail, unlike LabelPicker. A mailbox without it takes it on as the rule's saved.
 								<Select items={labelItems} value={a.label || null} onValueChange={(label) => label && setAction(i, { do: "label", label })}>
 									<SelectTrigger aria-label={`Action ${i + 1} label`} aria-invalid={bad(`actions.${i}.label`)} className="min-w-40 flex-1 max-sm:min-w-0">
 										<SelectValue placeholder={labels.length === 0 ? "No labels yet" : "Pick a label"} />

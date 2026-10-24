@@ -127,6 +127,9 @@ describe("Rules", () => {
 		const input = rule({ name: "Receipts", conditions: [{ field: "subject", op: "contains", value: "receipt" }], actions: [{ do: "label", label: "receipts" }] });
 		expect(await request(`/mailboxes/${ids.bob}/rules`)).toMatchObject({ status: 404 });
 		expect(await request(rules, "POST", { ...input, actions: [{ do: "label", label: "gone" }] })).toEqual({ status: 409, body: { error: "No label named “gone”" } });
+		// One only her own mailbox has, the shared one takes on for its rule.
+		expect((await request(`/mailboxes/${ids.shared}/rules`, "POST", input)).status).toBe(201);
+		expect((await f.env.MAILBOX.getByName(ids.shared).labels()).map((l) => l.key)).toEqual(["receipts"]);
 		expect((await request(rules, "POST", { ...input, conditions: [] })).status).toBe(400);
 		expect((await request(rules, "POST", { ...input, actions: [{ do: "star" }, { do: "star" }] })).status).toBe(400);
 

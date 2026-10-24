@@ -24,6 +24,7 @@ import {
 	planAttachments,
 	planScope,
 	r2Keys,
+	type RuleInput,
 	type SendAttachmentRef,
 	THROUGH_MAX,
 	type ThreadSummary,
@@ -152,6 +153,22 @@ async function labelsByMailbox(c: Context<AppEnv>, scope?: string) {
 			return { stub, labels: await stub.labels() };
 		}),
 	);
+}
+
+/**
+ * Puts in the mailbox the labels a rule files into that only the user's other mailboxes have, with the labels they go
+ * inside, as ModifyThreadsSchema's `define` does for mail: the rule editor offers all of their labels.
+ */
+async function defineRuleLabels(c: Context<AppEnv>, actions: RuleInput["actions"]) {
+	const keys = actions.flatMap((a) => (a.do === "label" ? [a.label] : []));
+	if (keys.length === 0) return;
+	const own = new Set((await c.var.mailbox.labels()).map((l) => l.key));
+	const missing = keys.filter((k) => !own.has(k));
+	if (missing.length === 0) return;
+	const lists = await Promise.all((await planRequest(c)).map((q) => c.env.MAILBOX.getByName(q.mailboxId).labels()));
+	const labels = mergeLabels(lists);
+	const chains = missing.flatMap((k) => labelChain(labels, k));
+	if (chains.length > 0) await c.var.mailbox.addLabelDefs(defs(chains));
 }
 
 /** A page of threads from every mailbox the request can match, each tagged with where it lives. With `through`, every thread down to it. */
@@ -343,11 +360,13 @@ const mb = new Hono<AppEnv>()
 	.get("/rules", async (c) => c.json({ rules: await c.var.mailbox.rules() }))
 
 	.post("/rules", zValidator("json", RuleInputSchema), async (c) => {
+		await defineRuleLabels(c, c.req.valid("json").actions);
 		const rule = await c.var.mailbox.createRule(c.req.valid("json"), "user");
 		return "error" in rule ? c.json({ error: rule.error }, 409) : c.json(rule, 201);
 	})
 
 	.put("/rules/:ruleId", zValidator("json", RuleInputSchema), async (c) => {
+		await defineRuleLabels(c, c.req.valid("json").actions);
 		const rule = await c.var.mailbox.updateRule(c.req.param("ruleId"), c.req.valid("json"));
 		if (!rule) return c.json({ error: "Not found" }, 404);
 		return "error" in rule ? c.json({ error: rule.error }, 409) : c.json(rule);
