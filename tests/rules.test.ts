@@ -47,6 +47,8 @@ describe("Rules", () => {
 		expect(filed.inbox).toBe(false);
 		expect(filed.message).toMatchObject({ isRead: true, rules: [{ id: filing.id, name: "Receipts", reason: null }, { id: read.id, name: "Shop", reason: null }] });
 		expect(filed.message?.labels.toSorted()).toEqual(["receipts", "starred"]);
+		// Marked read, it stays in the inbox without notifying.
+		expect(await deliver("thanks", { subject: "Thanks", sender: verified })).toMatchObject({ inbox: false, message: { labels: ["inbox"], isRead: true, rules: [{ id: read.id }] } });
 
 		const spam = await deliver("offer", { subject: "An offer", sender: verified });
 		expect(spam).toMatchObject({ inbox: false, message: { labels: ["spam"], rules: [{ id: offers.id }] } });
@@ -61,12 +63,12 @@ describe("Rules", () => {
 		expect(await deliver("forged", { subject: "Your receipt", sender: { verified: null, internal: false, spoofed: true } })).toMatchObject({ message: { labels: ["spam"], rules: [] } });
 
 		await box().deleteTrash({});
-		expect(await db.exec("SELECT message_id FROM rule_runs ORDER BY message_id")).toEqual([{ message_id: "offer" }, { message_id: "receipt" }, { message_id: "receipt" }]);
+		expect(await db.exec("SELECT message_id FROM rule_runs ORDER BY message_id")).toEqual([{ message_id: "offer" }, { message_id: "receipt" }, { message_id: "receipt" }, { message_id: "thanks" }]);
 	});
 
 	describe("with an AI condition", () => {
-		async function queued() {
-			const input = job(ids.alice);
+		async function queued(id?: string) {
+			const input = job(ids.alice, id);
 			await f.env.MAIL.put(input.rawKey, MIME, { customMetadata: { mailboxes: ids.alice } });
 			return input;
 		}
@@ -107,12 +109,14 @@ describe("Rules", () => {
 			expect(await models()).toEqual([QUICK_MODEL, RULES_MODEL, RULES_MODEL, RULES_MODEL]);
 		});
 
-		it("doesn't show mail going to Spam to the model", async () => {
+		it("doesn't show mail going to Spam to the model, or a second copy of it", async () => {
 			await aiRules();
 			await f.control.setModels({ quick: 0.95 });
 			const input = await queued();
 			await f.control.parse(input);
 			expect((await box().getMessage(input.ingestId))?.message.labels).toEqual(["spam"]);
+			// Its Message-ID is known, so it isn't checked again, and keeps where the first went.
+			await f.control.parse(await queued("inbound-2"));
 			expect(await models()).toEqual([QUICK_MODEL]);
 		});
 	});
@@ -137,6 +141,9 @@ describe("Rules", () => {
 
 		for (let n = 0; n < 20; n++) await create(rule({ name: `AI ${n}`, ai: "Anything", actions: [{ do: "star" }] }));
 		expect(await request(rules, "POST", { ...input, ai: "One more" })).toEqual({ status: 409, body: { error: "At most 20 rules can have an AI condition" } });
+		// A label deleted since doesn't stop it being turned off.
+		await box().deleteLabel("receipts");
+		expect((await request(`${rules}/${first.id}`, "PUT", { ...input, name: "Bought", enabled: false })).body).toMatchObject({ enabled: false });
 	});
 
 	it("tries a rule on mail already here, and files what it matches", async () => {

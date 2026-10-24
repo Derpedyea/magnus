@@ -91,7 +91,7 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 	const headers = keptHeaders(email);
 	const ruleFacts: RuleFacts = { from, to, cc, envelopeTo: job.envelopeTo, subject, text, headers, sender, attachments: email.attachments.map((a) => ({ inline: isInline(a) })) };
 	// Rules whose AI conditions the model reads, once the rest of each matches. Imported mail stays where it was filed.
-	const candidates = imported ? [] : (await mailbox.aiRules(sender, check)).filter((rule) => matchConditions(rule, ruleFacts)).slice(0, MAX_AI_RULES);
+	const candidates = imported ? [] : (await mailbox.aiRules(sender, check, messageIdHeader, messageId)).filter((rule) => matchConditions(rule, ruleFacts)).slice(0, MAX_AI_RULES);
 	let ruleAnswers: Record<string, RuleAnswer> | undefined;
 	if (candidates.length > 0) {
 		const mail = facts ?? (await read());

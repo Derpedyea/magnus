@@ -1,4 +1,4 @@
-import { type Address, stripSubaddress } from "./address";
+import { type Address, isValidAddress, stripSubaddress } from "./address";
 import type { IngestInput, RuleCondition, RuleInput, RuleTextOp } from "./types";
 
 /**
@@ -41,8 +41,9 @@ function meets(c: RuleCondition, facts: RuleFacts): boolean {
 		case "cc":
 			return compare(addressTexts(facts.cc), c.op, c.value);
 		case "recipient": {
-			// The address it came to, as written and without its +tag: a rule for me@ catches me+shop@ too.
-			const delivered = [facts.envelopeTo, stripSubaddress(facts.envelopeTo).base];
+			// The address it came to, as written and without its +tag: a rule for me@ catches me+shop@ too. Imported mail can
+			// name no address at all.
+			const delivered = isValidAddress(facts.envelopeTo) ? [facts.envelopeTo, stripSubaddress(facts.envelopeTo).base] : [];
 			return compare([...addressTexts([...facts.to, ...facts.cc]), ...delivered], c.op, c.value);
 		}
 		case "subject":

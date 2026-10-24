@@ -90,6 +90,8 @@ const MAX_RELEASED_THREADS = 100;
 const HOLDING_BATCH = 10_000;
 /** Inbound mail a rule is tried on, or applied to, at most, newest first (previewRule()). */
 const RULE_SCAN = 1000;
+/** Characters of each body ruleScan() reads, at most. */
+const RULE_SCAN_TEXT = 100_000;
 /** Messages applyRule() files per transaction. */
 const RULE_BATCH = 100;
 /** A socket is authorized once, when it opens. After this long it has to reconnect, which checks the sign-in again. */
@@ -856,16 +858,22 @@ export class Mailbox extends DurableObject<Env> {
 	async needsCheck(sender: SenderCheck, messageIdHeader: string | null, ingestId: string): Promise<boolean> {
 		// Being deleted: its mail goes nowhere, so it isn't shown to the models either.
 		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) return false;
-		// Already delivered or deleted (the queue redelivered it), or a second copy of a message, which keeps where the
-		// first went (ingest()): no need to check it again.
+		if (this.alreadyHere(ingestId, messageIdHeader)) return false;
+		return this.judge(sender, null).kind === "unknown";
+	}
+
+	/**
+	 * Already delivered or deleted (the queue redelivered it), or a second copy of a message, which keeps where the first
+	 * went (ingest()): no need to check it again, or show it to a model at all.
+	 */
+	private alreadyHere(ingestId: string, messageIdHeader: string | null): boolean {
 		const known = this.sql.exec(
 			`SELECT 1 FROM messages WHERE id = ?1 OR (?2 IS NOT NULL AND (message_id_header = ?2 OR provider_message_id = ?2))
 			 UNION ALL SELECT 1 FROM deleted_messages WHERE id = ?1 LIMIT 1`,
 			ingestId,
 			messageIdHeader,
 		);
-		if (known.toArray().length > 0) return false;
-		return this.judge(sender, null).kind === "unknown";
+		return known.toArray().length > 0;
 	}
 
 	/**
@@ -1505,10 +1513,13 @@ export class Mailbox extends DurableObject<Env> {
 	/**
 	 * The enabled rules with an AI condition, for the queue to have the model check of new mail before it delivers it
 	 * (worker/mail/rules.ts). None for mail going to Spam, or whose sender is forged: no model reads that, and no rule
-	 * files it by what one says. Nor while the mailbox is being deleted.
+	 * files it by what one says. Nor for mail already here (needsCheck()), whose second copy isn't checked and so can't
+	 * be told from mail going to Spam, and which ingest() drops whatever the model says. Nor while the mailbox is being
+	 * deleted.
 	 */
-	async aiRules(sender: SenderCheck, check: MailCheck | null): Promise<Rule[]> {
+	async aiRules(sender: SenderCheck, check: MailCheck | null, messageIdHeader: string | null, ingestId: string): Promise<Rule[]> {
 		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) return [];
+		if (this.alreadyHere(ingestId, messageIdHeader)) return [];
 		const verdict = this.judge(sender, check);
 		if (verdict.kind === "spoofed" || placeFor(verdict, this.mailSettings()) === "spam") return [];
 		return this.ruleList().filter((r) => r.enabled && r.ai !== null);
@@ -1542,7 +1553,7 @@ export class Mailbox extends DurableObject<Env> {
 			const rules = this.ruleList();
 			const rule = rules.find((r) => r.id === id);
 			if (!rule) return null;
-			const refused = this.refuseRule(input, rules.filter((r) => r.id !== id));
+			const refused = this.refuseRule(input, rules.filter((r) => r.id !== id), rule);
 			if (refused) return refused;
 			const now = Date.now();
 			this.sql.exec(`UPDATE rules SET json = ?2, updated_at = ?3 WHERE id = ?1`, id, JSON.stringify(ruleInput(input)), now);
@@ -1576,14 +1587,13 @@ export class Mailbox extends DurableObject<Env> {
 	 * it runs. Of a rule with an AI condition, only the other conditions are checked: the model reads new mail only.
 	 */
 	async previewRule(input: Pick<RuleInput, "match" | "conditions" | "ai">, limit = 50): Promise<RulePreview> {
-		const scanned = this.ruleScan();
-		const matched = scanned.filter((m) => matchConditions(input, m.facts));
+		const { scanned, matched } = this.ruleScan(input);
 		const threadIds = [...new Set(matched.map((m) => m.threadId))].slice(0, limit);
 		const threads = this.sql
 			.exec<ThreadRow>(`${THREAD_SELECT} WHERE t.id IN (SELECT value FROM json_each(?1)) ORDER BY t.last_message_at DESC, t.id DESC`, JSON.stringify(threadIds))
 			.toArray()
 			.map(toThreadSummary);
-		return { threads, matched: matched.length, scanned: scanned.length, aiNotChecked: input.ai !== null };
+		return { threads, matched: matched.length, scanned, aiNotChecked: input.ai !== null };
 	}
 
 	/**
@@ -1594,7 +1604,7 @@ export class Mailbox extends DurableObject<Env> {
 		const rule = this.ruleList().find((r) => r.id === id);
 		if (!rule) return null;
 		if (rule.ai !== null) return { error: "A rule with an AI condition files new mail only" };
-		const matched = this.ruleScan().filter((m) => matchConditions(rule, m.facts));
+		const { matched } = this.ruleScan(rule);
 		for (let i = 0; i < matched.length; i += RULE_BATCH) {
 			const ids = matched.slice(i, i + RULE_BATCH).map((m) => m.id);
 			this.ctx.storage.transactionSync(() => {
@@ -1613,10 +1623,12 @@ export class Mailbox extends DurableObject<Env> {
 
 	/**
 	 * Why a rule can't be saved beside `others`: a label it files mail under is gone (one it named would be made again,
-	 * named after its key), or the mailbox has as many rules with an AI condition as it can.
+	 * named after its key), or the mailbox has as many rules with an AI condition as it can. A label deleted since the
+	 * rule (`before`) named it is skipped when it runs (applyActions()), so it doesn't stop it being turned off or renamed.
 	 */
-	private refuseRule(input: RuleInput, others: Rule[]): { error: string } | null {
-		for (const action of input.actions) if (action.do === "label" && !this.label(action.label)) return { error: `No label named “${action.label}”` };
+	private refuseRule(input: RuleInput, others: Rule[], before?: Rule): { error: string } | null {
+		const had = (label: string) => before?.actions.some((a) => a.do === "label" && a.label === label) === true;
+		for (const action of input.actions) if (action.do === "label" && !had(action.label) && !this.label(action.label)) return { error: `No label named “${action.label}”` };
 		if (input.ai !== null && others.filter((r) => r.ai !== null).length >= MAX_AI_RULES) return { error: `At most ${MAX_AI_RULES} rules can have an AI condition` };
 		return null;
 	}
@@ -1678,33 +1690,38 @@ export class Mailbox extends DurableObject<Env> {
 		);
 	}
 
-	/** The mail previewRule() and applyRule() try a rule on, newest first, as its conditions read it. */
-	private ruleScan(): { id: string; threadId: string; facts: RuleFacts }[] {
-		return this.sql
-			.exec<RuleFactsRow>(
-				`SELECT m.id, m.thread_id, m.envelope_to, m.from_json, m.to_json, m.cc_json, m.subject, m.text_body, m.sender, m.headers_json,
-					EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.inline = 0) AS attached
-				 FROM messages m WHERE m.direction = 'in'
-					AND NOT EXISTS (SELECT 1 FROM message_labels l WHERE l.message_id = m.id AND l.label IN ('trash', 'spam'))
-				 ORDER BY m.date DESC, m.id DESC LIMIT ${RULE_SCAN}`,
-			)
-			.toArray()
-			.map((r) => ({
-				id: r.id,
-				threadId: r.thread_id,
-				facts: {
-					from: JSON.parse(r.from_json),
-					to: JSON.parse(r.to_json),
-					cc: JSON.parse(r.cc_json),
-					envelopeTo: r.envelope_to,
-					subject: r.subject,
-					text: r.text_body,
-					// Mail from before headers were kept matches no header condition.
-					headers: r.headers_json ? JSON.parse(r.headers_json) : [],
-					attachments: r.attached ? [{ inline: false }] : [],
-					sender: { verified: r.sender },
-				},
-			}));
+	/**
+	 * The mail previewRule() and applyRule() try a rule on, newest first, as its conditions read it, and which of it the
+	 * rule matches. Read a message at a time, and only the first RULE_SCAN_TEXT characters of each body: anyone can send
+	 * mail big enough that the lot wouldn't fit in memory. New mail is matched on all of it (runRules()).
+	 */
+	private ruleScan(rule: Pick<RuleInput, "match" | "conditions">): { scanned: number; matched: { id: string; threadId: string }[] } {
+		const rows = this.sql.exec<RuleFactsRow>(
+			`SELECT m.id, m.thread_id, m.envelope_to, m.from_json, m.to_json, m.cc_json, m.subject, substr(m.text_body, 1, ${RULE_SCAN_TEXT}) AS text_body, m.sender, m.headers_json,
+				EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.inline = 0) AS attached
+			 FROM messages m WHERE m.direction = 'in'
+				AND NOT EXISTS (SELECT 1 FROM message_labels l WHERE l.message_id = m.id AND l.label IN ('trash', 'spam'))
+			 ORDER BY m.date DESC, m.id DESC LIMIT ${RULE_SCAN}`,
+		);
+		let scanned = 0;
+		const matched: { id: string; threadId: string }[] = [];
+		for (const r of rows) {
+			scanned++;
+			const facts: RuleFacts = {
+				from: JSON.parse(r.from_json),
+				to: JSON.parse(r.to_json),
+				cc: JSON.parse(r.cc_json),
+				envelopeTo: r.envelope_to,
+				subject: r.subject,
+				text: r.text_body,
+				// Mail from before headers were kept matches no header condition.
+				headers: r.headers_json ? JSON.parse(r.headers_json) : [],
+				attachments: r.attached ? [{ inline: false }] : [],
+				sender: { verified: r.sender },
+			};
+			if (matchConditions(rule, facts)) matched.push({ id: r.id, threadId: r.thread_id });
+		}
+		return { scanned, matched };
 	}
 
 	// ─── Failed ─────────────────────────────────────────────────────────────
