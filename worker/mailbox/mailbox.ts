@@ -1905,12 +1905,13 @@ export class Mailbox extends DurableObject<Env> {
 		for (const m of left) this.touchThread(threadId, m.date, m.snippet, [JSON.parse(m.from_json), ...JSON.parse(m.to_json), ...JSON.parse(m.cc_json)]);
 	}
 
-	/** `define`: labels being added that this mailbox may not have yet (LabelDefSchema). */
-	async modifyThreads(input: { threadIds: string[]; add?: string[]; remove?: string[]; define?: LabelDef[] }): Promise<void> {
+	/** `define`: labels being added that this mailbox may not have yet (LabelDefSchema). Gives the threads that are here. */
+	async modifyThreads(input: { threadIds: string[]; add?: string[]; remove?: string[]; define?: LabelDef[] }): Promise<string[]> {
 		const add = input.add ?? [];
 		// Trash and spam imply leaving the inbox, and the Screener.
 		const remove = [...(input.remove ?? []), ...(add.some((l) => l === "trash" || l === "spam") ? ["inbox", "screener"] : [])];
-		const { corrected, released } = this.ctx.storage.transactionSync(() => {
+		const { found, corrected, released } = this.ctx.storage.transactionSync(() => {
+			const found = this.threadsHere(input.threadIds);
 			const ids = this.messageIdsForThreads(input.threadIds);
 			// Spam, Not spam, and letting someone in from the Screener teach it about the senders. Moving mail out of Spam
 			// also says where the filter went wrong; the Screener only asked.
@@ -1930,11 +1931,12 @@ export class Mailbox extends DurableObject<Env> {
 			this.removeLabels(ids, remove);
 			this.defineLabels(input.define ?? []);
 			this.addLabels(ids, add);
-			return { corrected, released };
+			return { found, corrected, released };
 		});
 		// What the filter decided for mail someone had to move, to tune it by. No content or addresses.
 		if (corrected.length > 0) console.log(JSON.stringify({ msg: "spam verdict corrected", to: add.includes("spam") ? "spam" : "inbox", verdicts: corrected }));
 		this.broadcast({ type: "threads.changed", threadIds: [...new Set([...input.threadIds, ...released])] });
+		return found;
 	}
 
 	/**
@@ -1980,11 +1982,14 @@ export class Mailbox extends DurableObject<Env> {
 		return true;
 	}
 
-	async markRead(input: { threadIds: string[]; read: boolean }): Promise<void> {
+	/** Gives the threads that are here. */
+	async markRead(input: { threadIds: string[]; read: boolean }): Promise<string[]> {
+		const found = this.threadsHere(input.threadIds);
 		for (const threadId of input.threadIds) {
 			this.sql.exec(`UPDATE messages SET is_read = ?2 WHERE thread_id = ?1`, threadId, input.read ? 1 : 0);
 		}
 		this.broadcast({ type: "threads.changed", threadIds: input.threadIds });
+		return found;
 	}
 
 	/**
@@ -2037,6 +2042,13 @@ export class Mailbox extends DurableObject<Env> {
 			)
 			.toArray()
 			.map((r) => r.message_id);
+	}
+
+	private threadsHere(threadIds: string[]): string[] {
+		return this.sql
+			.exec<{ id: string }>(`SELECT id FROM threads WHERE id IN (SELECT value FROM json_each(?1))`, JSON.stringify(threadIds))
+			.toArray()
+			.map((r) => r.id);
 	}
 
 	private messageIdsForThreads(threadIds: string[]): string[] {

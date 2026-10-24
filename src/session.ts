@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "@/components/ui/toast-manager";
+import { newChat } from "./agent";
 import { closeDraft } from "./compose";
 import { forgetDevice } from "./push";
 import { configQuery } from "./queries";
@@ -18,7 +19,7 @@ export const currentSession = () => session;
 
 /**
  * Forgets everything the signed-in account left in this tab: its cached mail, the open draft, sends still waiting to
- * go (their Undo reopens the draft), and its notifications. The next sign-in happens without a page load, so whoever
+ * go (their Undo reopens the draft), its conversation with the assistant, and its notifications. The next sign-in happens without a page load, so whoever
  * it is would otherwise see it. Resolves once the browser has dropped its push subscription, or failed to.
  */
 export function endSession(qc: QueryClient): Promise<void> {
@@ -29,6 +30,7 @@ export function endSession(qc: QueryClient): Promise<void> {
 	qc.removeQueries({ predicate: (q) => q.queryKey[0] !== configQuery.queryKey[0] });
 	qc.getMutationCache().clear();
 	closeDraft();
+	newChat();
 	toast.close();
 	// The server stopped this session's notifications with it (worker/push-api.ts); this stops any already on their way.
 	// Signing in waits for it, so the next account never shows up first.

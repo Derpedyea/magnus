@@ -21,6 +21,9 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
   recipient, subject, body, list, or any header, in the order you put them. A rule can also ask in plain English
   ("a receipt for something I bought"), which Workers AI checks of new mail that isn't spam, and each message says
   which rule filed it. Written through the API for now.
+- **Ask an assistant.** The sparkles button, or Ctrl+. (⌘. on a Mac), opens a panel where you ask in plain words:
+  find mail, label, archive, or star it, and write rules from what you describe. It acts only on your own mail,
+  and anything that could lose mail, like Trash or Spam, waits for you to approve it.
 - **Set up and run from the app.** Add domains, people, and addresses in the admin pages. Magnus turns on
   Email Routing and Email Sending in Cloudflare for you, and MTA-STS, so other servers deliver your mail only
   over an encrypted connection.
