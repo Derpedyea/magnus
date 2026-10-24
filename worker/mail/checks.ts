@@ -150,7 +150,7 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 }
 
 /** JSON.parse's errors quote the text, which here is a model's answer: so no error, just nothing. */
-function parsedJson(text: string): unknown {
+export function parsedJson(text: string): unknown {
 	try {
 		return JSON.parse(text);
 	} catch {
@@ -391,7 +391,7 @@ function likeliest(probabilities: Record<MailCategory, number>): MailCategory {
 }
 
 /** Everything a sender wrote is cut to size: a long subject or a thousand Reply-To addresses costs as much as a body. */
-function describe(facts: MailFacts) {
+export function describe(facts: MailFacts) {
 	const cut = (text: string, max = MAX_FIELD) => (text.length > max ? `${text.slice(0, max)}…` : text);
 	const address = (a: Address) => ({ address: cut(a.address), ...(a.name ? { name: cut(a.name) } : {}) });
 	const body = facts.page.text;

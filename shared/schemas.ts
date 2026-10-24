@@ -2,7 +2,7 @@ import { z } from "zod";
 import { RESERVED_LABELS } from "./address";
 import { fromBase64Url } from "./base64url";
 import { type CustomHotkeys, MAX_SIGNATURE } from "./directory";
-import { LABEL_COLORS, type LabelChange, type LabelDef, type MailSettings } from "./types";
+import { LABEL_COLORS, type LabelChange, type LabelDef, type MailSettings, MAX_RULES, RULE_FLAGS, RULE_TEXT_FIELDS, RULE_TEXT_OPS, type RuleAction, type RuleCondition, type RuleInput } from "./types";
 
 /** Email Service: to + cc + bcc combined. */
 export const MAX_RECIPIENTS = 50;
@@ -121,6 +121,46 @@ export const MarkReadSchema = z.object({
 	threadIds: z.array(z.string()).min(1).max(500),
 	read: z.boolean(),
 });
+
+const RuleValue = z.string().trim().min(1, "Say what to look for").max(200);
+
+export const RuleConditionSchema = z.union([
+	z.object({ field: z.enum(RULE_TEXT_FIELDS), op: z.enum(RULE_TEXT_OPS), value: RuleValue, not: z.boolean().optional() }),
+	z
+		.object({
+			field: z.literal("header"),
+			// A header's name as RFC 5322 has it: printable characters but the colon.
+			name: z.string().trim().toLowerCase().regex(/^[!-9;-~]{1,100}$/, "Not a header's name"),
+			op: z.enum([...RULE_TEXT_OPS, "exists"]),
+			value: RuleValue.optional(),
+			not: z.boolean().optional(),
+		})
+		.refine((c) => c.op === "exists" || c.value !== undefined, { message: "Say what to look for", path: ["value"] }),
+	z.object({ field: z.enum(RULE_FLAGS), not: z.boolean().optional() }),
+]) satisfies z.ZodType<RuleCondition>;
+
+export const RuleActionSchema = z.union([
+	z.object({ do: z.literal("label"), label: OwnLabelKey }),
+	z.object({ do: z.enum(["skip-inbox", "star", "mark-read", "spam", "trash"]) }),
+]) satisfies z.ZodType<RuleAction>;
+
+/** A rule as someone writes it. Which labels it names exist, and how many rules a mailbox has, the mailbox checks. */
+export const RuleInputSchema = z
+	.object({
+		name: z.string().trim().min(1, "Name it").max(100),
+		enabled: z.boolean().default(true),
+		match: z.enum(["all", "any"]).default("all"),
+		conditions: z.array(RuleConditionSchema).max(20).default([]),
+		ai: z.string().trim().min(1).max(500).nullable().default(null),
+		actions: z.array(RuleActionSchema).min(1, "Say what it does").max(10),
+		stop: z.boolean().default(false),
+	})
+	.refine((r) => r.conditions.length > 0 || r.ai !== null, "Give it a condition")
+	// Each thing once: the same label twice, or Spam twice, says nothing more.
+	.refine((r) => new Set(r.actions.map((a) => (a.do === "label" ? `label:${a.label}` : a.do))).size === r.actions.length, "It does that twice") satisfies z.ZodType<RuleInput>;
+
+/** Every rule of a mailbox, in the order they run. */
+export const RuleOrderSchema = z.object({ ids: z.array(z.string()).max(MAX_RULES) });
 
 /** `bytes` long once decoded, as a browser writes a subscription's keys. */
 const base64url = (bytes: number, check: (decoded: Uint8Array) => boolean = () => true) =>

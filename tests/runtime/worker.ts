@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { type AddressFilter, type InboundJob, type MailCategory, type SendInput, ulid } from "#shared";
+import { type AddressFilter, type InboundJob, type MailCategory, type MailCheck, type SendInput, ulid } from "#shared";
 import { z } from "zod";
 import { app } from "../../worker/api";
 import { links } from "../../worker/links";
@@ -8,6 +8,7 @@ import { auth, signInWithoutCode } from "../../worker/auth";
 import { email, queue } from "../../worker/mail/inbound";
 import { DEEP_MODEL, type Models, QUICK_MODEL } from "../../worker/mail/checks";
 import { ingest } from "../../worker/mail/ingest";
+import { RULES_MODEL } from "../../worker/mail/rules";
 import { Mailbox as ProductionMailbox } from "../../worker/mailbox/mailbox";
 import { type Exporter, ProtonImport as ProductionProtonImport } from "../../worker/proton-import";
 import type { ExporterState, ProtonImportJob } from "#shared/proton-export";
@@ -36,9 +37,13 @@ let pushStatus = 201;
 // A push service answering with a body that never ends, as any endpoint someone registers could.
 let pushEndless = false;
 
-/** What the stand-in models answer: Clef's probability of spam, and Luna's category. "fail" throws; "garbage" is off-schema. */
-type ModelAnswers = { quick: number | Record<MailCategory, number> | "fail" | "garbage"; deep: MailCategory | "fail" | "echo" };
-let answers: ModelAnswers = { quick: 0, deep: "personal" };
+/**
+ * What the stand-in models answer: Clef's probability of spam, Luna's category, and whether every rule's AI condition
+ * matches. "fail" throws; "garbage" is off-schema.
+ */
+type ModelAnswers = { quick: number | Record<MailCategory, number> | "fail" | "garbage"; deep: MailCategory | "fail" | "echo"; rules: boolean | "fail" | "garbage" };
+const ANSWERS: ModelAnswers = { quick: 0, deep: "personal", rules: true };
+let answers = ANSWERS;
 /** Each model call, its inputs as JSON. */
 let modelCalls: { model: string; inputs: string }[] = [];
 
@@ -53,6 +58,13 @@ const models: Models = {
 				? { personal: 1 - answers.quick, transactional: 0, newsletter: 0, outreach: 0, spam: answers.quick, phishing: 0 }
 				: answers.quick;
 			return { model: "clef", answers: { category: { type: "choice", choice: "personal", probabilities, confidence: 1 } }, usage: { input_tokens: 1, output_tokens: 0 } };
+		}
+		if (model === RULES_MODEL) {
+			if (answers.rules === "fail") throw new Error("Injected model failure");
+			if (answers.rules === "garbage") return { choices: [{ message: { role: "assistant", content: "Yes to all of them" } }] };
+			const { conditions } = z.object({ conditions: z.array(z.unknown()) }).parse(JSON.parse(z.object({ messages: z.array(z.object({ content: z.string() })) }).parse(inputs).messages[1]!.content));
+			const content = JSON.stringify({ answers: conditions.map((_, i) => ({ rule: i + 1, match: answers.rules, reason: `Answer ${i + 1}` })) });
+			return { choices: [{ message: { role: "assistant", content } }] };
 		}
 		throw new Error(`Unexpected model ${model}`);
 	},
@@ -116,6 +128,8 @@ const JobSchema = z.object({
 	v: z.literal(1), ingestId: z.string(), rawKey: z.string(), rawSize: z.number(), mailboxId: z.string(),
 	envelopeFrom: z.string(), envelopeTo: z.string(), subaddress: z.string().nullable(), receivedAt: z.number(),
 	checkFailures: z.number().optional(),
+	ruleFailures: z.number().optional(),
+	check: z.custom<MailCheck | null>().optional(),
 	imported: z.object({ labels: z.array(z.string()), paths: z.array(z.string()).optional(), read: z.boolean(), sent: z.boolean(), addresses: z.array(z.string()) }).optional(),
 }) satisfies z.ZodType<InboundJob>;
 
@@ -431,7 +445,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 			})),
 		})) };
 	}
-	reset() { armed.clear(); armThenFail = false; restartsReach = true; restoreAsAnswering = null; loseHold = null; restored.length = 0; exported = freshExport(); now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; answers = { quick: 0, deep: "personal" }; modelCalls = []; }
+	reset() { armed.clear(); armThenFail = false; restartsReach = true; restoreAsAnswering = null; loseHold = null; restored.length = 0; exported = freshExport(); now = NOW; jobs = []; sends = []; sendErrors = []; failures = []; stalls = []; hook = null; pushes = []; pushStatus = 201; pushEndless = false; answers = ANSWERS; modelCalls = []; }
 
 	async consume(bodies: unknown[], attempts = 1) {
 		const acks: string[] = [];

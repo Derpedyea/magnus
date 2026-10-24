@@ -242,4 +242,27 @@ export const MIGRATIONS: string[] = [
 		SELECT DISTINCT label FROM message_labels WHERE label NOT IN ('inbox', 'sent', 'outbox', 'spam', 'trash', 'starred', 'screener')
 	);
 	`,
+	`
+	-- Messages' headers as rules match them (MailHeader[], JSON), so a rule can be tried on mail already here. Mail from
+	-- before has none.
+	ALTER TABLE messages ADD COLUMN headers_json TEXT;
+	-- The mailbox's rules for new mail, run in order of position. json is the RuleInput (shared/types.ts).
+	CREATE TABLE rules (
+		id TEXT PRIMARY KEY,
+		position REAL NOT NULL,
+		json TEXT NOT NULL,
+		created_by TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	-- Which rules filed a message, named as they were then, and why the model said its AI condition matched. Kept when
+	-- the rule is deleted; deleted with the message.
+	CREATE TABLE rule_runs (
+		message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+		rule_id TEXT NOT NULL,
+		rule_name TEXT NOT NULL,
+		reason TEXT,
+		PRIMARY KEY (message_id, rule_id)
+	);
+	`,
 ];

@@ -40,6 +40,8 @@ import {
 	HotkeysSchema,
 	MailSettingsSchema,
 	ModifyThreadsSchema,
+	RuleInputSchema,
+	RuleOrderSchema,
 	ShareLinkSchema,
 	SignatureSchema,
 	UpdateLabelSchema,
@@ -335,6 +337,38 @@ const mb = new Hono<AppEnv>()
 	.get("/settings", async (c) => c.json(await c.var.mailbox.settings()))
 
 	.patch("/settings", zValidator("json", MailSettingsSchema), async (c) => c.json(await c.var.mailbox.updateSettings(c.req.valid("json"))))
+
+	// ─── Rules (Mailbox.createRule() and on) ─────────────────────────────────────
+
+	.get("/rules", async (c) => c.json({ rules: await c.var.mailbox.rules() }))
+
+	.post("/rules", zValidator("json", RuleInputSchema), async (c) => {
+		const rule = await c.var.mailbox.createRule(c.req.valid("json"), "user");
+		return "error" in rule ? c.json({ error: rule.error }, 409) : c.json(rule, 201);
+	})
+
+	.put("/rules/:ruleId", zValidator("json", RuleInputSchema), async (c) => {
+		const rule = await c.var.mailbox.updateRule(c.req.param("ruleId"), c.req.valid("json"));
+		if (!rule) return c.json({ error: "Not found" }, 404);
+		return "error" in rule ? c.json({ error: rule.error }, 409) : c.json(rule);
+	})
+
+	.delete("/rules/:ruleId", async (c) => ((await c.var.mailbox.deleteRule(c.req.param("ruleId"))) ? c.body(null, 204) : c.json({ error: "Not found" }, 404)))
+
+	/** Every rule's id, in the order they're to run. */
+	.post("/rules/order", zValidator("json", RuleOrderSchema), async (c) =>
+		(await c.var.mailbox.reorderRules(c.req.valid("json").ids)) ? c.body(null, 204) : c.json({ error: "The rules changed meanwhile. Reload and try again." }, 409),
+	)
+
+	/** What a rule being written would match of the mail here, before it's saved. */
+	.post("/rules/preview", zValidator("json", RuleInputSchema), async (c) => c.json(await c.var.mailbox.previewRule(c.req.valid("json"))))
+
+	/** Files the mail already here that a saved rule matches. */
+	.post("/rules/:ruleId/apply", async (c) => {
+		const result = await c.var.mailbox.applyRule(c.req.param("ruleId"));
+		if (!result) return c.json({ error: "Not found" }, 404);
+		return "error" in result ? c.json({ error: result.error }, 409) : c.json(result);
+	})
 
 	.post("/threads/read", zValidator("json", MarkReadSchema), async (c) => {
 		await c.var.mailbox.markRead(c.req.valid("json"));

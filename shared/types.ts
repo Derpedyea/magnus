@@ -57,6 +57,16 @@ export interface InboundJob {
 	 */
 	checkFailures?: number;
 	/**
+	 * How many times checking it against the AI conditions of the mailbox's rules has failed (worker/mail/rules.ts),
+	 * counted like checkFailures.
+	 */
+	ruleFailures?: number;
+	/**
+	 * What the checks said of it (IngestInput.check), kept when it's queued again because the rules' check failed, so
+	 * its sender isn't checked, and billed, again. Null when it needed no check. Unset until then.
+	 */
+	check?: MailCheck | null;
+	/**
 	 * Mail imported from another provider (worker/mail/import.ts), placed as it was there instead of by triage. Its
 	 * envelope fields come from its headers: envelopeTo is the address of ours it belongs to, when it names one.
 	 */
@@ -101,6 +111,82 @@ export interface EmailSendingEvent {
 		complaint?: { type: string };
 	};
 	metadata: { accountId: string; eventTimestamp: string };
+}
+
+// ─── Rules ───────────────────────────────────────────────────────────────────
+// A mailbox's own filters for new mail, run in order once triage has placed it (Mailbox.ingest(), shared/rules.ts).
+
+export const RULE_TEXT_FIELDS = ["from", "to", "cc", "recipient", "subject", "body", "list-id"] as const;
+export type RuleTextField = (typeof RULE_TEXT_FIELDS)[number];
+export const RULE_TEXT_OPS = ["contains", "is", "starts-with", "ends-with"] as const;
+export type RuleTextOp = (typeof RULE_TEXT_OPS)[number];
+export const RULE_FLAGS = ["has-attachment", "verified-sender", "mailing-list"] as const;
+export type RuleFlag = (typeof RULE_FLAGS)[number];
+
+/** What a rule asks of mail. `not` asks the opposite. */
+export type RuleCondition =
+	/** `recipient` is To, Cc, or the address it was delivered to, with or without its +tag. */
+	| { field: RuleTextField; op: RuleTextOp; value: string; not?: boolean }
+	/** Any header of that name, whatever its case. `exists` asks only that there's one. */
+	| { field: "header"; name: string; op: RuleTextOp | "exists"; value?: string; not?: boolean }
+	| { field: RuleFlag; not?: boolean };
+
+export const RULE_ACTIONS = ["label", "skip-inbox", "star", "mark-read", "spam", "trash"] as const;
+/** What a rule does to mail it matches. `label` is one of the mailbox's own labels, by key. */
+export type RuleAction = { do: "label"; label: string } | { do: Exclude<(typeof RULE_ACTIONS)[number], "label"> };
+
+export interface RuleInput {
+	name: string;
+	/** Off, it's kept but doesn't run. */
+	enabled: boolean;
+	/** Whether mail must meet every condition or any one. */
+	match: "all" | "any";
+	conditions: RuleCondition[];
+	/**
+	 * A condition in plain English, which Workers AI checks of new mail meeting the others (worker/mail/rules.ts). Not of
+	 * mail going to Spam, and not of mail already here.
+	 */
+	ai: string | null;
+	actions: RuleAction[];
+	/** Later rules don't run on mail this one matched. */
+	stop: boolean;
+}
+
+export interface Rule extends RuleInput {
+	id: string;
+	/** Written by someone, or by the mail agent for them. */
+	createdBy: "user" | "agent";
+	createdAt: number;
+	updatedAt: number;
+}
+
+/** A rule that filed a message, and what the model said of its AI condition, if it has one. */
+export interface RuleHit {
+	id: string;
+	/** As it was then. */
+	name: string;
+	reason: string | null;
+}
+
+/** The model's answer to one rule's AI condition. */
+export interface RuleAnswer {
+	match: boolean;
+	reason: string;
+}
+
+/** A mailbox's rules, at most, and how many of them can have an AI condition: each costs a model's reading of new mail. */
+export const MAX_RULES = 100;
+export const MAX_AI_RULES = 20;
+
+/** Which of the newest mail a rule would match, for trying it before it runs (Mailbox.previewRule()). */
+export interface RulePreview {
+	/** Newest first. */
+	threads: ThreadSummary[];
+	/** Messages it matched, of those scanned. */
+	matched: number;
+	scanned: number;
+	/** It has an AI condition, which wasn't checked: only its other conditions were. */
+	aiNotChecked: boolean;
 }
 
 // ─── Mailbox data model (DTOs returned over RPC / JSON) ──────────────────────
@@ -269,6 +355,8 @@ export interface MessageDetail {
 	verdict: Verdict | null;
 	/** Its sender's domain vouched for the From address, so judging this message judges them (Mailbox.judgeMessage()). */
 	senderVerified: boolean;
+	/** The rules that filed it, in the order they ran. */
+	rules: RuleHit[];
 }
 
 /** A message as its thread shows it. */
@@ -348,6 +436,22 @@ export interface IngestInput {
 	labels: string[];
 	/** Read and sent as it was at the provider it came from. Its labels are already in `labels`. */
 	imported?: Omit<Imported, "labels">;
+	/** Its headers, for rules to match (MailHeader). Kept with it, so a rule can be tried on mail already here. */
+	headers: MailHeader[];
+	/**
+	 * What the queue's model said of the AI conditions of the rules whose other conditions it matched, by rule id. A rule
+	 * missing here doesn't match: its check failed every try, or it was added since.
+	 */
+	ruleAnswers?: Record<string, RuleAnswer>;
+}
+
+/**
+ * One of a message's headers as rules see it: named in lower case, and cut to 500 characters. Only the first 60, less
+ * the trace and signature headers every message has and no rule is about (worker/mail/ingest.ts).
+ */
+export interface MailHeader {
+	name: string;
+	value: string;
 }
 
 export interface SendAttachmentRef {
@@ -428,4 +532,5 @@ export type LiveEvent =
 	| { type: "threads.changed"; threadIds: string[] }
 	| { type: "delivery.changed"; messageId: string; status: DeliveryStatus }
 	| { type: "failed.changed" }
-	| { type: "labels.changed" };
+	| { type: "labels.changed" }
+	| { type: "rules.changed" };

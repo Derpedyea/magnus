@@ -109,7 +109,11 @@ push_subscriptions(endpoint, session_id, p256dh, auth, origin) ← a browser to 
 ### Mailbox DO schema (`worker/mailbox/schema.ts`)
 
 `threads`, `messages`, `message_labels`, `labels`, `message_addresses`, `attachments`, `thread_refs`, `outbox`, `deliveries`,
-`contacts`, `sends` (every id Email Sending gave a message), `messages_fts` (FTS5, porter + unicode61). Migrations are an append-only array applied in `blockConcurrencyWhile`.
+`contacts`, `sends` (every id Email Sending gave a message), `messages_fts` (FTS5, porter + unicode61), `rules` (the
+mailbox's rules, in order of `position`, each a `RuleInput` as JSON), and `rule_runs` (which rules filed a message, named
+as they were then, with the model's reason for an AI condition; deleted with the message by its foreign key). Messages
+keep up to 60 of their headers in `headers_json` (names in lower case, values cut to 500 characters, trace and
+signature headers left out), so a rule can be tried on mail already here; mail from before has none. Migrations are an append-only array applied in `blockConcurrencyWhile`.
 
 Labels follow the Gmail model: they live on messages, and a thread appears in a view if any of its messages
 has the label. System labels are `inbox`, `sent`, `outbox`, `spam`, `trash`, `starred`, `screener`. "Archive" means
@@ -179,7 +183,8 @@ whole mailbox is the one exception. Code that writes or drops `m/` objects keeps
 4. `queue()` first checks the target mailbox is still in the directory: one deleted since (its person deleted for good,
    or a failed add undone) gets nothing, and its original goes once no mailbox it was queued for is left. Then it
    parses with postal-mime, writes the HTML and attachments to R2, extracts the `Authentication-Results`
-   verdicts, works out who the sender verifiably is (§5.6), and calls `Mailbox.ingest()`. Only the verdicts
+   verdicts, works out who the sender verifiably is (§5.6), checks the AI conditions of the mailbox's rules (§5.6,
+   Rules), and calls `Mailbox.ingest()`. Only the verdicts
    Email Routing stamped count: its `mx.cloudflare.net` header above its `X-CF-SpamH-Score`, since everything
    below that came from the sender. SPF is the envelope sender's result, not the HELO name's. If the mailbox was
    deleted while that ran, it's cleared again (`destroy()`), in case its deletion got there first. A batch parses
@@ -187,8 +192,8 @@ whole mailbox is the one exception. Code that writes or drops `m/` objects keeps
    times over and a batch shares one isolate's 128 MB.
 5. `ingest()` is idempotent. It dedupes on `ingestId` and on `Message-ID`, so the same mail arriving via two
    of our addresses, or our own outbound copy coming back, is stored once with merged labels. It decides between
-   Inbox and Spam (§5.6), threads the message (§5.5), indexes it for search, and broadcasts `threads.changed`
-   over WebSocket.
+   Inbox and Spam (§5.6), threads the message (§5.5), runs the mailbox's rules on new mail in the same transaction,
+   indexes it for search, and broadcasts `threads.changed` over WebSocket.
 
 Failures retry with exponential backoff, 10 tries over about three hours. A message that still fails goes to its
 mailbox's **Failed** box (a `failed` table in the Mailbox DO), which shows in the sidebar only while it holds mail.
@@ -648,6 +653,22 @@ apart for one person's mailbox is who you know, and what you've said about who y
   since half a held conversation would show in the inbox anyway. A sender stops being first-time once mail from
   them is taken (delivered, and not in Spam or the Screener); mail from before verdicts were kept has no verified
   sender, so it doesn't count.
+- **Rules** (`shared/rules.ts`, `Mailbox.ingest()`, `/api/mailboxes/:id/rules`). Each mailbox has up to 100 ordered
+  rules: conditions on From, To, Cc, any recipient (the address it came to counts with and without its +tag),
+  subject, body, List-Id, any header, attachments, a verified sender, or mail from a list, all or any of them,
+  each negatable; and actions: a label of the mailbox's own, skip the inbox, star, mark read, Spam, Trash. They run
+  on new mail after the verdict has placed it, in order, and a rule can stop the ones after it. They don't run on
+  imported or forged mail, nor on duplicates. A rule's Spam or Trash judges nobody, and who the mail is from is
+  learned from where the verdict put it, so rules and sender standing stay apart; mail a rule takes out of the
+  inbox, or marks read, doesn't notify. Up to 20 rules can also have an AI condition in plain English. The queue
+  asks `Mailbox.aiRules()` for them, which gives none for mail going to Spam, so no model reads spam. Those whose
+  other conditions match go to Workers AI's DeepSeek V4.1 Flash (`worker/mail/rules.ts`) in one call per
+  message, with the same bounded summary and untrusted-data instruction the checks use and a strict JSON schema
+  for the answers; the reason it gives (cut to 200 characters) is kept with the message. A failure queues the job
+  again like a failed check (`ruleFailures`) and carries the checks' answer (`check`) so the sender isn't checked
+  twice; after the third, the mail is delivered with those rules unmatched (logged as `rules unchecked`). A rule
+  can be tried on the newest 1,000 inbound messages outside Trash and Spam (`/rules/preview`, its AI condition
+  unchecked) and, without an AI condition, applied to what it matches (`/rules/:id/apply`).
 
 ### 5.7 Reliability summary
 
@@ -674,6 +695,9 @@ apart for one person's mailbox is who you know, and what you've said about who y
   about 0.012¢ a message, inside Workers AI's free 10,000 neurons a day for several hundred messages. GPT-6 Luna
   ($0.10/M input, $0.50/M output) reads only the ones Clef isn't sure of, billed by OpenRouter to the key stored
   on the gateway (see §5.6).
+- Rules cost nothing unless one has an AI condition. Then DeepSeek V4.1 Flash on Workers AI ($0.30/M input, $1.20/M
+  output) reads a message once, for all such rules, only when one's other conditions match and the mail isn't
+  going to Spam: about 1,500 tokens in, a few hundred out.
 
 ## 7. Checked on the pilot install
 
@@ -717,7 +741,9 @@ The web app is the only client, so it has to be good on phones and good enough t
 
 **Later**
 
-6. **Rules and filters** per mailbox (from/to/subject → labels, skip inbox, auto-archive), evaluated in ingest.
+6. **Rules and filters** per mailbox: implemented (§5.6, Rules), with plain-English AI conditions. Not yet: Settings ›
+   Rules and "Filed by rule" in the thread (the API is in), the mail agent, forwarding and auto-reply actions,
+   person and admin scopes, and Sieve (docs/RULES.md).
 7. **Image proxy** through the Worker so "Show images" doesn't leak your IP.
 8. **Workers AI**: category labels and thread summaries (spam and phishing checks are in, §5.6). Use
    **Vectorize** for semantic search next to FTS5.

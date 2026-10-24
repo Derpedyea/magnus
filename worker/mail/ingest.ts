@@ -6,18 +6,25 @@ import {
 	isValidAddress,
 	type MailCheck,
 	labelFromTag,
+	type MailHeader,
+	matchConditions,
+	MAX_AI_RULES,
 	normalizeAddress,
 	parseMessageIds,
 	r2Keys,
+	type Rule,
+	type RuleAnswer,
+	type RuleFacts,
 	type SenderCheck,
 	type StoredAttachment,
 	splitAddress,
 	stripSubaddress,
 } from "#shared";
-import PostalMime, { type Address as ParsedAddress, type Email } from "postal-mime";
+import PostalMime, { type Address as ParsedAddress, type Attachment, type Email } from "postal-mime";
 import { isOwnAddress, mailboxExists } from "../directory";
 import { notifyNewMail } from "../push";
 import { CheckError, checkMail, type MailFacts, type Models, readHtml, readText } from "./checks";
+import { checkRules } from "./rules";
 
 /**
  * Tries at checking mail from an unknown sender, about a minute and a half apart in all, before it's delivered unchecked
@@ -25,6 +32,11 @@ import { CheckError, checkMail, type MailFacts, type Models, readHtml, readText 
  */
 const CHECK_ATTEMPTS = 3;
 const MAX_CHECK_ERROR = 300;
+/** Headers kept for rules (MailHeader), at most, and each one's length. */
+const MAX_HEADERS = 60;
+const MAX_HEADER_VALUE = 500;
+/** Headers every message has a pile of, which say how it travelled or was signed rather than anything a rule is about. */
+const TRACE_HEADERS = /^(?:received|dkim-signature|arc-.*|authentication-results)$/;
 
 /** Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. */
 export async function ingest(env: Env, job: InboundJob, models: Models = env.AI): Promise<void> {
@@ -53,7 +65,8 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 	const replyTo = flatten(email.replyTo);
 	const subject = email.subject ?? "(no subject)";
 	const messageIdHeader = email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null;
-	const needed = !imported && (await mailbox.needsCheck(sender, messageIdHeader, messageId));
+	// A job queued again for its rules (rulesOrGiveUp()) carries what the checks said.
+	const needed = !imported && job.check === undefined && (await mailbox.needsCheck(sender, messageIdHeader, messageId));
 	// Read for the models only when they're asked: parsing a big body costs CPU that known senders' mail needn't.
 	const read = async (): Promise<MailFacts> => ({
 		to: job.envelopeTo,
@@ -69,9 +82,25 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 	const facts = needed ? await read() : null;
 	// Mail of a mailbox deleted since the first check (reading a big body takes a while) mustn't reach the models.
 	if (facts && !(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
-	const check = facts ? await checkOrGiveUp(env, models, facts, job) : null;
+	const check = job.check !== undefined ? job.check : facts ? await checkOrGiveUp(env, models, facts, job) : null;
 	// Back in the queue with the failure counted (checkOrGiveUp()): this copy of the job is done.
 	if (check === "requeued") return;
+
+	const to = flatten(email.to);
+	const cc = flatten(email.cc);
+	const headers = keptHeaders(email);
+	const ruleFacts: RuleFacts = { from, to, cc, envelopeTo: job.envelopeTo, subject, text, headers, sender, attachments: email.attachments.map((a) => ({ inline: isInline(a) })) };
+	// Rules whose AI conditions the model reads, once the rest of each matches. Imported mail stays where it was filed.
+	const candidates = imported ? [] : (await mailbox.aiRules(sender, check)).filter((rule) => matchConditions(rule, ruleFacts)).slice(0, MAX_AI_RULES);
+	let ruleAnswers: Record<string, RuleAnswer> | undefined;
+	if (candidates.length > 0) {
+		const mail = facts ?? (await read());
+		// As for the checks: mail of a mailbox deleted meanwhile mustn't reach the model.
+		if (!(await mailboxExists(env.DIRECTORY, job.mailboxId))) return clearGone(env, job);
+		const answers = await rulesOrGiveUp(env, models, mail, candidates, job, check);
+		if (answers === "requeued") return;
+		ruleAnswers = answers;
+	}
 
 	let htmlKey: string | null = null;
 	if (email.html) {
@@ -93,7 +122,7 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 			contentType: a.mimeType,
 			size: content.byteLength,
 			contentId,
-			inline: a.disposition === "inline" || (a.related === true && contentId !== null),
+			inline: isInline(a),
 			link: null,
 			r2Key,
 		});
@@ -109,8 +138,8 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		inReplyTo: parseMessageIds(email.inReplyTo),
 		references: withoutOwnReference(email),
 		from,
-		to: flatten(email.to),
-		cc: flatten(email.cc),
+		to,
+		cc,
 		bcc: imported?.sent ? flatten(email.bcc) : undefined,
 		replyTo,
 		subject,
@@ -123,6 +152,8 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		check,
 		labels: imported ? [...imported.labels] : job.subaddress ? [labelFromTag(job.subaddress)] : [],
 		imported: imported ? { paths: imported.paths, read: imported.read, sent: imported.sent, addresses: imported.addresses } : undefined,
+		headers,
+		ruleAnswers,
 	};
 
 	const delivered = await mailbox
@@ -160,6 +191,26 @@ async function checkOrGiveUp(env: Env, models: Models, facts: MailFacts, job: In
 		}
 		console.error(JSON.stringify({ msg: "mail unchecked", ingestId: job.ingestId, mailboxId: job.mailboxId, error: checkErrorOf(error) }));
 		return { kind: "unchecked", error: checkErrorOf(error) };
+	}
+}
+
+/**
+ * Checks the AI conditions of the rules that this mail's other conditions match. A failure queues the job again like a
+ * failed check (checkOrGiveUp()), with what the checks said, so they aren't asked again. After the last try the mail
+ * is delivered with no answers: those rules don't match, and it goes where it would without them.
+ */
+async function rulesOrGiveUp(env: Env, models: Models, facts: MailFacts, rules: Rule[], job: InboundJob, check: MailCheck | null): Promise<Record<string, RuleAnswer> | "requeued"> {
+	try {
+		return await checkRules(models, facts, rules);
+	} catch (error) {
+		const failures = (job.ruleFailures ?? 0) + 1;
+		if (failures < CHECK_ATTEMPTS) {
+			console.error(JSON.stringify({ msg: "rules check failed", ingestId: job.ingestId, mailboxId: job.mailboxId, failures, error: checkErrorOf(error) }));
+			await env.INBOUND.send({ ...job, ruleFailures: failures, check }, { delaySeconds: 30 * 2 ** (failures - 1) });
+			return "requeued";
+		}
+		console.error(JSON.stringify({ msg: "rules unchecked", ingestId: job.ingestId, mailboxId: job.mailboxId, rules: rules.length, error: checkErrorOf(error) }));
+		return {};
 	}
 }
 
@@ -203,6 +254,19 @@ async function dropOriginal(env: Env, rawKey: string): Promise<void> {
 		.bind(JSON.stringify(listed.split(",")))
 		.first();
 	if (left === null) await env.MAIL.delete(rawKey);
+}
+
+/** Shown in the body rather than offered as a file. */
+function isInline(a: Attachment): boolean {
+	return a.disposition === "inline" || (a.related === true && a.contentId !== undefined);
+}
+
+/** The headers rules can match (MailHeader): the first MAX_HEADERS, less trace headers, each cut to size. */
+function keptHeaders(email: Email): MailHeader[] {
+	return email.headers
+		.filter((h) => !TRACE_HEADERS.test(h.key))
+		.slice(0, MAX_HEADERS)
+		.map((h) => ({ name: h.key, value: h.value.slice(0, MAX_HEADER_VALUE) }));
 }
 
 /** Content-IDs of the attachments, as the renderer matches cid: images against them (worker/html.ts). */
