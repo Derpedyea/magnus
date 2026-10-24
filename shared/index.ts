@@ -11,6 +11,7 @@ export * from "./keys";
 export * from "./labels";
 export * from "./links";
 export * from "./plaintext";
+export * from "./rules";
 export * from "./scope";
 export * from "./threading";
 export * from "./types";

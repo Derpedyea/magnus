@@ -17,6 +17,10 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
 - **Every address, one inbox.** Any number of domains and addresses feed one mailbox. Filter by address in a
   click. Group addresses like `family@` deliver a copy to each person.
 - **`+tag` becomes a label.** Mail to `me+receipts@` lands under *receipts* automatically.
+- **Rules file new mail.** Label it, skip the inbox, star it, mark it read, or send it to Spam or Trash, by sender,
+  recipient, subject, body, list, or any header, in the order you put them. A rule can also ask in plain English
+  ("a receipt for something I bought"), which Workers AI checks of new mail that isn't spam, and each message says
+  which rule filed it. Written through the API for now.
 - **Set up and run from the app.** Add domains, people, and addresses in the admin pages. Magnus turns on
   Email Routing and Email Sending in Cloudflare for you, and MTA-STS, so other servers deliver your mail only
   over an encrypted connection.
