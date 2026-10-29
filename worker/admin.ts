@@ -23,6 +23,7 @@ import {
 	setCatchAll,
 	unblockSender,
 } from "./directory";
+import { discardHeld, releaseHeld } from "./held";
 import { deleteMailboxObjects, deletePerson, removePerson, restorePerson } from "./removals";
 import { RESTORE_WINDOW_MS, RestoreIncomplete, restoreMailbox } from "./restore";
 import { forgetCloudflareToken, getInstall, loadCloudflareToken, saveCloudflareToken } from "./settings";
@@ -48,6 +49,11 @@ async function domainContext(c: Context<AppEnv>): Promise<DomainContext | null> 
 }
 
 const AddressInput = z.object({ localPart: LocalPartSchema, domain: z.string().min(1) });
+
+/** Mail held for an address just added goes to it. The address is there either way: if this fails, the cron delivers it. */
+async function deliverHeld(env: Env, address: string): Promise<void> {
+	await releaseHeld(env, address).catch((error: unknown) => console.error(JSON.stringify({ msg: "releasing held mail failed", address, error: String(error) })));
+}
 
 const BlockPatternSchema = z.string().transform((input, ctx) => {
 	const pattern = blockPattern(input);
@@ -167,6 +173,7 @@ export const admin = new Hono<AppEnv>()
 				if (address && (await addressExists(db, address))) return c.json({ error: "That address is already taken." }, 409);
 				throw error;
 			}
+			if (address) await deliverHeld(c.env, address);
 			return c.json({ id: user.id }, 201);
 		},
 	)
@@ -263,12 +270,28 @@ export const admin = new Hono<AppEnv>()
 			const address = `${body.localPart}@${body.domain}`;
 			if (!(await mailboxesInUse(c.env.DIRECTORY, body.mailboxIds))) return c.json({ error: "Someone you picked was removed. Pick again." }, 400);
 			await c.env.DIRECTORY.batch(addAddress(c.env.DIRECTORY, address, body.displayName || null, body.mailboxIds));
+			await deliverHeld(c.env, address);
 			return c.json({ address }, 201);
 		},
 	)
 
 	.delete("/addresses/:address", async (c) => {
 		await removeAddress(c.env.DIRECTORY, c.req.param("address"));
+		return c.body(null, 204);
+	})
+
+	// ─── Held mail (worker/held.ts) ───────────────────────────────────────────────
+
+	/** Delivers mail held for an address not added yet to these mailboxes, without adding it. */
+	.post("/held/:address/deliver", zValidator("json", z.object({ mailboxIds: z.array(z.string()).min(1) })), async (c) => {
+		const { mailboxIds } = c.req.valid("json");
+		if (!(await mailboxesInUse(c.env.DIRECTORY, mailboxIds))) return c.json({ error: "Someone you picked was removed. Pick again." }, 400);
+		await releaseHeld(c.env, c.req.param("address"), mailboxIds);
+		return c.body(null, 204);
+	})
+
+	.delete("/held/:address", async (c) => {
+		await discardHeld(c.env, c.req.param("address"));
 		return c.body(null, 204);
 	})
 

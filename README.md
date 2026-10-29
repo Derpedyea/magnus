@@ -28,7 +28,8 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
   Email Routing and Email Sending in Cloudflare for you, and MTA-STS, so other servers deliver your mail only
   over an encrypted connection.
 - **Rejects during the SMTP session.** Unknown recipients and blocked senders bounce before the message is
-  accepted, so Magnus never sends backscatter.
+  accepted, so Magnus never sends backscatter. In the 30 days after a domain's mail moves to Magnus, mail to an
+  address you haven't added yet is held instead, under Admin › Addresses, and adding the address delivers it.
 - **Real threading** by `Message-ID`/`References`, with a careful subject fallback. Replies thread in Gmail,
   Apple Mail, and Outlook too.
 - **Conversations branch where they fork.** When two people answer the same message, each reply hangs off it

@@ -64,7 +64,7 @@ export function labelFromTag(tag: string): string {
  * through Email Sending. `route` is the directory's resolveRecipient() result.
  */
 export function localRecipients(
-	recipients: { address: string; route: { kind: "deliver"; mailboxIds: string[]; subaddress: string | null } | { kind: "reject" } }[],
+	recipients: { address: string; route: { kind: "deliver"; mailboxIds: string[]; subaddress: string | null } | { kind: "reject" | "hold" } }[],
 	mailboxId: string,
 ): LocalRecipient[] {
 	return recipients.flatMap(({ address, route }) =>

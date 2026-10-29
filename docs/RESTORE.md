@@ -51,6 +51,7 @@ What else changes:
 - A draft that was being sent as the restore happened goes back to being a draft, for its sender to send again if it
   didn't go.
 - Mail imported since then (Settings › Import mail) is gone. Import it again; anything already there is skipped.
+- Held mail delivered since then (Admin › Addresses) is gone: it isn't replayed. Its original stays in R2 under `held/`.
 - Mail deleted for good since then comes back without its body and attachments, which were deleted from R2.
 
 To restore every mailbox, such as after a deploy that spoiled them all:

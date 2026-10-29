@@ -64,6 +64,8 @@ export interface DirectoryDomain {
 	sending: boolean;
 	/** Unknown addresses at this domain deliver here; null rejects them at SMTP time. */
 	catchAllMailboxId: string | null;
+	/** Its mail moved here recently: till then, mail to addresses not added yet is held rather than rejected. */
+	holdsUntil: number | null;
 }
 
 export interface Person {
@@ -106,6 +108,19 @@ export interface Directory {
 	blockedSenders: string[];
 	/** A Cloudflare token is saved, so turning domains on doesn't ask for one. */
 	cloudflareTokenSaved: boolean;
+	/** Addresses not added yet that mail is held for, newest first. */
+	held: HeldAddress[];
+}
+
+/** Mail held for an address that doesn't exist yet (worker/held.ts). */
+export interface HeldAddress {
+	address: string;
+	domain: string;
+	count: number;
+	/** The newest message's sender and subject, to tell real mail from guesses at addresses. */
+	newest: { sender: string; subject: string; receivedAt: number };
+	/** When it's deleted, unless it's delivered first. */
+	expiresAt: number;
 }
 
 /** A domain in the Cloudflare account, and who receives its mail today. */

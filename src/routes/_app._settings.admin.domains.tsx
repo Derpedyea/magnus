@@ -198,7 +198,8 @@ function DomainRow(props: { domain: DirectoryDomain; mailboxes: DirectoryMailbox
 	});
 	// An archived person's mailbox is offered only while it's the one chosen, and refuses mail until they're restored.
 	const items = [
-		{ value: REJECT, label: "Reject" },
+		// Its mail just moved here: mail to addresses not added yet waits under Addresses meanwhile.
+		{ value: REJECT, label: domain.holdsUntil ? `Hold until ${new Date(domain.holdsUntil).toLocaleDateString([], { dateStyle: "medium" })}` : "Reject" },
 		...props.mailboxes
 			.filter((m) => !m.removedWith || m.id === domain.catchAllMailboxId)
 			.map((m) => ({ value: m.id, label: m.removedWith ? `Reject while ${m.name} is archived` : `Deliver to ${m.name}` })),

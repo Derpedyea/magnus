@@ -1,6 +1,7 @@
 import { byteBudget, type EmailSendingEvent, type InboundJob, r2Keys, ulid } from "#shared";
 import { addressParser } from "postal-mime";
 import { resolveRecipient } from "../directory";
+import { holdMail } from "../held";
 import { handleDeliveryEvent } from "./events";
 import type { Models } from "./checks";
 import { ingest, recordFailed } from "./ingest";
@@ -25,6 +26,7 @@ export async function email(message: ForwardableEmailMessage, env: Env): Promise
 		message.setReject(resolution.reason);
 		return;
 	}
+	if (resolution.kind === "hold") return holdMail(env, message, resolution, fromHeader[0] ?? message.from);
 
 	const receivedAt = Date.now();
 	const ingestId = ulid(receivedAt);

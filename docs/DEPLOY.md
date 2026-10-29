@@ -98,7 +98,10 @@ new token and give it to *Use a different token*.
   their mail is refused at once, but their mailbox and its mail are kept: **Restore** under Archived brings them back
   as they were, and **Delete for good** erases them).
 - **Addresses.** Add addresses and choose who receives them. Several people makes a shared address like
-  `family@`: each gets a copy and can reply from it.
+  `family@`: each gets a copy and can reply from it. For 30 days after a domain's mail moves here, mail to an
+  address you haven't added yet is held instead of bounced, and listed under *Held mail*: **Add address** delivers
+  it, or deliver it to someone without adding the address, or discard it. Whatever's left is deleted when the 30
+  days end, and the domain's *Unknown addresses* says *Hold until* that day meanwhile.
 
 ## Moving a domain from another provider
 
@@ -117,8 +120,11 @@ Afterwards, remove the old provider's SPF `include:`, DKIM records, and verifica
 tighten DMARC to `v=DMARC1; p=quarantine; rua=mailto:dmarc@example.net` (then `p=reject` once the reports
 look clean).
 
+If you move before adding every address the domain gets mail at, nothing bounces for the first 30 days: Admin ›
+Addresses holds it under *Held mail* until you add the address.
+
 To roll back, restore the old MX records in Cloudflare DNS. Every message that arrived in the meantime is in
-R2 under `raw/`.
+R2 under `raw/` (or `held/`, for addresses you hadn't added).
 
 ## A custom domain for the app
 

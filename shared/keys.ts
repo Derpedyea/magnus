@@ -2,6 +2,7 @@
  * R2 object layout (single bucket: magnus-mail).
  *
  *   raw/2026/09/26/<ingestId>.eml             raw inbound message, shared across fan-out
+ *   held/<ingestId>.eml                        mail to an address not added yet (worker/held.ts), its original once delivered
  *   m/<mailboxId>/<messageId>/body.html        rendered HTML body (cid: rewritten)
  *   m/<mailboxId>/<messageId>/att/<attId>      attachment bytes
  *   m/<mailboxId>/<messageId>/original.eml     raw message imported from another provider, this mailbox's alone
@@ -22,6 +23,10 @@ export const r2Keys = {
 		const d = new Date(receivedAt);
 		const pad = (n: number) => String(n).padStart(2, "0");
 		return `raw/${d.getUTCFullYear()}/${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())}/`;
+	},
+	/** Mail held for an address not added yet. It stays here once delivered, as the original its mailboxes share. */
+	held(ingestId: string): string {
+		return `held/${ingestId}.eml`;
 	},
 	mailbox(mailboxId: string): string {
 		return `m/${mailboxId}/`;
