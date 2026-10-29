@@ -6,6 +6,7 @@ import { fixture, type Fixture } from "./runtime/fixture";
 const ORIGIN = "https://magnus.test";
 /** 1Password's authenticator model, so the passkey has a name to show. */
 const AAGUID = "bada5566-a7aa-401f-bd96-45619a55120d";
+const PASSWORD = "a long enough passphrase";
 
 type Reply = Awaited<ReturnType<Fixture["worker"]["fetch"]>>;
 
@@ -61,11 +62,39 @@ describe("sign-in", () => {
 		expect(await me.json()).toMatchObject({ user: { id: "alice" } });
 	});
 
+	it("sets a password on a fresh session, then signs in with it alone", async () => {
+		const alice = await f.login("alice");
+		expect((await call("/auth/save-password", alice, { password: PASSWORD })).status).toBe(200);
+		const signIn = (password: string) => call("/auth/sign-in/email", "", { email: "alice@login.test", password });
+		const signedIn = await signIn(PASSWORD);
+		expect(await (await call("/me", jar("", signedIn))).json()).toMatchObject({ user: { id: "alice" } });
+
+		// Replacing it stops the old one.
+		expect((await call("/auth/save-password", alice, { password: `${PASSWORD}!` })).status).toBe(200);
+		expect(signsIn(await signIn(PASSWORD))).toBe(false);
+		expect(signsIn(await signIn(`${PASSWORD}!`))).toBe(true);
+	});
+
+	const BREACHED = "That password has turned up in a data breach. Choose another.";
+	it.each([
+		["too short", "fifteen chars?", "Use at least 15 characters."],
+		["breached", "password password password", BREACHED],
+		["breached, with lookalike spaces", "password\u00a0password\u00a0password", BREACHED],
+	])(
+		"won't set a password that's %s",
+		async (_, password, message) => {
+			const refused = await call("/auth/save-password", await f.login("alice"), { password });
+			expect(refused.status).toBe(400);
+			expect(await refused.json()).toMatchObject({ message });
+			expect(await f.env.DIRECTORY.prepare("SELECT 1 FROM auth_accounts").first()).toBeNull();
+		},
+	);
+
 	it.each([
 		[`older than ${FRESH_SIGN_IN_MINUTES} minutes`, "UPDATE auth_sessions SET createdAt = ?1", 403],
 		["revoked, though its cookie cache still says otherwise", "DELETE FROM auth_sessions", 401],
 		["an admin's impersonation", "UPDATE auth_sessions SET impersonatedBy = 'admin'", 403],
-	])("won't add a passkey from a session that's %s", async (_, sql, status) => {
+	])("won't add a passkey or set a password from a session that's %s", async (_, sql, status) => {
 		const cookie = await f.login("alice");
 		const row = await f.env.DIRECTORY.prepare("SELECT createdAt FROM auth_sessions").first<{ createdAt: string | number }>();
 		const stale = Date.now() - (FRESH_SIGN_IN_MINUTES + 5) * 60_000;
@@ -73,6 +102,7 @@ describe("sign-in", () => {
 		// Written the way Better Auth wrote it.
 		await (sql.includes("?1") ? statement.bind(typeof row?.createdAt === "number" ? stale : new Date(stale).toISOString()) : statement).run();
 		expect((await call("/auth/passkey/generate-register-options", cookie)).status).toBe(status);
+		expect((await call("/auth/save-password", cookie, { password: PASSWORD })).status).toBe(status);
 	});
 
 	it("accepts each signed challenge once", async () => {

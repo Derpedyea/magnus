@@ -33,6 +33,11 @@ const ERRORS: Record<string, string> = {
 	access_denied: "Sign-in was cancelled.",
 };
 
+/** Better Auth's password error, in plainer words. It's the same whether or not the address has an account. */
+const PASSWORD_ERRORS: Record<string, string> = {
+	"Invalid email or password": "That email and password don't match.",
+};
+
 /** Better Auth's email-code errors, in plainer words. */
 const CODE_ERRORS: Record<string, string> = {
 	"Invalid OTP": "That code isn't right.",
@@ -88,7 +93,7 @@ function Login() {
 	);
 }
 
-/** A passkey, Google, or an emailed code. */
+/** A passkey, Google, an emailed code, or a password. Codes come first; a password is a link away, as on Slack's. */
 function StartForm(props: {
 	returnTo: string;
 	/** From Google's redirect back here. */
@@ -121,6 +126,14 @@ function StartForm(props: {
 	// Starts a session; the page leaves right after, so nothing cached needs invalidating.
 	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
 	const passkey = useMutation({ mutationFn: (autoFill: boolean) => passkeys.signIn(autoFill), onSuccess: props.onSignedIn });
+	const [withPassword, setWithPassword] = useState(false);
+	const [password, setPassword] = useState("");
+	// Starts a session; the page leaves right after, so nothing cached needs invalidating.
+	// react-doctor-disable-next-line react-doctor/query-mutation-missing-invalidation
+	const signIn = useMutation({
+		mutationFn: (credentials: { email: string; password: string }) => authClient.signIn.email(credentials),
+		onSuccess: props.onSignedIn,
+	});
 	const startPasskey = passkey.mutate;
 	// Offers saved passkeys in the email field's autofill, like a saved password, until one is picked or the form goes.
 	// Pressing the passkey button starts a new request, which cancels this one.
@@ -136,6 +149,7 @@ function StartForm(props: {
 	const failure =
 		google.error?.message ??
 		sendCode.error?.message ??
+		(signIn.error ? (PASSWORD_ERRORS[signIn.error.message] ?? signIn.error.message) : null) ??
 		passkeyFailure(passkey.error) ??
 		(props.error ? (ERRORS[props.error] ?? `Couldn't sign in (${props.error}).`) : null);
 
@@ -173,7 +187,8 @@ function StartForm(props: {
 					className="flex flex-col gap-3"
 					onSubmit={(e) => {
 						e.preventDefault();
-						sendCode.mutate(props.email.trim());
+						if (withPassword) signIn.mutate({ email: props.email.trim(), password });
+						else sendCode.mutate(props.email.trim());
 					}}
 				>
 					<Input
@@ -187,11 +202,36 @@ function StartForm(props: {
 						aria-label="Email address"
 						className="h-9"
 					/>
-					<Button type="submit" size="lg" disabled={sendCode.isPending}>
-						{sendCode.isPending ? <Spinner data-icon="inline-start" /> : null}
-						Email me a code
+					{withPassword ? (
+						<Input
+							type="password"
+							required
+							autoFocus
+							autoComplete="current-password"
+							value={password}
+							onChange={(e) => setPassword(e.target.value)}
+							placeholder="Password"
+							aria-label="Password"
+							className="h-9"
+						/>
+					) : null}
+					<Button type="submit" size="lg" disabled={withPassword ? signIn.isPending : sendCode.isPending}>
+						{(withPassword ? signIn.isPending : sendCode.isPending) ? <Spinner data-icon="inline-start" /> : null}
+						{withPassword ? "Sign in" : "Email me a code"}
 					</Button>
 				</form>
+				<Button
+					variant="link"
+					size="sm"
+					onClick={() => {
+						setWithPassword(!withPassword);
+						signIn.reset();
+						sendCode.reset();
+					}}
+					className="text-muted-foreground"
+				>
+					{withPassword ? "Email me a code instead" : "Sign in with a password instead"}
+				</Button>
 			</div>
 			{failure ? <p className="max-w-72 text-center text-destructive">{failure}</p> : null}
 		</>

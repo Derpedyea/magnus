@@ -100,6 +100,15 @@ async function atTestTime<T>(run: () => Promise<T>): Promise<T> {
 	}
 }
 
+// Have I Been Pwned's password range API, which knows just this one (sign-in.test.ts). Nothing reaches the real one.
+const BREACHED_PASSWORD = "password password password";
+const realFetch = globalThis.fetch;
+Reflect.set(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+	if (new URL(new Request(input, init).url).hostname !== "api.pwnedpasswords.com") return realFetch(input, init);
+	const sha1 = new Uint8Array(await crypto.subtle.digest("SHA-1", new TextEncoder().encode(BREACHED_PASSWORD)));
+	return new Response(`${Array.from(sha1, (b) => b.toString(16).padStart(2, "0")).join("").slice(5).toUpperCase()}:3\r\n`);
+});
+
 // Every push service, as far as ingest can tell: requests are recorded and answered with pushStatus. Restored on every
 // exit.
 async function withPushService<T>(run: () => Promise<T>): Promise<T> {

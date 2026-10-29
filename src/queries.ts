@@ -1,6 +1,6 @@
 import { cursorOf, THROUGH_MAX } from "#shared";
 import { type InfiniteData, infiniteQueryOptions, type QueryClient, queryOptions } from "@tanstack/react-query";
-import { adminApi, api, type ListPlace } from "./api";
+import { adminApi, api, authClient, type ListPlace } from "./api";
 import { passkeys } from "./passkeys";
 
 // One definition per read, shared by route loaders (which prefetch) and components (which subscribe).
@@ -85,6 +85,12 @@ export const threadQuery = (mailboxId: string, threadId: string) =>
 
 /** Your passkeys. */
 export const passkeysQuery = queryOptions({ queryKey: ["passkeys"], queryFn: passkeys.list });
+
+/** Your password's account (never the password), or null before you set one. */
+export const passwordQuery = queryOptions({
+	queryKey: ["password"],
+	queryFn: async () => (await authClient.listAccounts()).find((a) => a.providerId === "credential") ?? null,
+});
 
 /** Domains, people, mailboxes, and addresses. Admin changes invalidate ["admin"]. */
 export const directoryQuery = queryOptions({ queryKey: ["admin", "directory"], queryFn: adminApi.directory });

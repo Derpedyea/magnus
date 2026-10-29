@@ -442,8 +442,8 @@ open tabs.
 ### 5.1 Authentication and authorization
 
 - **Better Auth** runs at `/api/auth/*` with the email-code, passkey, and admin plugins. You sign in with a
-  passkey, with a 6-digit code emailed to your *sign-in email*, or with Google if its client ID and secret are
-  set. Each yields a 30-day rolling session cookie backed by D1.
+  passkey, with a 6-digit code emailed to your *sign-in email*, with a password once you've set one, or with
+  Google if its client ID and secret are set. Each yields a 30-day rolling session cookie backed by D1.
 - The sign-in email has to be outside this install: setup and adding a person refuse an address at one of
   Magnus's domains, since its codes would land in the inbox they unlock. Adding a domain warns about anyone
   whose sign-in email is there, because it can't be refused (their address may predate the domain).
@@ -453,6 +453,11 @@ open tabs.
   impersonation, so a stolen or revoked session can't plant a passkey that outlives it. A passkey is bound to
   the hostname it was made on (one Better Auth instance per origin), so one made on a custom domain doesn't work
   on `workers.dev`. Each challenge is a D1 row used once; asking for them is rate-limited per IP.
+- **Passwords** are optional. Settings → Sign-in sets or replaces yours (`/api/auth/save-password`), under the
+  same rules as adding a passkey, so a forgotten one is replaced after signing in with a code. Better Auth's own
+  ways to change, reset, or set someone else's are turned off. At least 15 characters (NIST SP 800-63B-4's
+  minimum for a password used on its own), and refused if Have I Been Pwned has seen it: only the first 5 hex
+  characters of its SHA-1 leave the Worker. Stored as scrypt hashes in `auth_accounts`.
 - **Nobody signs up.** `auth_users` is the list of people, and admins add them. Codes are only sent to
   people who exist (`disableSignUp`), though the page answers the same for anyone, and Google only signs in
   an existing person, matched by email.
