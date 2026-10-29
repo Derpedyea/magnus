@@ -1,4 +1,4 @@
-import type { DirectoryDomain, DirectoryMailbox, Person } from "#shared";
+import { type DirectoryDomain, type DirectoryMailbox, type Person, STEP_IDS } from "#shared";
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { EllipsisIcon, PlusIcon } from "lucide-react";
@@ -14,7 +14,6 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Field, FieldContent, FieldDescription, FieldError, FieldLabel, FieldTitle } from "@/components/ui/field";
@@ -126,6 +125,7 @@ function Domains() {
 					) : (
 						<ConnectBody
 							domain={connecting.domain}
+							people={people}
 							connect={connect}
 							onRun={(moveMail) => {
 								setConnecting({ ...connecting, moveMail });
@@ -156,21 +156,28 @@ function SaveTokenForm(props: { onSaved?: () => void }) {
 
 function ConnectBody(props: {
 	domain: string;
+	people: Person[];
 	moveMail: boolean;
 	connect: ReturnType<typeof useDomainConnect>;
 	onRun: (moveMail: boolean) => void;
 	onReplaceToken: () => void;
 }) {
-	const { steps, running, done, started } = props.connect;
-	const blocked = steps.routing?.state === "failed" && "needsMoveMail" in steps.routing && steps.routing.needsMoveMail;
+	const { steps, running, started } = props.connect;
+	// Its mail still goes elsewhere: everything else can be on, and moving it is up to the admin.
+	const elsewhere = steps.routing !== undefined && "needsMoveMail" in steps.routing && steps.routing.needsMoveMail === true;
+	// Waiting on Cloudflare or failed, so checking again could change it. Waiting for the admin to move mail doesn't count.
+	const unsettled = STEP_IDS.some((id) => {
+		const state = steps[id]?.state;
+		return state !== undefined && state !== "done" && !(id === "routing" && elsewhere);
+	});
 	return (
 		<div className="flex flex-col gap-5 text-sm">
 			<ConnectChecklist steps={steps} />
+			{elsewhere && !running ? <CodesComeHere people={props.people} domain={props.domain} /> : null}
 			{running || !started ? null : (
-				<DialogFooter>
-					{blocked ? (
-						<Button onClick={() => props.onRun(true)}>Move mail to Magnus and continue</Button>
-					) : done ? null : (
+				<DialogFooter className="sm:flex-wrap">
+					{elsewhere ? <Button onClick={() => props.onRun(true)}>Move mail to Magnus</Button> : null}
+					{!unsettled ? null : (
 						<Button variant="outline" onClick={() => props.onRun(props.moveMail)}>
 							Check again
 						</Button>
@@ -296,8 +303,8 @@ function AddDomainDialog(props: {
 	// The first domain until another is picked.
 	const zone = zones.data?.find((z) => z.id === picked) ?? zones.data?.[0];
 	const elsewhere = zone?.mail.kind === "other" ? zone.mail.provider : null;
-	// Their sign-in codes would start arriving in Magnus, where they can't read them while signed out.
-	const codesComeHere = zone ? props.people.filter((p) => p.email.endsWith(`@${zone.name}`)) : [];
+	// Mail keeps going to the other provider while the admin sets the domain up, and moves from the domain's row.
+	const later = Boolean(elsewhere) && !moveMail;
 	const qc = useQueryClient();
 	const add = useMutation({
 		mutationFn: adminApi.addDomain,
@@ -338,33 +345,54 @@ function AddDomainDialog(props: {
 								))}
 							</RadioGroup>
 							{elsewhere && zone ? (
-								<Field orientation="horizontal">
-									<Checkbox id="move-mail" checked={moveMail} onCheckedChange={setMoveMail} />
-									<FieldLabel htmlFor="move-mail" className="font-normal">
-										Move {zone.name}'s mail to Magnus. It stops arriving at {elsewhere}.
-									</FieldLabel>
-								</Field>
+								<RadioGroup value={moveMail ? "now" : "later"} onValueChange={(value) => setMoveMail(value === "now")} aria-label={`When ${zone.name}'s mail moves`}>
+									<Field orientation="horizontal">
+										<RadioGroupItem id="move-later" value="later" />
+										<FieldContent>
+											<FieldLabel htmlFor="move-later" className="font-normal">
+												Keep mail at {elsewhere} for now
+											</FieldLabel>
+											<FieldDescription>Add its addresses and import old mail first, then move it from this page.</FieldDescription>
+										</FieldContent>
+									</Field>
+									<Field orientation="horizontal">
+										<RadioGroupItem id="move-now" value="now" />
+										<FieldContent>
+											<FieldLabel htmlFor="move-now" className="font-normal">
+												Move mail to Magnus now
+											</FieldLabel>
+											<FieldDescription>It stops arriving at {elsewhere}.</FieldDescription>
+										</FieldContent>
+									</Field>
+								</RadioGroup>
 							) : null}
-							{codesComeHere.length ? (
-								<FieldDescription className="text-pretty text-amber-700 dark:text-amber-400">
-									{listNames(codesComeHere.map((p) => p.name))} {codesComeHere.length === 1 ? "signs" : "sign"} in with codes sent to {zone?.name}. Once
-									its mail comes here, they'll need a passkey to sign back in.
-								</FieldDescription>
-							) : null}
+							{zone && !later ? <CodesComeHere people={props.people} domain={zone.name} /> : null}
 							{add.error ? <FieldError>{errorMessage(add.error)}</FieldError> : null}
 						</>
 					)}
 				</div>
 				{props.tokenSaved && zones.data?.length ? (
 					<DialogFooter>
-						<Button onClick={() => zone && add.mutate(zone.id)} disabled={!zone || add.isPending || (Boolean(elsewhere) && !moveMail)}>
+						<Button onClick={() => zone && add.mutate(zone.id)} disabled={!zone || add.isPending}>
 							{add.isPending ? <Spinner data-icon="inline-start" /> : null}
-							Add and turn on
+							{later ? "Add" : "Add and turn on"}
 						</Button>
 					</DialogFooter>
 				) : null}
 			</DialogContent>
 		</Dialog>
+	);
+}
+
+/** Their sign-in codes would start arriving in Magnus, where they can't read them while signed out. */
+function CodesComeHere(props: { people: Person[]; domain: string }) {
+	const names = props.people.filter((p) => p.email.endsWith(`@${props.domain}`)).map((p) => p.name);
+	if (names.length === 0) return null;
+	return (
+		<FieldDescription className="text-pretty text-amber-700 dark:text-amber-400">
+			{listNames(names)} {names.length === 1 ? "signs" : "sign"} in with codes sent to {props.domain}. Once its mail comes here, they'll need a passkey to
+			sign back in.
+		</FieldDescription>
 	);
 }
 
