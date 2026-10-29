@@ -1,7 +1,7 @@
 import { FRESH_SIGN_IN_MINUTES, MIN_PASSWORD_LENGTH } from "#shared";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { KeyRoundIcon, PlusIcon } from "lucide-react";
+import { KeyRoundIcon, PlusIcon, TriangleAlertIcon } from "lucide-react";
 import { useState } from "react";
 import {
 	AlertDialog,
@@ -184,6 +184,15 @@ function PasswordDialog(props: { open: boolean; onOpenChange: (open: boolean) =>
 					<DialogHeader>
 						<DialogTitle>{props.replacing ? "Change your password" : "Set a password"}</DialogTitle>
 					</DialogHeader>
+					<div className="flex items-start gap-2 rounded-lg bg-muted px-3 py-2">
+						<TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+						<div className="min-w-0 flex-1">
+							<p className="font-medium">A passkey is recommended</p>
+							<p className="text-xs text-muted-foreground">
+								Passwords are less secure: they can be guessed, leaked, or typed into a fake site. A passkey can't be.
+							</p>
+						</div>
+					</div>
 					{/* So password managers save it under your sign-in email. */}
 					<input type="email" autoComplete="username" value={user.email} readOnly hidden />
 					<Field data-invalid={save.error ? true : undefined}>
