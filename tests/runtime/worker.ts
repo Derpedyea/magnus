@@ -13,6 +13,8 @@ import { Mailbox as ProductionMailbox } from "../../worker/mailbox/mailbox";
 import { type Exporter, ProtonImport as ProductionProtonImport } from "../../worker/proton-import";
 import type { ExporterState, ProtonImportJob } from "#shared/proton-export";
 import { cleanDraftFiles } from "../../worker/drafts";
+import { setDomainFlag } from "../../worker/directory";
+import { cleanHeld } from "../../worker/held";
 import { forgetExpiredDevices } from "../../worker/push";
 import { deleteMailboxObjects, deletePerson } from "../../worker/removals";
 import { NOW } from "./clock";
@@ -415,6 +417,10 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	parse(job: InboundJob) { return withPushService(() => ingest(controlled(this.env), job, models)); }
 	setModels(next: Partial<ModelAnswers>) { answers = { ...answers, ...next }; }
 	cleanDrafts() { return cleanDraftFiles(controlled(this.env), now); }
+	/** As connect.ts turns a domain's receiving on or off, at test time. */
+	setReceiving(domain: string, on: boolean) { return atTestTime(() => setDomainFlag(this.env.DIRECTORY, domain, "receiving", on)); }
+	/** The hourly cron's held-mail pass. */
+	cleanHeld() { return cleanHeld(controlled(this.env), now); }
 	setNow(value: number) { now = value; }
 	/** Changes what the Proton export container says and holds. */
 	setExport(change: {

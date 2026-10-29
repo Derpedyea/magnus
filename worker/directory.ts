@@ -9,6 +9,7 @@ import {
 	ulid,
 	type User,
 } from "#shared";
+import { HOLD_LIMIT, HOLD_WINDOW_MS, type Hold, heldAddresses } from "./held";
 import { hasCloudflareToken } from "./settings";
 
 // Typed queries over the D1 directory (migrations/0001_init.sql): who can sign in, which domains and addresses
@@ -16,6 +17,7 @@ import { hasCloudflareToken } from "./settings";
 
 export type RecipientResolution =
 	| { kind: "deliver"; mailboxIds: string[]; subaddress: string | null }
+	| ({ kind: "hold" } & Hold)
 	| { kind: "reject"; reason: string };
 
 /**
@@ -23,7 +25,8 @@ export type RecipientResolution =
  * Rejecting here (instead of accepting and bouncing later) avoids backscatter.
  * `senders` are the envelope sender and the From header's addresses, and a block on any refuses the message:
  * bulk mail carries its sending service's bounce address on the envelope, so only the header (which the app
- * shows and blocks) names who it's from.
+ * shows and blocks) names who it's from. Mail to an address a domain doesn't have yet is held instead of rejected
+ * while the domain's mail has only just moved here (worker/held.ts).
  */
 export async function resolveRecipient(db: D1Database, senders: string[], envelopeTo: string): Promise<RecipientResolution> {
 	const { base, tag } = stripSubaddress(envelopeTo);
@@ -44,12 +47,15 @@ export async function resolveRecipient(db: D1Database, senders: string[], envelo
 			.all<{ mailbox_id: string; removed: number }>(),
 		db
 			.prepare(
-				`SELECT d.receiving, m.id AS catch_all_mailbox_id FROM domains d
+				`SELECT d.receiving, d.receiving_since, m.id AS catch_all_mailbox_id,
+					EXISTS (SELECT 1 FROM addresses WHERE address = ?2) AS address_exists,
+					(SELECT count(*) FROM held_mail WHERE domain = d.name) AS held
+				 FROM domains d
 				 LEFT JOIN mailboxes m ON m.id = d.catch_all_mailbox_id AND m.removed_with IS NULL
 				 WHERE d.name = ?1`,
 			)
-			.bind(domain)
-			.first<{ receiving: number; catch_all_mailbox_id: string | null }>(),
+			.bind(domain, base)
+			.first<{ receiving: number; receiving_since: number | null; catch_all_mailbox_id: string | null; address_exists: number; held: number }>(),
 		db.prepare(`SELECT 1 AS hit FROM sender_blocks WHERE pattern IN (SELECT value FROM json_each(?1)) LIMIT 1`).bind(JSON.stringify(blocks)).first(),
 	]);
 
@@ -61,8 +67,14 @@ export async function resolveRecipient(db: D1Database, senders: string[], envelo
 	// Theirs alone: refused rather than left to the catch-all, so nobody else gets their mail while they can be restored.
 	if (routes.results.length > 0) return { kind: "reject", reason: "5.1.1 Mailbox unavailable" };
 	if (dom.catch_all_mailbox_id) return { kind: "deliver", mailboxIds: [dom.catch_all_mailbox_id], subaddress: tag };
+	// Not one turned off: only an address nobody has added yet.
+	const holdsUntil = holdEnd(dom.receiving_since);
+	if (dom.address_exists === 0 && holdsUntil > Date.now() && dom.held < HOLD_LIMIT) return { kind: "hold", address: base, domain, expiresAt: holdsUntil };
 	return { kind: "reject", reason: "5.1.1 Mailbox unavailable" };
 }
+
+/** When a domain that started receiving then stops holding mail for addresses it doesn't have. */
+const holdEnd = (receivingSince: number | null) => (receivingSince === null ? 0 : receivingSince + HOLD_WINDOW_MS);
 
 /** For the local-dev sign-in bypass; real requests take the user from their session. */
 export async function findUserByEmail(db: D1Database, email: string): Promise<User | null> {
@@ -301,10 +313,10 @@ export async function getDirectory(db: D1Database): Promise<Directory> {
 	// An archive an older Worker wrote, still running as this one deployed, has no id yet (migrations/0009_archive_ids.sql).
 	// A random one, so the id an admin confirms deleting is never one a later archive could share.
 	await db.prepare(`UPDATE removed_people SET archive_id = lower(hex(randomblob(16))) WHERE archive_id IS NULL`).run();
-	const [domains, people, mailboxes, members, addresses, routes, blocks, cloudflareTokenSaved] = await Promise.all([
+	const [domains, people, mailboxes, members, addresses, routes, blocks, cloudflareTokenSaved, held] = await Promise.all([
 		db
-			.prepare(`SELECT name, zone_id, receiving, sending, catch_all_mailbox_id FROM domains ORDER BY created_at`)
-			.all<{ name: string; zone_id: string | null; receiving: number; sending: number; catch_all_mailbox_id: string | null }>(),
+			.prepare(`SELECT name, zone_id, receiving, receiving_since, sending, catch_all_mailbox_id FROM domains ORDER BY created_at`)
+			.all<{ name: string; zone_id: string | null; receiving: number; receiving_since: number | null; sending: number; catch_all_mailbox_id: string | null }>(),
 		db
 			.prepare(
 				`SELECT u.id, u.name, u.email, u.role, u.banned, r.removed_at, r.archive_id FROM auth_users u
@@ -317,11 +329,21 @@ export async function getDirectory(db: D1Database): Promise<Directory> {
 		db.prepare(`SELECT address, mailbox_id FROM address_routes`).all<{ address: string; mailbox_id: string }>(),
 		db.prepare(`SELECT pattern FROM sender_blocks ORDER BY created_at DESC`).all<{ pattern: string }>(),
 		hasCloudflareToken(db),
+		heldAddresses(db),
 	]);
+	const now = Date.now();
 	return {
-		domains: domains.results.map(
-			(d) => ({ name: d.name, zoneId: d.zone_id, receiving: d.receiving === 1, sending: d.sending === 1, catchAllMailboxId: d.catch_all_mailbox_id }),
-		),
+		domains: domains.results.map((d) => {
+			const holdsUntil = holdEnd(d.receiving_since);
+			return {
+				name: d.name,
+				zoneId: d.zone_id,
+				receiving: d.receiving === 1,
+				sending: d.sending === 1,
+				catchAllMailboxId: d.catch_all_mailbox_id,
+				holdsUntil: d.receiving === 1 && holdsUntil > now ? holdsUntil : null,
+			};
+		}),
 		people: people.results.map((p) => ({
 			id: p.id,
 			name: p.name,
@@ -346,6 +368,7 @@ export async function getDirectory(db: D1Database): Promise<Directory> {
 		),
 		blockedSenders: blocks.results.map((b) => b.pattern),
 		cloudflareTokenSaved,
+		held,
 	};
 }
 
@@ -367,6 +390,14 @@ export async function addDomain(db: D1Database, name: string, zoneId: string): P
 }
 
 export async function setDomainFlag(db: D1Database, name: string, flag: "receiving" | "sending", on: boolean): Promise<void> {
+	// Starting to receive opens the domain's hold window (worker/held.ts).
+	if (flag === "receiving") {
+		await db
+			.prepare(`UPDATE domains SET receiving = ?2, receiving_since = CASE WHEN ?2 = 1 AND receiving = 0 THEN ?3 ELSE receiving_since END WHERE name = ?1`)
+			.bind(name, on ? 1 : 0, Date.now())
+			.run();
+		return;
+	}
 	// The column comes from the union above, never from input.
 	await db.prepare(`UPDATE domains SET ${flag} = ?2 WHERE name = ?1`).bind(name, on ? 1 : 0).run();
 }

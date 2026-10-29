@@ -149,6 +149,7 @@ locally, so suggestions need no round trip.
 
 ```
 raw/2026/09/26/<ingestId>.eml          raw inbound, shared across fan-out, kept while a mailbox has it or lists it under Failed (source of truth)
+held/<ingestId>.eml                    mail held for an address not added yet (§4.1); once delivered, its original as raw/ is
 m/<mailboxId>/<messageId>/body.html     HTML body (served through the sanitizer)
 m/<mailboxId>/<messageId>/att/<attId>   attachments (inbound, and outbound once the outbox picks them up)
 m/<mailboxId>/<messageId>/original.eml  the original of mail imported from another provider (§4.7), this mailbox's alone
@@ -173,6 +174,13 @@ whole mailbox is the one exception. Code that writes or drops `m/` objects keeps
    invokes the Worker's `email()` once per recipient.
 2. `resolveRecipient()` makes one D1 batch covering the exact address, the domain catch-all, and sender blocks.
    Unknown recipients get `setReject("5.1.1 …")` **during the SMTP session**, so we never send backscatter.
+   The exception is a domain's first 30 days of receiving here (`domains.receiving_since`, set as its `receiving` flag
+   turns on): mail to an address it doesn't have at all (not one turned off) is accepted and held, the original under
+   `held/` and a row in `held_mail`, so moving a domain before adding every address loses nothing (`worker/held.ts`).
+   Adding the address queues it to its mailboxes as ordinary `InboundJob`s; an admin can instead deliver it to any
+   mailbox or discard it. The hourly cron delivers any whose address was added without that, then deletes the rest
+   once the window ends. Senders hear nothing either way, so this adds no backscatter. 1,000 held messages per domain
+   is the most it keeps; past that, mail is rejected as before.
    A block matches the envelope sender or any address in the From header: bulk mail carries its sending service's
    bounce address on the envelope, and the header is what the app shows. Admins block from a message
    (the sender or their whole domain) or from Admin › Blocked senders.

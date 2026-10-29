@@ -43,7 +43,7 @@ export async function fixture() {
 
 	async function seed() {
 		await control.reset();
-		await env.DIRECTORY.batch(["domains", "mailboxes", "auth_users", "settings", "sender_blocks", "mailbox_deletions"].map((table) => env.DIRECTORY.prepare(`DELETE FROM ${table}`)));
+		await env.DIRECTORY.batch(["domains", "mailboxes", "auth_users", "settings", "sender_blocks", "mailbox_deletions", "held_mail"].map((table) => env.DIRECTORY.prepare(`DELETE FROM ${table}`)));
 		const files = await env.MAIL.list();
 		if (files.objects.length) await env.MAIL.delete(files.objects.map((o) => o.key));
 		const ids = { alice: `alice-${++serial}`, bob: `bob-${serial}`, shared: `shared-${serial}` };
