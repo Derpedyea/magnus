@@ -220,7 +220,8 @@ const savePassword = createAuthEndpoint(
 	SAVE_PASSWORD,
 	{ method: "POST", body: z.object({ password: z.string() }), use: [freshSessionMiddleware] },
 	async (ctx) => {
-		const { password } = ctx.body;
+		// Hashing normalizes it (NFKC), so the checks see what's stored: "password\u00a0password" is "password password".
+		const password = ctx.body.password.normalize("NFKC");
 		const { minPasswordLength, maxPasswordLength } = ctx.context.password.config;
 		if (password.length < minPasswordLength) throw new APIError("BAD_REQUEST", { message: `Use at least ${minPasswordLength} characters.` });
 		if (password.length > maxPasswordLength) throw new APIError("BAD_REQUEST", { message: `Use at most ${maxPasswordLength} characters.` });

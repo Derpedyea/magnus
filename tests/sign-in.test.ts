@@ -75,7 +75,12 @@ describe("sign-in", () => {
 		expect(signsIn(await signIn(`${PASSWORD}!`))).toBe(true);
 	});
 
-	it.each([["too short", "fifteen chars?", "Use at least 15 characters."], ["breached", "password password password", "That password has turned up in a data breach. Choose another."]])(
+	const BREACHED = "That password has turned up in a data breach. Choose another.";
+	it.each([
+		["too short", "fifteen chars?", "Use at least 15 characters."],
+		["breached", "password password password", BREACHED],
+		["breached, with lookalike spaces", "password\u00a0password\u00a0password", BREACHED],
+	])(
 		"won't set a password that's %s",
 		async (_, password, message) => {
 			const refused = await call("/auth/save-password", await f.login("alice"), { password });
