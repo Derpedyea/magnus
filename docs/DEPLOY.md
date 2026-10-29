@@ -102,13 +102,24 @@ new token and give it to *Use a different token*.
 
 ## Moving a domain from another provider
 
-A domain that gets mail elsewhere (Proton, Google, …) shows that provider when you pick it. Turning it on
-removes the provider's MX records and adds Cloudflare's, so **mail stops arriving at the old provider right
-away**, and Magnus asks you to confirm first. Before you do:
+A domain that gets mail elsewhere (Proton, Google, …) shows that provider when you pick it under **Add domain**,
+and you choose when its mail moves:
+
+- **Keep mail at the provider for now** adds the domain and turns on sending and delivery tracking, but leaves its
+  MX records alone, so mail keeps arriving at the old provider. Sending's records sit under `cf-bounce.<domain>`,
+  apart from the old provider's. Add the domain's people and addresses, and bring the old mail over. Mail sent from
+  Magnus meanwhile goes out as usual, and replies still arrive at the old provider. When you're ready, **Turn on**
+  beside the domain moves its mail.
+- **Move mail to Magnus now** does it at once.
+
+Moving removes the provider's MX records and adds Cloudflare's, so **mail stops arriving at the old provider right
+away**. Before you move:
 
 1. Bring your old mail over: Settings › Import mail signs in to Proton and copies it, or takes a folder of `.eml`
    files from anywhere else. Do it after the switch too, to catch what arrived in between; nothing is copied twice.
 2. Lower the TTL on the existing MX records a day ahead, so the switch spreads quickly.
+
+First-run setup has no *for now*: the domain you set up with moves at once.
 
 Moving also replaces the old provider's MTA-STS records, if it had any: their policy names its own mail servers,
 so senders that check it would refuse to deliver to Cloudflare's.

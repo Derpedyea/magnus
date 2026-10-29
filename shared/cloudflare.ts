@@ -41,7 +41,7 @@ export interface StepStatus {
 	/** todo: not started · pending: waiting on Cloudflare (usually DNS) · failed: needs you. */
 	state: "done" | "pending" | "todo" | "failed";
 	detail?: string;
-	/** Failed only because the domain gets mail elsewhere: running again with moveMail goes ahead. */
+	/** Waiting only because the domain gets mail elsewhere: running again with moveMail moves it. */
 	needsMoveMail?: boolean;
 }
 

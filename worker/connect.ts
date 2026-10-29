@@ -119,7 +119,8 @@ async function act(ctx: DomainContext, step: StepId, options: RunOptions, before
 			if (foreign.length > 0) {
 				const host = mailHost(foreign.map((r) => r.content));
 				const provider = host.kind === "other" ? host.provider : "another provider";
-				if (!options.moveMail) return { state: "failed", detail: `${ctx.domain} gets mail at ${provider} today.`, needsMoveMail: true };
+				// Not a failure: the admin can set the domain up first and move its mail when they're ready.
+				if (!options.moveMail) return { state: "todo", detail: `Mail goes to ${provider} until you move it.`, needsMoveMail: true };
 				// Email Routing can't share the apex with another provider's MX records.
 				for (const record of foreign) await ctx.cf.delete("dns", `/zones/${ctx.zoneId}/dns_records/${record.id}`);
 			}

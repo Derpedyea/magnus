@@ -490,7 +490,8 @@ Email Routing on the zone (removing another provider's MX records only after the
 rule sending every address to this Worker, Email Sending on the domain, an event subscription from Email
 Sending to the queue this Worker consumes but doesn't produce to, and MTA-STS. The directory's `receiving` and
 `sending` flags follow what Cloudflare reports after every step. Setup and the admin Domains page run the same
-steps.
+steps. Until the admin confirms the move, a domain whose mail goes elsewhere gets only the steps that don't touch
+receiving (Email Sending and its events), so it can be set up and its old mail imported first.
 
 MTA-STS (RFC 8461, `worker/mta-sts.ts`) makes servers that support it deliver only over TLS to the MX hosts a
 policy names, so an attacker on the path can't strip encryption or redirect the mail. Cloudflare publishes the
