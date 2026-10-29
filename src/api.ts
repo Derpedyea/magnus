@@ -19,6 +19,8 @@ export class ApiError extends Error {
 	constructor(
 		message: string,
 		readonly status: number,
+		/** Better Auth's name for it, when it gives one. */
+		readonly code?: string,
 	) {
 		super(message);
 	}
@@ -51,7 +53,7 @@ export const authClient = createAuthClient({
 	fetchOptions: {
 		// Throws with Better Auth's own message (the default error only carries the status text).
 		onError: ({ error, response }) => {
-			throw new ApiError(error.message ?? response.statusText, response.status);
+			throw new ApiError(error.message ?? response.statusText, response.status, error.code);
 		},
 		throw: true,
 	},

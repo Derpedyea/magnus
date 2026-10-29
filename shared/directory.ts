@@ -14,8 +14,11 @@ export interface User {
 /** Characters. Room for a few lines, not a letterhead. */
 export const MAX_SIGNATURE = 2000;
 
-/** Adding a passkey needs a sign-in from this many minutes ago at most. */
+/** Adding a passkey or setting a password needs a sign-in from this many minutes ago at most. */
 export const FRESH_SIGN_IN_MINUTES = 15;
+
+/** Characters. NIST SP 800-63B-4's minimum for a password that signs in on its own. */
+export const MIN_PASSWORD_LENGTH = 15;
 
 
 export interface MailboxAddress {

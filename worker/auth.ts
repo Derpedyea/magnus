@@ -2,12 +2,13 @@ import { getAuthenticatorName, passkey } from "@better-auth/passkey";
 // Unused, but lets the emitted declarations name the WebAuthn types in the passkey plugin's endpoints.
 import type * as _webauthn from "@simplewebauthn/server";
 import { betterAuth } from "better-auth";
-import { APIError, createAuthMiddleware, getAuthoritativeSessionFromCtx } from "better-auth/api";
+import { APIError, createAuthEndpoint, createAuthMiddleware, freshSessionMiddleware, getAuthoritativeSessionFromCtx } from "better-auth/api";
 import { admin } from "better-auth/plugins/admin";
 import { emailOTP } from "better-auth/plugins/email-otp";
+import { haveIBeenPwned } from "better-auth/plugins/haveibeenpwned";
 import { env, waitUntil } from "cloudflare:workers";
 import { z } from "zod";
-import { FRESH_SIGN_IN_MINUTES, type User } from "#shared";
+import { FRESH_SIGN_IN_MINUTES, MIN_PASSWORD_LENGTH, type User } from "#shared";
 import { findUserByEmail, loginCodeSender } from "./directory";
 import { optional } from "./optional";
 import { isRemoved } from "./removals";
@@ -16,12 +17,15 @@ import { authSecret } from "./settings";
 const CODE_MINUTES = 10;
 /** Both steps of adding a passkey. */
 const REGISTER_PATHS = new Set(["/passkey/generate-register-options", "/passkey/verify-registration"]);
+/** Setting or replacing your password (savePassword below). */
+const SAVE_PASSWORD = "/save-password";
 /**
  * Better Auth's endpoints that need no session: signing in or out, and asking who's signed in. OAuth callbacks too
  * (/callback/*). Every other one acts for a session, so D1 has to vouch for it (hooks.before below).
  */
 const SESSIONLESS = new Set([
 	"/sign-in/email-otp",
+	"/sign-in/email",
 	"/email-otp/send-verification-otp",
 	"/sign-in/social",
 	"/passkey/generate-authenticate-options",
@@ -41,8 +45,8 @@ let secret: string | undefined;
 const instances = new WeakMap<Request, Auth>();
 
 /**
- * Better Auth at /api/auth/*: a passkey, a code emailed to your sign-in address, or Google when configured, then a
- * session cookie in D1. Nobody signs up; an admin adds people (the admin plugin).
+ * Better Auth at /api/auth/*: a passkey, a code emailed to your sign-in address, a password once you've set one, or
+ * Google when configured, then a session cookie in D1. Nobody signs up; an admin adds people (the admin plugin).
  *
  * Each instance is made for the origin the request came in on (its workers.dev URL, a custom domain), so callbacks
  * return to the same site and only that origin is trusted. Passkeys are bound to that origin's hostname too: one made
@@ -96,6 +100,9 @@ function createAuth(baseURL: string, secret: string) {
 			freshAge: FRESH_SIGN_IN_MINUTES * 60,
 		},
 		socialProviders: googleConfig ? { google: { ...googleConfig, prompt: "select_account", disableSignUp: true } } : {},
+		// Only signing in: a password is set in Settings (savePassword), and a forgotten one is replaced the same way after
+		// signing in with a code. Better Auth's own ways to change or reset one are off (disabledPaths).
+		emailAndPassword: { enabled: true, disableSignUp: true, minPasswordLength: MIN_PASSWORD_LENGTH },
 		plugins: [
 			emailOTP({
 				sendVerificationOTP: ({ email, otp, type }) => (type === "sign-in" ? sendSignInCode(email, otp) : Promise.resolve()),
@@ -118,6 +125,9 @@ function createAuth(baseURL: string, secret: string) {
 				schema: { passkey: { modelName: "auth_passkeys" } },
 			}),
 			admin(),
+			{ id: "magnus-password", endpoints: { savePassword } },
+			// Refuses a password that's turned up in a breach. Only the first 5 characters of its SHA-1 leave the Worker.
+			haveIBeenPwned({ paths: [SAVE_PASSWORD], customPasswordCompromisedMessage: "That password has turned up in a data breach. Choose another." }),
 		],
 		databaseHooks: {
 			session: {
@@ -143,6 +153,7 @@ function createAuth(baseURL: string, secret: string) {
 				if (!session) throw new APIError("UNAUTHORIZED", { message: REGISTER_PATHS.has(ctx.path) ? "Sign in to add a passkey." : "Sign in again." });
 				// An admin signed in as someone else (impersonation) can't leave a passkey behind on their account.
 				if (REGISTER_PATHS.has(ctx.path) && session.session.impersonatedBy) throw new APIError("FORBIDDEN", { message: "You can't add a passkey for someone else." });
+				if (ctx.path === SAVE_PASSWORD && session.session.impersonatedBy) throw new APIError("FORBIDDEN", { message: "You can't set a password for someone else." });
 			}),
 			after: createAuthMiddleware(async (ctx) => {
 				if (ctx.path !== "/passkey/verify-registration" || !ctx.request) return;
@@ -158,13 +169,14 @@ function createAuth(baseURL: string, secret: string) {
 				throw new APIError("UNAUTHORIZED", { message: "Sign in to add a passkey." });
 			}),
 		},
-		// Sign-in endpoints allow a few tries per minute per client IP (the email-code plugin's own limits). Each
-		// passkey challenge is a D1 row, so asking for them is limited too.
+		// Sign-in endpoints allow a few tries per minute per client IP (the email-code plugin's own limits, matched for
+		// passwords). Each passkey challenge is a D1 row, so asking for them is limited too.
 		rateLimit: {
 			enabled: true,
 			storage: "database",
 			modelName: "auth_rate_limits",
 			customRules: {
+				"/sign-in/email": { window: 60, max: 3 },
 				"/passkey/generate-authenticate-options": { window: 60, max: 10 },
 				"/passkey/verify-authentication": { window: 60, max: 10 },
 			},
@@ -180,10 +192,56 @@ function createAuth(baseURL: string, secret: string) {
 		// Deleting someone at once would skip their removal (worker/removals.ts) and leave their mailbox behind. People are
 		// removed through /api/admin. And nothing links accounts: Google joins someone by their sign-in email when they first
 		// use it, while linking would let any session attach any Google account, which signs in long after it's ended.
-		disabledPaths: ["/admin/remove-user", "/link-social"],
+		// Only you set your password, through savePassword after a recent sign-in: checking the old one would let a stolen
+		// session guess at it, and a reset by email is signing in with a code. People are added through /api/admin too,
+		// which makes their mailbox; the plugin's own way would also take a password for them. Only HTTP is turned off.
+		disabledPaths: [
+			"/admin/remove-user",
+			"/link-social",
+			"/admin/create-user",
+			"/admin/set-user-password",
+			"/change-password",
+			"/verify-password",
+			"/request-password-reset",
+			"/reset-password",
+			"/email-otp/request-password-reset",
+			"/forget-password/email-otp",
+			"/email-otp/reset-password",
+		],
 		telemetry: { enabled: false },
 	});
 }
+
+/**
+ * Sets your password, or replaces it, on a sign-in from the last FRESH_SIGN_IN_MINUTES (as adding a passkey needs): a
+ * stolen session can't plant one that outlives it. A forgotten password is replaced after signing in with a code.
+ */
+const savePassword = createAuthEndpoint(
+	SAVE_PASSWORD,
+	{ method: "POST", body: z.object({ password: z.string() }), use: [freshSessionMiddleware] },
+	async (ctx) => {
+		const { password } = ctx.body;
+		const { minPasswordLength, maxPasswordLength } = ctx.context.password.config;
+		if (password.length < minPasswordLength) throw new APIError("BAD_REQUEST", { message: `Use at least ${minPasswordLength} characters.` });
+		if (password.length > maxPasswordLength) throw new APIError("BAD_REQUEST", { message: `Use at most ${maxPasswordLength} characters.` });
+		const hash = await ctx.context.password.hash(password);
+		const { user, session } = ctx.context.session;
+		const now = new Date().toISOString();
+		// Written only while the session still exists, in one go: one that's ended (they're removed, say) since the check in
+		// hooks.before can't leave a password behind. Better Auth looks for the one whose accountId is the person's id.
+		const alive = `EXISTS (SELECT 1 FROM auth_sessions WHERE id = ?4)`;
+		const [updated, inserted] = await env.DIRECTORY.batch([
+			env.DIRECTORY.prepare(`UPDATE auth_accounts SET password = ?1, updatedAt = ?2 WHERE userId = ?3 AND providerId = 'credential' AND ${alive}`).bind(hash, now, user.id, session.id),
+			env.DIRECTORY.prepare(
+				`INSERT INTO auth_accounts (id, accountId, providerId, userId, password, createdAt, updatedAt)
+				 SELECT ?5, ?3, 'credential', ?3, ?1, ?2, ?2 WHERE ${alive}
+				 AND NOT EXISTS (SELECT 1 FROM auth_accounts WHERE userId = ?3 AND providerId = 'credential')`,
+			).bind(hash, now, user.id, session.id, ctx.context.generateId({ model: "account" }) || crypto.randomUUID()),
+		]);
+		if (!updated?.meta.changes && !inserted?.meta.changes) throw new APIError("UNAUTHORIZED", { message: "Sign in again." });
+		return ctx.json({ saved: true });
+	},
+);
 
 async function sendSignInCode(email: string, code: string) {
 	// LOGIN_CODE_FROM's domain needs Email Sending turned on, though it needn't be one of Magnus's domains.
