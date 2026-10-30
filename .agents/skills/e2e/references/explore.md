@@ -3,7 +3,9 @@
 `e2e explore` runs the agent against the app with a goal instead of a test
 file: see what it can do with an app before tests exist, hunt for regressions
 on a branch, or find what is worth turning into a test. It needs a config with
-a target and an agent that holds a model, nothing else.
+a target and an agent that holds a model, nothing else. With no config, it
+runs the `e2e init` wizard first in a terminal; without one (an agent's
+shell, CI) it fails with `CONFIG_NOT_FOUND`, so run `npx e2e init --yes` first.
 
 ```bash
 npx e2e explore   # goal: "Explore the app and find bugs"
@@ -59,9 +61,7 @@ start signed in, so no charter is spent signing in again. A name no setup
 declares fails before any app process starts with `COLLECTION_ERROR`, naming
 the declared sessions.
 
-A setup that filled a secret taints the restored session, so every finding
-goes without a screenshot; one that signed in without a fill (a `browser.setCookies`
-session cookie, say) keeps them where the engine captures pixels, and only
+Findings keep their screenshots after a setup that filled a secret. Only
 configured secrets are redacted (topic `writing-tests`).
 
 ## Flags

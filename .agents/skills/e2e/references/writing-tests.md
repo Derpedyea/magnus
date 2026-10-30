@@ -128,6 +128,9 @@ label. `browser` (`Browser`): browser targets, import `test` from `@e2e-dev/web`
   the base URL.
 - `screenshot(label?)`: saves a redacted screenshot artifact and returns its
   absolute path. It masks secure fields only (see Sign-in sessions).
+- `startRecording({ name? })`, then `stopRecording()`: records one span and
+  returns its videos (`path` or hosted `url`). Fails while the test's
+  `video` records: set `{ video: 'off' }` on the test.
 
 `clearState()` is `UNSUPPORTED_CAPABILITY` with `connect.reconnectEndpoint`
 or an attempt-scoped browser provider; on a device with no pinned `app`, both
@@ -144,7 +147,7 @@ assertion. Every query also exists on a locator, scoped to its subtree.
 | `getByLabel(text, { exact?, visible? })` | Form controls by label. |
 | `getByPlaceholder(text, { exact?, visible? })` | Inputs by placeholder. |
 | `getByText(text, { exact?, visible? })` | Visible text. |
-| `getByDisplayValue(value, { exact?, visible? })` | Inputs by current value; on the web it cannot scope child queries or be a `filter({ has })` target. |
+| `getByDisplayValue(value, { exact?, visible? })` | Inputs by current value; on the web it cannot scope child queries or be a `filter({ has })` or `filter({ hasNot })` target. |
 | `getByTestId(id, { visible? })` | `data-testid` on the web (or `web({ testIdAttribute })`), accessibility identifier or resource id on a device (React Native `testID`, SwiftUI `.accessibilityIdentifier`, Compose `testTag` with `testTagsAsResourceId` on Android, Flutter `Semantics(identifier:)`, .NET MAUI `AutomationId`); a string matches the whole id, a RegExp tests it; on Android the `<package>:id/` prefix may be left off. Last resort. |
 
 Roles: `button`, `link`, `textbox`, `searchbox`, `combobox`, `listbox`,
@@ -177,13 +180,14 @@ substring; a `RegExp` matches as written.
   `toHaveText` and `toContainText`, `isVisible()` (false at zero),
   `isHidden()` (true), `count()`, `all()`, `allTextContents()`.
 - Narrow with `filter({ hasText })` (a case-insensitive substring, unlike a
-  query), `filter({ has: locator })`, `first()`, `last()`, `nth(i)`, or
-  scoping under another locator. Any other `filter` key (`hasNot`,
-  `hasNotText`) or an empty `filter({})` is `INVALID_LOCATOR`. `a.or(b)`
+  query), `filter({ hasNotText })` to exclude matching subtree text,
+  `filter({ has: locator })`, `filter({ hasNot: locator })`, `first()`,
+  `last()`, `nth(i)`, or scoping under another locator. Any other `filter`
+  key (`visible`) or an empty `filter({})` is `INVALID_LOCATOR`. `a.or(b)`
   matches either, still strict: add `first()` when both may match. Both
   locators must come from the same screen and attempt. Web branches need
-  identical literal frame-selector chains; display-value branches cannot
-  be composed.
+  identical literal frame-selector chains; display-value branches cannot be
+  composed.
 - `visible: true` drops nodes the page hides (a closed drawer) before the
   exactly-one rule. Visibility is what renders, as `toBeVisible()` reads it:
   an `aria-hidden` spinner that paints is visible, so `toBeHidden()` waits
@@ -350,11 +354,10 @@ test('the dashboard opens directly', { session: 'admin' }, async ({ app, screen 
   match `[A-Za-z0-9_.-]{1,128}`.
 - A session holds cookies, local storage, and IndexedDB for one run,
   encrypted and deleted at cleanup; server state is not part of it.
-- Once a secret is filled, model pixels are withheld for the rest of that
-  session (later serial members included). Artifact screenshots
-  (`app.screenshot()`, assertion, failure) stay on and mask secure fields
-  only. A restored session keeps its setup's taint; a setup that signs in
-  without a fill (`browser.setCookies`, say) leaves model pixels available.
+- Screenshots, the model's and the artifacts', mask secure fields only,
+  after a secret fill too. A generic secret in a plain input, or a value the
+  app shows anywhere else (a show-password toggle, a toast), is in the image
+  and reaches the model provider: use test credentials.
 - Credentials live in the config, values in the environment:
 
 ```ts
@@ -479,6 +482,8 @@ the app opens itself (`target="_blank"`, `window.open`) is not followed:
   before the page's own scripts; call it before `app.open`. `arg` is JSON.
 - `route(pattern, handler)`, `unroute(pattern)`: intercept requests, newest
   route first; `route.request` has `url`, `method`, `headers`, `postData`.
+  `route.fetch()` reads upstream without deciding the route and returns
+  `{ url, status, headers, text(), json() }`; redirects are not followed.
   The handler calls exactly one of
   `fulfill({ status?, headers?, contentType?, json | body | path })`,
   `continue({ url?, method?, headers?, postData? })` (straight to the
@@ -492,6 +497,8 @@ the app opens itself (`target="_blank"`, `window.open`) is not followed:
   `ACTION_FAILED` when it could not be read. Start the wait before the
   request, including the first `browser.goto` or `app.open`.
 - `cookies()`, `setCookies([...])`: a target is an http(s) URL or a domain.
+- `clearCookies({ name?, domain?, path? })`: remove cookies matching every
+  string or RegExp filter; no options removes all cookies, other storage stays.
 - `setViewport({ width, height })`: resize.
 - `emulateMedia({ colorScheme?, reducedMotion? })`: what the page's `@media`
   rules and `matchMedia` read, for the rest of the test. Call it before
@@ -506,6 +513,8 @@ the app opens itself (`target="_blank"`, `window.open`) is not followed:
 - `waitForDownload(() => trigger, { timeout? })`: returns
   `{ path, absolutePath, suggestedFilename }`; `absolutePath` names the saved
   runner-side file for reading its contents, including with a hosted browser.
+- `waitForDownloads(() => trigger, { count, timeout? })`: calls the trigger
+  once and returns `count` of those results in start order.
 - `keyboard.press(key)`, `keyboard.type(text)`, `keyboard.down(key)`,
   `keyboard.up(key)`, `mouse.*`: unfocused input. Only `down(key)` holds a
   key or modifier until `up(key)`. `press(key)` presses and releases within

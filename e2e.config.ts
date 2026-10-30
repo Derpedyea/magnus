@@ -1,4 +1,5 @@
 import type { E2EConfig } from "e2e";
+import { claudeCode } from "@e2e-dev/acp";
 import { web } from "@e2e-dev/web";
 
 // `pnpm test:e2e` starts the app on a free port from fresh seeded state (scripts/e2e-serve.mjs) and stops it when done.
@@ -20,4 +21,6 @@ export default {
 			},
 		},
 	],
+	// agent.act and agent.assert run on Claude Code, signed in with your `claude` login.
+	agents: { default: { executor: claudeCode({ model: "sonnet" }) } },
 } satisfies E2EConfig;

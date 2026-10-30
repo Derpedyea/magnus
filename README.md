@@ -131,7 +131,7 @@ Nothing is really sent locally. Outbound mail, sign-in codes included, is writte
 | `pnpm dev` | The app and Worker in watch mode, with local D1/R2/Queues in `.wrangler/state/` |
 | `pnpm typecheck` | `tsc` for the app, Worker, and test fixtures |
 | `pnpm test` | Unit tests and isolated Worker tests for mail, send alarms, and multi-user API permissions |
-| `pnpm test:e2e` | [e2e](https://e2e.tester.army/docs) browser tests in `e2e/`, headless, on their own fresh seeded app; `--headed` to watch |
+| `pnpm test:e2e` | [e2e](https://e2e.tester.army/docs) browser tests in `e2e/`, headless, on their own fresh seeded app, with agent steps on your Claude Code login; `--headed` to watch |
 | `pnpm run deploy` | Typecheck, test, build, then deploy to your Cloudflare account |
 | `pnpm cf-typegen` | Regenerate `worker-configuration.d.ts` after changing `wrangler.jsonc` |
 

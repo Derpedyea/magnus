@@ -11,6 +11,17 @@ test("new mail shows in the inbox and opens", async ({ app, screen }) => {
 	await expect(thread.getByText("Noon at the usual place.")).toBeVisible();
 });
 
+test("a reply shows in its conversation", async ({ app, agent, browser, screen }) => {
+	const subject = `Dinner plans ${crypto.randomUUID().slice(0, 8)}`;
+	await deliver(app.baseUrl, { from: "me@example.net", to: "me@example.com", subject, text: "Pizza or tacos?" });
+
+	await app.open("/");
+	await screen.getByText(subject).tap({ timeout: 30_000 });
+	await agent.act("reply {text}", { params: { text: "Tacos, see you at 7." } });
+	// Sent mail shows its HTML part in a frame of its own, so this can't match the text still in the reply box.
+	await expect(browser.frameLocator('iframe[title="Message body"]').getByText("Tacos, see you at 7.")).toBeVisible();
+});
+
 /**
  * Hands a message to the Worker's email() handler, as Email Routing would. From one of the seed's own domains, with
  * passing checks, so it's trusted and no remote AI check runs.
