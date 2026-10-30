@@ -17,9 +17,10 @@
     "preview": "vite preview",
     "deploy": "pnpm run build && wrangler deploy",
     "postinstall": "tsc -p tsconfig.worker.json --noCheck",
-    "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.app.json && tsc -p tsconfig.test.json && tsc -p tsconfig.sw.json && tsc -p tsconfig.container.json",
+    "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.app.json && tsc -p tsconfig.test.json && tsc -p tsconfig.sw.json && tsc -p tsconfig.container.json && tsc -p tsconfig.e2e.json",
     "test": "vitest run",
     "test:setup": "node --test scripts/setup.test.mjs",
+    "test:e2e": "e2e run",
     "cf-typegen": "wrangler types --strict-vars=false",
     "db:seed:local": "wrangler d1 migrations apply DIRECTORY --local && wrangler d1 execute DIRECTORY --local --file scripts/seed-dev.sql",
     "mail:test": "node scripts/send-test-email.mjs"
@@ -60,7 +61,10 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.99.1",
     "@cloudflare/vite-plugin": "^1.62.2",
+    "@e2e-dev/acp": "0.1.0",
+    "@e2e-dev/web": "0.15.4",
     "@simplewebauthn/server": "13.3.3",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/react-devtools": "^0.10.13",
@@ -71,6 +75,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "e2e": "0.22.0",
     "miniflare": "5.20260926.1-alpha",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
