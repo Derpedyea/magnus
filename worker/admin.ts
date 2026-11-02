@@ -116,8 +116,9 @@ export const admin = new Hono<AppEnv>()
 		},
 	)
 
-	.patch("/domains/:domain", zValidator("json", z.object({ catchAllMailboxId: z.string().nullable() })), async (c) => {
-		const set = await setCatchAll(c.env.DIRECTORY, c.req.param("domain"), c.req.valid("json").catchAllMailboxId);
+	.patch("/domains/:domain", zValidator("json", z.object({ catchAllMailboxId: z.string().nullable(), hold: z.boolean().optional() })), async (c) => {
+		const { catchAllMailboxId, hold } = c.req.valid("json");
+		const set = await setCatchAll(c.env.DIRECTORY, c.req.param("domain"), catchAllMailboxId, hold);
 		return set ? c.body(null, 204) : c.json({ error: "That domain or mailbox isn't in use." }, 400);
 	})
 

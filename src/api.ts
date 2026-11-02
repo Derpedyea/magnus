@@ -194,8 +194,8 @@ export const adminApi = {
 	addDomain: (zoneId: string) => parseResponse(admin.domains.$post({ json: { zoneId } })),
 	runStep: (domain: string, step: StepId, moveMail: boolean) =>
 		parseResponse(admin.domains[":domain"].steps[":step"].$post({ param: { domain, step }, json: { moveMail } })),
-	setCatchAll: (domain: string, catchAllMailboxId: string | null) =>
-		parseResponse(admin.domains[":domain"].$patch({ param: { domain }, json: { catchAllMailboxId } })),
+	setCatchAll: (domain: string, catchAllMailboxId: string | null, hold = false) =>
+		parseResponse(admin.domains[":domain"].$patch({ param: { domain }, json: { catchAllMailboxId, hold } })),
 	removeDomain: (domain: string) => parseResponse(admin.domains[":domain"].$delete({ param: { domain } })),
 	addPerson: (json: Json<typeof admin.people.$post>) => parseResponse(admin.people.$post({ json })),
 	removePerson: (id: string) => parseResponse(admin.people[":id"].$delete({ param: { id } })),

@@ -179,7 +179,8 @@ whole mailbox is the one exception. Code that writes or drops `m/` objects keeps
    `held/` and a row in `held_mail`, so moving a domain before adding every address loses nothing (`worker/held.ts`).
    Adding the address queues it to its mailboxes as ordinary `InboundJob`s; an admin can instead deliver it to any
    mailbox or discard it. The hourly cron delivers any whose address was added without that, then deletes the rest
-   once the window ends. Senders hear nothing either way, so this adds no backscatter. 1,000 held messages per domain
+   once the window ends. An admin can also start a fresh 30 days (Hold under Unknown addresses) or end it early
+   (Reject). Senders hear nothing either way, so this adds no backscatter. 1,000 held messages per domain
    is the most it keeps; past that, mail is rejected as before.
    A block matches the envelope sender or any address in the From header: bulk mail carries its sending service's
    bounce address on the envelope, and the header is what the app shows. Admins block from a message

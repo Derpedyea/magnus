@@ -402,14 +402,19 @@ export async function setDomainFlag(db: D1Database, name: string, flag: "receivi
 	await db.prepare(`UPDATE domains SET ${flag} = ?2 WHERE name = ?1`).bind(name, on ? 1 : 0).run();
 }
 
-/** False if there's no such domain, or the mailbox is gone or its person removed. */
-export async function setCatchAll(db: D1Database, name: string, mailboxId: string | null): Promise<boolean> {
+/**
+ * Where mail to an address the domain doesn't have goes: a mailbox, else held for the next 30 days (worker/held.ts),
+ * else rejected. Delivering leaves a hold window as it is. False if there's no such domain, or the mailbox is gone
+ * or its person removed.
+ */
+export async function setCatchAll(db: D1Database, name: string, mailboxId: string | null, hold = false): Promise<boolean> {
 	const { meta } = await db
 		.prepare(
-			`UPDATE domains SET catch_all_mailbox_id = ?2 WHERE name = ?1
-			 AND (?2 IS NULL OR EXISTS (SELECT 1 FROM mailboxes WHERE id = ?2 AND removed_with IS NULL))`,
+			`UPDATE domains SET catch_all_mailbox_id = ?2,
+				receiving_since = CASE WHEN ?2 IS NOT NULL THEN receiving_since WHEN ?3 = 1 THEN ?4 ELSE NULL END
+			 WHERE name = ?1 AND (?2 IS NULL OR EXISTS (SELECT 1 FROM mailboxes WHERE id = ?2 AND removed_with IS NULL))`,
 		)
-		.bind(name, mailboxId)
+		.bind(name, mailboxId, hold ? 1 : 0, Date.now())
 		.run();
 	return meta.changes === 1;
 }
