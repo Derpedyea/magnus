@@ -1,7 +1,7 @@
-import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { type QueryKey, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { type Me, parseScope } from "#shared";
+import { type LiveEvent, type Me, parseScope } from "#shared";
 import type { Identity } from "./api";
 import { subscribe } from "./live";
 import { countsQuery, meQuery } from "./queries";
@@ -70,12 +70,33 @@ export function useUnreadTitle(scope: string[]) {
 }
 
 /**
- * How often changes refetch mail at most. One change refetches at once; a burst (an import announces every message it
+ * How often changes refetch at most. One change refetches at once; a burst (an import announces every message it
  * files) refetches once more when it's over, instead of once per message.
  */
 const REFRESH_MS = 1000;
 
-/** Subscribes to each mailbox's Durable Object and refetches mail whenever any of them changes. */
+/** What an event from `mailboxId`'s socket makes stale. A socket opening (null) may have missed anything. */
+export function staleKeys(mailboxId: string, event: LiveEvent | null): QueryKey[] {
+	switch (event?.type) {
+		case undefined:
+			return [["mail"], ["drafts"]];
+		case "threads.changed":
+			return [["mail", "threads"], ["mail", "search"], ["mail", "counts"], ...event.threadIds.map((id) => ["mail", "thread", mailboxId, id])];
+		case "delivery.changed":
+			return [["mail", "thread", mailboxId]];
+		case "failed.changed":
+			return [["mail", "failed"], ["mail", "counts"]];
+		// Deleting a label takes it off mail too.
+		case "labels.changed":
+			return [["mail"]];
+		case "rules.changed":
+			return [["mail", "rules", mailboxId]];
+		case "drafts.changed":
+			return [["drafts"]];
+	}
+}
+
+/** Subscribes to each mailbox's Durable Object and refetches what its events say changed. */
 export function useLive(mailboxIds: string[]): boolean {
 	const qc = useQueryClient();
 	const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
@@ -83,12 +104,19 @@ export function useLive(mailboxIds: string[]): boolean {
 
 	useEffect(() => {
 		if (!key) return;
-		const refresh = throttle(() => void qc.invalidateQueries({ queryKey: ["mail"] }), REFRESH_MS);
+		const stale = new Map<string, QueryKey>();
+		const refresh = throttle(() => {
+			for (const queryKey of stale.values()) void qc.invalidateQueries({ queryKey });
+			stale.clear();
+		}, REFRESH_MS);
 		const proto = location.protocol === "https:" ? "wss" : "ws";
 		const stops = key.split(",").map((id) =>
 			subscribe(
 				`${proto}://${location.host}/api/mailboxes/${id}/live`,
-				refresh.call,
+				(event) => {
+					for (const queryKey of staleKeys(id, event)) stale.set(JSON.stringify(queryKey), queryKey);
+					refresh.call();
+				},
 				(up) =>
 					setOpen((prev) => {
 						const next = new Set(prev);

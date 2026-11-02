@@ -1,7 +1,10 @@
-import { LIVE_RECHECK } from "#shared";
+import { LIVE_RECHECK, type LiveEvent } from "#shared";
 
-/** One reconnecting WebSocket to a Mailbox DO at `url`. Returns a function that closes it for good. */
-export function subscribe(url: string, onChange: () => void, onStatus: (connected: boolean) => void): () => void {
+/**
+ * One reconnecting WebSocket to a Mailbox DO at `url`. `onChange` gets each event, or null when a socket opens: then
+ * anything may have changed. Returns a function that closes it for good.
+ */
+export function subscribe(url: string, onChange: (event: LiveEvent | null) => void, onStatus: (connected: boolean) => void): () => void {
 	let ws: WebSocket | null = null;
 	let stopped = false;
 	let attempt = 0;
@@ -14,14 +17,14 @@ export function subscribe(url: string, onChange: () => void, onStatus: (connecte
 		socket.onopen = () => {
 			// Whatever changed while there was no socket is refetched: since the page loaded or the last socket closed,
 			// including the event a recheck held back.
-			onChange();
+			onChange(null);
 			attempt = 0;
 			onStatus(true);
 			heartbeat = setInterval(() => socket.send("ping"), 30_000);
 		};
 		socket.onmessage = (e) => {
 			if (e.data === "pong") return;
-			if (e.data !== LIVE_RECHECK) return onChange();
+			if (e.data !== LIVE_RECHECK) return onChange(JSON.parse(String(e.data)) as LiveEvent);
 			// Routine, so swap sockets and stay "live". If the sign-in is gone, the new one fails and shows it.
 			socket.onclose = null;
 			socket.close();

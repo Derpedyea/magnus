@@ -109,3 +109,12 @@ export async function cleanDraftFiles(env: Env, now: number) {
 		await env.DIRECTORY.prepare(`DELETE FROM draft_files WHERE r2_key = ?1`).bind(file.r2_key).run();
 	}
 }
+
+/**
+ * Tells the person's other tabs and devices that their drafts changed, over the live socket of the draft's mailbox:
+ * drafts are their own, so only their sockets hear it. After the response, and best effort, as a reconnect refetches.
+ */
+export function draftsChanged(c: { env: Env; var: { user: { id: string } }; executionCtx: Pick<ExecutionContext, "waitUntil"> }, mailboxId: string): void {
+	const notified = c.env.MAILBOX.getByName(mailboxId).notifyUser(c.var.user.id, { type: "drafts.changed" });
+	c.executionCtx.waitUntil(notified.catch((error: unknown) => console.error("Draft notification:", error)));
+}

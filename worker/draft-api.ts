@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { AppEnv } from "./api";
 import { getUserMailboxes, isMailboxMember } from "./directory";
-import { discardDraft, listDrafts, readDraft, saveDraft, toSavedDraft } from "./drafts";
+import { discardDraft, draftsChanged, listDrafts, readDraft, saveDraft, toSavedDraft } from "./drafts";
 
 export const draftRoutes = new Hono<AppEnv>()
 	.use("*", bodyLimit({ maxSize: 2 * 1024 * 1024, onError: (c) => c.json({ error: "Draft is too large to save" }, 413) }))
@@ -33,11 +33,15 @@ export const draftRoutes = new Hono<AppEnv>()
 			if (!head || head.size !== file.size) return c.json({ error: `Attachment missing: ${file.filename}` }, 400);
 		}
 		const saved = await saveDraft(c.env.DIRECTORY, c.var.reader, c.req.param("id"), write, Date.now());
-		return saved ? c.json(saved) : c.json({ error: "This draft changed on another device, was sent, or was discarded. Save a copy to keep these edits." }, 409);
+		if (!saved) return c.json({ error: "This draft changed on another device, was sent, or was discarded. Save a copy to keep these edits." }, 409);
+		draftsChanged(c, mailbox.id);
+		return c.json(saved);
 	})
 	.delete("/:id", zValidator("json", DraftRevisionSchema), async (c) => {
 		const row = await readDraft(c.env.DIRECTORY, c.var.user.id, c.req.param("id"));
 		if (!row || !(await isMailboxMember(c.env.DIRECTORY, c.var.reader, row.mailbox_id))) return c.json({ error: "Not found" }, 404);
 		const discarded = await discardDraft(c.env.DIRECTORY, c.var.reader, row.id, c.req.valid("json").revision);
-		return discarded ? c.body(null, 204) : c.json({ error: "This draft changed on another device or is being sent" }, 409);
+		if (!discarded) return c.json({ error: "This draft changed on another device or is being sent" }, 409);
+		draftsChanged(c, row.mailbox_id);
+		return c.body(null, 204);
 	});

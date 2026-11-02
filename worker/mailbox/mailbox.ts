@@ -96,6 +96,13 @@ const RULE_SCAN_TEXT = 100_000;
 const RULE_BATCH = 100;
 /** A socket is authorized once, when it opens. After this long it has to reconnect, which checks the sign-in again. */
 const SOCKET_MS = 5 * 60 * 1000;
+/** Who opened a live socket. Set by the Worker after it checks the sign-in; nothing else can reach the object. */
+export const LIVE_USER_HEADER = "X-Magnus-User";
+/** What each live socket keeps: when it has to recheck its sign-in, and whose it is, for notifyUser(). */
+interface SocketTag {
+	expires: number;
+	userId: string | null;
+}
 
 /** Error codes worth retrying: Email Sending's, and R2 failing to keep an upload (E_STORAGE). Everything else is a permanent failure. */
 const TRANSIENT_SEND_ERRORS = new Set(["E_RATE_LIMIT_EXCEEDED", "E_DAILY_LIMIT_EXCEEDED", "E_INTERNAL_SERVER_ERROR", "E_DELIVERY_FAILED", "E_STORAGE"]);
@@ -348,7 +355,7 @@ export class Mailbox extends DurableObject<Env> {
 		}
 		const pair = new WebSocketPair();
 		this.ctx.acceptWebSocket(pair[1]);
-		pair[1].serializeAttachment(Date.now() + SOCKET_MS);
+		pair[1].serializeAttachment({ expires: Date.now() + SOCKET_MS, userId: request.headers.get(LIVE_USER_HEADER) } satisfies SocketTag);
 		return new Response(null, { status: 101, webSocket: pair[0] });
 	}
 
@@ -356,14 +363,20 @@ export class Mailbox extends DurableObject<Env> {
 		ws.close(code, "closing");
 	}
 
+	/** Tells one person's open tabs about something only they see, like their drafts. */
+	async notifyUser(userId: string, event: LiveEvent): Promise<void> {
+		this.broadcast(event, userId);
+	}
+
 	/** A socket past its time gets LIVE_RECHECK and a close instead, so a suspended or removed person stops hearing. */
-	private broadcast(event: LiveEvent): void {
+	private broadcast(event: LiveEvent, userId?: string): void {
 		const data = JSON.stringify(event);
 		const now = Date.now();
 		for (const ws of this.ctx.getWebSockets()) {
-			const expires: unknown = ws.deserializeAttachment();
+			const tag = ws.deserializeAttachment() as SocketTag | null;
+			if (userId !== undefined && tag?.userId !== userId) continue;
 			try {
-				if (typeof expires === "number" && expires > now) {
+				if (tag && tag.expires > now) {
 					ws.send(data);
 				} else {
 					ws.send(LIVE_RECHECK);

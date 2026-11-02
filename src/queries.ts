@@ -4,7 +4,7 @@ import { adminApi, api, authClient, type ListPlace } from "./api";
 import { passkeys } from "./passkeys";
 
 // One definition per read, shared by route loaders (which prefetch) and components (which subscribe).
-// Everything under ["mail"] is refetched when a mailbox's live socket reports a change.
+// Live socket events refetch what they changed (staleKeys in hooks.ts).
 
 /** Only changes when setup finishes, which navigates away anyway. */
 export const configQuery = queryOptions({ queryKey: ["config"], queryFn: api.config, staleTime: Number.POSITIVE_INFINITY });
@@ -14,8 +14,8 @@ export const meQuery = queryOptions({ queryKey: ["me"], queryFn: api.me });
 /** Recipient suggestions. Up to a thousand, so it's kept for a while rather than refetched on every mail event. */
 export const contactsQuery = queryOptions({ queryKey: ["contacts"], queryFn: api.contacts, staleTime: 5 * 60_000, select: (r) => r.contacts });
 
-/** Account-private drafts. Focus/reconnect refresh immediately; polling brings other devices' edits into view. */
-export const draftsQuery = queryOptions({ queryKey: ["drafts"], queryFn: api.drafts, staleTime: 5000, refetchInterval: 10_000 });
+/** Account-private drafts. The live socket's drafts.changed brings other devices' edits into view (useLive). */
+export const draftsQuery = queryOptions({ queryKey: ["drafts"], queryFn: api.drafts, staleTime: 5000 });
 
 const TOP: ListPlace = { after: "" };
 
