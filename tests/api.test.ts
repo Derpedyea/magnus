@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { fixture, type Fixture, inbound, job, type Mailboxes, NOW } from "./runtime/fixture";
 import { z } from "zod";
 import { r2Keys, type IngestInput } from "#shared";
@@ -106,6 +106,25 @@ describe("API permissions", () => {
 		await f.env.MAILBOX.getByName(ids.bob).ingest({ ...inbound(ids.bob, "private-contact"), from: { address: "private@outside.test" } });
 		expect(await (await request("/contacts")).json()).toEqual({ contacts: [{ address: "sender@outside.test" }] });
 		expect(await (await request("/me")).json()).toMatchObject({ mailboxes: [{ id: ids.alice }, { id: ids.shared }] });
+	});
+
+	it("tells only the person whose draft changed, even in a shared mailbox", async () => {
+		const listen = async (session: string) => {
+			const res = await f.worker.fetch(`https://magnus.test/api/mailboxes/${ids.shared}/live`, { headers: { Cookie: session, Upgrade: "websocket" } });
+			if (!res.webSocket) throw new Error(`No socket: ${res.status}`);
+			const heard: string[] = [];
+			res.webSocket.addEventListener("message", (e) => heard.push(String(e.data)));
+			res.webSocket.accept();
+			return heard;
+		};
+		const [alice, bob] = [await listen(cookie), await listen(await f.login("bob"))];
+		const content = { mailboxId: ids.shared, from: "", to: [], cc: [], bcc: [], subject: "Private", text: "", attachments: [] };
+		expect((await request(`/drafts/${crypto.randomUUID()}`, "PUT", { revision: 0, changeId: crypto.randomUUID(), content })).status).toBe(200);
+		await f.env.MAILBOX.getByName(ids.shared).ingest(inbound(ids.shared, "after-draft"));
+		// Bob hears the mail that arrived after the draft, so he'd have heard the draft by then too.
+		await vi.waitFor(() => expect(bob).toHaveLength(1));
+		expect(alice.map((m) => JSON.parse(m).type)).toEqual(["drafts.changed", "threads.changed"]);
+		expect(JSON.parse(bob[0]!).type).toBe("threads.changed");
 	});
 
 	it("lists a mailbox's disabled addresses apart, still its own but out of its views", async () => {

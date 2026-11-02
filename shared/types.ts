@@ -533,7 +533,9 @@ export type LiveEvent =
 	| { type: "delivery.changed"; messageId: string; status: DeliveryStatus }
 	| { type: "failed.changed" }
 	| { type: "labels.changed" }
-	| { type: "rules.changed" };
+	| { type: "rules.changed" }
+	/** Only to the tabs of the person whose drafts changed (Mailbox.notifyUser()). */
+	| { type: "drafts.changed" };
 
 // ─── Mail agent (worker/agent.ts) ───────────────────────────────────────────
 // The assistant in the app's side panel. The app keeps the conversation and sends it with each question; the server

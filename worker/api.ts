@@ -61,12 +61,12 @@ import { auth, currentUser, endReplacedSession, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
 import { getCustomHotkeys, getSendIdentities, getUserMailboxes, mailboxAccess, mailboxesRestoring, type Reader, resolveRecipient, setCustomHotkeys, setSignature } from "./directory";
 import { fileHeaders, renderEmailHtml, serveFile } from "./html";
-import type { Mailbox } from "./mailbox/mailbox";
+import { LIVE_USER_HEADER, type Mailbox } from "./mailbox/mailbox";
 import { getInstall } from "./settings";
 import { setup } from "./setup";
 import { draftRoutes } from "./draft-api";
 import { pushRoutes } from "./push-api";
-import { claimDraft, finishDraftSend, readDraft, releaseDraft } from "./drafts";
+import { claimDraft, draftsChanged, finishDraftSend, readDraft, releaseDraft } from "./drafts";
 import { importMessage } from "./mail/import";
 
 type MailboxStub = DurableObjectStub<Mailbox>;
@@ -659,7 +659,10 @@ const mb = new Hono<AppEnv>()
 			if (queued.refused === "gone") return c.json({ error: "The message to forward is gone" }, 404);
 			return c.json({ error: queued.refused === "restoring" ? RESTORING : "A restore put this draft back. Check it, then send it again." }, 409);
 		}
-		if (saved?.send_id) await finishDraftSend(db, userId, saved.id, saved.send_id, queued);
+		if (saved?.send_id) {
+			await finishDraftSend(db, userId, saved.id, saved.send_id, queued);
+			draftsChanged(c, saved.mailbox_id);
+		}
 		return c.json(queued, 202);
 	})
 
@@ -684,7 +687,9 @@ const mb = new Hono<AppEnv>()
 	/** Live updates: the WebSocket terminates in the Mailbox DO (hibernatable). */
 	.get("/live", async (c) => {
 		if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") return c.json({ error: "Expected WebSocket" }, 426);
-		return c.var.mailbox.fetch(c.req.raw);
+		const headers = new Headers(c.req.raw.headers);
+		headers.set(LIVE_USER_HEADER, c.var.user.id);
+		return c.var.mailbox.fetch(new Request(c.req.raw, { headers }));
 	});
 
 // ─── What the app calls ─────────────────────────────────────────────────────
