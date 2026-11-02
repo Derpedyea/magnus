@@ -39,9 +39,15 @@ describe("holding mail for addresses not added yet", () => {
 		expect(await f.env.MAILBOX.getByName(ids.alice).holding([jobs[0]!.ingestId])).toEqual([jobs[0]!.ingestId]);
 	});
 
-	it("rejects again once the window ends, or once the domain holds its limit", async () => {
+	it("rejects again once the window ends, or once the domain holds its limit, and an admin can hold or reject", async () => {
 		await f.env.DIRECTORY.prepare("UPDATE domains SET receiving_since = ?1 WHERE name = 'example.com'").bind(NOW - 30 * DAY).run();
 		expect(await accept("new@example.com")).toMatchObject({ rejectReason: "5.1.1 Mailbox unavailable" });
+		// Admin requests run on the real clock, unlike email(), so this checks the window the directory reports.
+		const holdsUntil = async () => ((await (await admin("/directory")).json()) as { domains: { name: string; holdsUntil: number | null }[] }).domains.find((d) => d.name === "example.com")!.holdsUntil;
+		expect((await admin("/domains/example.com", "PATCH", { catchAllMailboxId: null, hold: true })).status).toBe(204);
+		expect(await holdsUntil()).toBeGreaterThan(Date.now() + 29 * DAY);
+		expect((await admin("/domains/example.com", "PATCH", { catchAllMailboxId: null, hold: false })).status).toBe(204);
+		expect(await holdsUntil()).toBeNull();
 		await f.env.DIRECTORY.prepare("UPDATE domains SET receiving_since = ?1 WHERE name = 'example.com'").bind(NOW).run();
 		await f.env.DIRECTORY.prepare(
 			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000)

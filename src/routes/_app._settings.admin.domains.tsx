@@ -32,8 +32,9 @@ import { directoryQuery } from "../queries";
 
 export const Route = createFileRoute("/_app/_settings/admin/domains")({ component: Domains });
 
-/** Unknown addresses at a domain are rejected unless a mailbox catches them. */
+/** Unknown addresses at a domain are rejected or held unless a mailbox catches them. */
 const REJECT = "reject";
+const HOLD = "hold";
 
 function Domains() {
 	const { domains, mailboxes, people, cloudflareTokenSaved } = useSuspenseQuery(directoryQuery).data;
@@ -196,17 +197,23 @@ function DomainRow(props: { domain: DirectoryDomain; mailboxes: DirectoryMailbox
 	const qc = useQueryClient();
 	const [removing, setRemoving] = useState(false);
 	const catchAll = useMutation({
-		mutationFn: (mailboxId: string | null) => adminApi.setCatchAll(domain.name, mailboxId),
+		mutationFn: (value: string) => adminApi.setCatchAll(domain.name, value === REJECT || value === HOLD ? null : value, value === HOLD),
 		onSuccess: () => qc.invalidateQueries({ queryKey: ["admin"] }),
 	});
 	const remove = useMutation({
 		mutationFn: () => adminApi.removeDomain(domain.name),
 		onSuccess: () => Promise.all([qc.invalidateQueries({ queryKey: ["admin"] }), qc.invalidateQueries({ queryKey: ["me"] })]),
 	});
+	// Held mail waits under Addresses. Turning receiving on starts 30 days of holding, so there's no rejecting before.
+	const holdLabel = domain.holdsUntil
+		? `Hold until ${new Date(domain.holdsUntil).toLocaleDateString([], { dateStyle: "medium" })}`
+		: domain.receiving
+			? "Hold for 30 days"
+			: "Hold for 30 days once mail moves";
 	// An archived person's mailbox is offered only while it's the one chosen, and refuses mail until they're restored.
 	const items = [
-		// Its mail just moved here: mail to addresses not added yet waits under Addresses meanwhile.
-		{ value: REJECT, label: domain.holdsUntil ? `Hold until ${new Date(domain.holdsUntil).toLocaleDateString([], { dateStyle: "medium" })}` : "Reject" },
+		...(domain.receiving ? [{ value: REJECT, label: "Reject" }] : []),
+		{ value: HOLD, label: holdLabel },
 		...props.mailboxes
 			.filter((m) => !m.removedWith || m.id === domain.catchAllMailboxId)
 			.map((m) => ({ value: m.id, label: m.removedWith ? `Reject while ${m.name} is archived` : `Deliver to ${m.name}` })),
@@ -231,7 +238,11 @@ function DomainRow(props: { domain: DirectoryDomain; mailboxes: DirectoryMailbox
 				<OnOff on={domain.sending} />
 			</TableCell>
 			<TableCell>
-				<Select items={items} value={domain.catchAllMailboxId ?? REJECT} onValueChange={(value) => catchAll.mutate(value === REJECT ? null : String(value))}>
+				<Select
+					items={items}
+					value={domain.catchAllMailboxId ?? (domain.holdsUntil || !domain.receiving ? HOLD : REJECT)}
+					onValueChange={(value) => catchAll.mutate(String(value))}
+				>
 					<SelectTrigger size="sm" aria-label={`Unknown addresses at ${domain.name}`} className="min-w-32 sm:min-w-40">
 						<SelectValue />
 					</SelectTrigger>

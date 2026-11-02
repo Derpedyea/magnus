@@ -101,7 +101,8 @@ new token and give it to *Use a different token*.
   `family@`: each gets a copy and can reply from it. For 30 days after a domain's mail moves here, mail to an
   address you haven't added yet is held instead of bounced, and listed under *Held mail*: **Add address** delivers
   it, or deliver it to someone without adding the address, or discard it. Whatever's left is deleted when the 30
-  days end, and the domain's *Unknown addresses* says *Hold until* that day meanwhile.
+  days end, and the domain's *Unknown addresses* says *Hold until* that day meanwhile. Pick *Hold for 30 days*
+  there to start holding again, say for a domain that moved before holding existed, or *Reject* to stop early.
 
 ## Moving a domain from another provider
 
