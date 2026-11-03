@@ -13,6 +13,9 @@ export async function fixture() {
 		name: "magnus-tests", main: "tests/runtime/worker.ts", compatibility_date: "2026-09-26", compatibility_flags: ["nodejs_compat"],
 		d1_databases: [{ binding: "DIRECTORY", database_name: "test-directory", database_id: "test-directory", migrations_dir: "migrations" }],
 		r2_buckets: [{ binding: "MAIL", bucket_name: "test-mail" }],
+		// Production's sign-in limits (wrangler.jsonc), raised: every request here comes from one address, and counts can't be reset.
+		ratelimits: ["AUTH_LIMIT_100_PER_10S", "AUTH_LIMIT_3_PER_10S", "AUTH_LIMIT_3_PER_60S", "AUTH_LIMIT_10_PER_60S"]
+			.map((name, i) => ({ name, namespace_id: String(i + 1), simple: { limit: 1000, period: 60 } })),
 		durable_objects: { bindings: [{ name: "MAILBOX", class_name: "Mailbox" }, { name: "VAULT", class_name: "Vault" }, { name: "PROTON_IMPORT", class_name: "ProtonImport" }] },
 		migrations: [{ tag: "v1", new_sqlite_classes: ["Mailbox", "Vault", "ProtonImport"] }],
 		version_metadata: { binding: "CF_VERSION_METADATA" },

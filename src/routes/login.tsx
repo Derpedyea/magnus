@@ -136,14 +136,17 @@ function StartForm(props: {
 	});
 	const startPasskey = passkey.mutate;
 	// Offers saved passkeys in the email field's autofill, like a saved password, until one is picked or the form goes.
-	// Pressing the passkey button starts a new request, which cancels this one.
+	// Pressing the passkey button starts a new request, which cancels this one. Both use the challenge fetched here.
 	useEffect(() => {
+		if (!passkeysSupported) return;
 		let active = true;
+		passkeys.prepareSignIn();
 		void (async () => {
-			if (passkeysSupported && (await PublicKeyCredential.isConditionalMediationAvailable?.()) && active) startPasskey(true);
+			if ((await PublicKeyCredential.isConditionalMediationAvailable?.()) && active) startPasskey(true);
 		})();
 		return () => {
 			active = false;
+			passkeys.forgetSignIn();
 		};
 	}, [startPasskey]);
 	const failure =

@@ -170,11 +170,11 @@ function createAuth(baseURL: string, secret: string) {
 			}),
 		},
 		// Sign-in endpoints allow a few tries per minute per client IP (the email-code plugin's own limits, matched for
-		// passwords). Each passkey challenge is a D1 row, so asking for them is limited too.
+		// passwords). Each passkey challenge is a D1 row, so asking for them is limited too. Counted by Cloudflare's rate
+		// limiter (rateLimiters below), not in D1, where each auth request waited on a read and a write.
 		rateLimit: {
 			enabled: true,
-			storage: "database",
-			modelName: "auth_rate_limits",
+			customStorage: { consume: consumeRateLimit },
 			customRules: {
 				"/sign-in/email": { window: 60, max: 3 },
 				"/passkey/generate-authenticate-options": { window: 60, max: 10 },
@@ -210,6 +210,27 @@ function createAuth(baseURL: string, secret: string) {
 		],
 		telemetry: { enabled: false },
 	});
+}
+
+/**
+ * One Cloudflare rate limiter per limit Better Auth applies (wrangler.jsonc's ratelimits), as each binding has its own
+ * fixed limit and period: its default for every endpoint, its own for /sign-in/*, and the per-minute ones above.
+ * Counts are per Cloudflare location and roughly kept, which is fine for slowing down guessing from one address.
+ */
+const rateLimiters: Record<string, RateLimit> = {
+	"100/10": env.AUTH_LIMIT_100_PER_10S,
+	"3/10": env.AUTH_LIMIT_3_PER_10S,
+	"3/60": env.AUTH_LIMIT_3_PER_60S,
+	"10/60": env.AUTH_LIMIT_10_PER_60S,
+};
+
+/** Better Auth's rate-limit step: its key is the client's IP and the endpoint. */
+async function consumeRateLimit(key: string, { window, max }: { window: number; max: number }) {
+	const limiter = rateLimiters[`${max}/${window}`];
+	// A limit with no binding (a new rule, or a plugin's) fails its endpoint rather than letting it through unlimited.
+	if (!limiter) throw new Error(`No rate limiter for ${max} requests per ${window} s; add one to wrangler.jsonc`);
+	const { success } = await limiter.limit({ key });
+	return { allowed: success, retryAfter: success ? null : window };
 }
 
 /**

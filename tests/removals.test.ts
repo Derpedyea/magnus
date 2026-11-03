@@ -16,7 +16,6 @@ describe("removing a person", () => {
 	afterAll(async () => { await f?.server.close(); });
 	beforeEach(async () => {
 		ids = await f.seed();
-		await f.env.DIRECTORY.prepare("DELETE FROM auth_rate_limits").run();
 		// Dated the way Better Auth dates people, so a session cookie's cache answers for it as it would in production.
 		await f.env.DIRECTORY.prepare("UPDATE auth_users SET createdAt = ?1, updatedAt = ?1").bind(new Date().toISOString()).run();
 		// A letter in Alice's own mailbox, with a file she shares by link.
