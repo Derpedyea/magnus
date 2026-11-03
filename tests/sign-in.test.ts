@@ -16,8 +16,6 @@ describe("sign-in", () => {
 	afterAll(async () => { await f?.server.close(); });
 	beforeEach(async () => {
 		await f.seed();
-		// Every request here shares one client IP, so the passkey rate limits would carry over between cases.
-		await f.env.DIRECTORY.prepare("DELETE FROM auth_rate_limits").run();
 		// Dated the way Better Auth dates people. Its session cookie cache rejects the seed's numeric dates, and the
 		// checks below have to hold while that cache answers instead of D1.
 		await f.env.DIRECTORY.prepare("UPDATE auth_users SET createdAt = ?1, updatedAt = ?1").bind(new Date().toISOString()).run();

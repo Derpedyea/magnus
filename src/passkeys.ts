@@ -1,4 +1,5 @@
 import { passkeyClient } from "@better-auth/passkey/client";
+import { type PublicKeyCredentialRequestOptionsJSON, startAuthentication, WebAuthnError } from "@simplewebauthn/browser";
 import { createAuthClient } from "better-auth/client";
 import { ApiError, errorMessage } from "./api";
 
@@ -50,19 +51,68 @@ function unwrap<T>(result: Result<T>): NonNullable<T> {
 /** What to show for a failed passkey action: nothing when the browser's prompt just closed. */
 export const passkeyFailure = (error: Error | null) => (error && !(error instanceof PasskeyDismissed) ? errorMessage(error) : null);
 
+/** The server keeps a sign-in challenge 5 minutes (the passkey plugin's MAX_AGE_IN_SECONDS); one is reused for less. */
+const CHALLENGE_REUSE_MS = 4 * 60_000;
+let challenge: { options: Promise<PublicKeyCredentialRequestOptionsJSON>; until: number } | null = null;
+/**
+ * The last challenge asked for, answered or not. Each answer sets the one challenge cookie, so a new ask waits for the
+ * last: answers arriving out of order would leave the cookie naming a challenge other than the one kept here.
+ */
+let asking: Promise<unknown> = Promise.resolve();
+
+/**
+ * The sign-in page's challenge. It's fetched as the page opens, so pressing the passkey button opens the prompt without
+ * waiting on the server, and autofill and the button share it as they share the cookie naming it. Checking a passkey
+ * uses it up, pass or fail, so the next try fetches another.
+ */
+function signInChallenge() {
+	if (!challenge || Date.now() > challenge.until) {
+		const options = asking.then(() => client.$fetch<PublicKeyCredentialRequestOptionsJSON>("/passkey/generate-authenticate-options", { method: "GET" })).then(unwrap);
+		asking = options.catch(() => undefined);
+		const fetched = { options, until: Date.now() + CHALLENGE_REUSE_MS };
+		challenge = fetched;
+		// A failed fetch isn't kept: the next try asks again.
+		options.catch(() => {
+			if (challenge === fetched) challenge = null;
+		});
+	}
+	return challenge.options;
+}
+
+/** Better Auth's passkey sign-in (its client's signIn.passkey), on the page's challenge instead of a new one each time. */
+async function signInWithPasskey(autoFill: boolean) {
+	const optionsJSON = await signInChallenge();
+	let response;
+	try {
+		response = await startAuthentication({ optionsJSON, useBrowserAutofill: autoFill });
+	} catch (error) {
+		// As the plugin reports it, for unwrap.
+		const code = error instanceof WebAuthnError ? error.code : "AUTH_CANCELLED";
+		return { data: null, error: { code, message: "Auth cancelled", status: 400, statusText: "BAD_REQUEST" } };
+	}
+	challenge = null;
+	return client.$fetch<{ user: { id: string } }>("/passkey/verify-authentication", { method: "POST", body: { response } });
+}
+
 export const passkeys = {
 	list: async () => unwrap(await client.passkey.listUserPasskeys()),
 	add: async () => unwrap(await client.passkey.addPasskey()),
 	remove: async (id: string) => unwrap(await client.passkey.deletePasskey({ id })),
+	/** Fetches the challenge ahead of signIn; a failure shows when signIn asks again. */
+	prepareSignIn: () => void signInChallenge().catch(() => undefined),
+	/** Off the sign-in page: whoever signs in next gets a challenge of their own. */
+	forgetSignIn: () => {
+		challenge = null;
+	},
 	/** With `autoFill`, waits for the person to pick a passkey from the email field's autofill instead of prompting. */
 	signIn: async (autoFill = false) => {
 		try {
-			return unwrap(await client.signIn.passkey({ autoFill }));
+			return unwrap(await signInWithPasskey(autoFill));
 		} catch (error) {
-			// Autofill still fetching its challenge when the prompt opened cancels the prompt once it starts. Asking again
-			// cancels autofill instead, and fetches a fresh challenge (the two share one challenge cookie).
+			// Autofill still waiting on its challenge when the prompt opened cancels the prompt once it starts. Asking again
+			// cancels autofill instead, on the same challenge.
 			if (autoFill || !(error instanceof PasskeySuperseded)) throw error;
-			return unwrap(await client.signIn.passkey());
+			return unwrap(await signInWithPasskey(false));
 		}
 	},
 };

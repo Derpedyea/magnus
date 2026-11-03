@@ -26,6 +26,13 @@
 	// Setup proves you own this install by finding this exact version in your Cloudflare account.
 	"version_metadata": { "binding": "CF_VERSION_METADATA" },
 	"d1_databases": [{ "binding": "DIRECTORY", "database_name": "magnus-directory", "migrations_dir": "migrations" }],
+	// Sign-in rate limits (worker/auth.ts), one per limit. Namespace ids are arbitrary but must be unique in the account.
+	"ratelimits": [
+		{ "name": "AUTH_LIMIT_100_PER_10S", "namespace_id": "62701", "simple": { "limit": 100, "period": 10 } },
+		{ "name": "AUTH_LIMIT_3_PER_10S", "namespace_id": "62702", "simple": { "limit": 3, "period": 10 } },
+		{ "name": "AUTH_LIMIT_3_PER_60S", "namespace_id": "62703", "simple": { "limit": 3, "period": 60 } },
+		{ "name": "AUTH_LIMIT_10_PER_60S", "namespace_id": "62704", "simple": { "limit": 10, "period": 60 } }
+	],
 	"r2_buckets": [{ "binding": "MAIL", "bucket_name": "magnus-mail" }],
 	"durable_objects": {
 		// Vault encrypts the saved Cloudflare token and keeps its key out of D1 and R2. ProtonImport runs an import from

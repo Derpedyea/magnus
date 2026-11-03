@@ -465,7 +465,8 @@ open tabs.
 - Codes go out through Email Sending from `login@` the oldest domain that can send, or the `LOGIN_CODE_FROM`
   secret when it's set. They expire after 10
   minutes, die after 3 wrong guesses, and are stored hashed. Sign-in endpoints are rate-limited per client
-  IP (3 a minute), with the counters in D1 so the limit holds across Worker instances.
+  IP (3 a minute), counted by Cloudflare's rate limiter (`ratelimits` in `wrangler.jsonc`) rather than in D1,
+  which cost every auth request a read and a write. Its counts are per Cloudflare location and roughly kept.
 - **Roles** are the admin plugin's: `admin` or not. Role changes and suspensions go from the browser straight
   to the plugin (`/api/auth/admin/*`); adding and archiving people goes through `/api/admin`, since that also
   creates or hides their mailbox. Suspending or archiving someone ends their sessions at once. A session cookie
