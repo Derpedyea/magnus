@@ -87,7 +87,7 @@ export async function findInstall(cf: Cloudflare, versionId: string): Promise<(I
 	return null;
 }
 
-const MxRecord = z.object({ id: z.string(), content: z.string() });
+const MxRecord = z.object({ id: z.string(), name: z.string(), content: z.string() });
 
 export const mxRecords = (cf: Cloudflare, zoneId: string) => cf.get(z.array(MxRecord), "dns", `/zones/${zoneId}/dns_records?type=MX&per_page=50`);
 

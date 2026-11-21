@@ -38,10 +38,14 @@ const Subscription = z.object({ source: z.object({ domain: z.string().optional()
 
 const done: StepStatus = { state: "done" };
 
-async function routingStatus(ctx: DomainContext): Promise<StepStatus> {
+export async function routingStatus(ctx: DomainContext): Promise<StepStatus> {
 	const routing = await ctx.cf.get(Routing, "zoneSettings", `/zones/${ctx.zoneId}/email/routing`);
 	if (!routing.enabled) return { state: "todo" };
 	if (routing.status === "ready") return done;
+	// Cloudflare also reports "misconfigured" over records mail doesn't need, like an apex SPF that still names the
+	// old provider. Whether mail arrives is the domain's own MX records (cf-bounce.<domain> has Cloudflare MX too).
+	const hosts = (await mxRecords(ctx.cf, ctx.zoneId)).filter((r) => r.name === ctx.domain).map((r) => r.content);
+	if (hosts.length > 0 && hosts.every(isCloudflareMx)) return done;
 	return { state: "pending", detail: "Waiting for Cloudflare to publish the MX records." };
 }
 
