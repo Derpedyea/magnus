@@ -1,5 +1,6 @@
 import { type HeldAddress, type InboundJob, r2Keys, stripSubaddress, ulid } from "#shared";
 import { decodeWords } from "postal-mime";
+import { redactAddress } from "./observability";
 
 // Moving a domain's mail here before every address it gets mail at is added would bounce the rest. So for the first
 // 30 days after a domain starts receiving here (domains.receiving_since), mail to an address it doesn't have yet is
@@ -36,7 +37,7 @@ export async function holdMail(env: Env, message: ForwardableEmailMessage, hold:
 	)
 		.bind(id, hold.address, hold.domain, message.from, message.to, sender, subject, rawKey, message.rawSize, receivedAt, hold.expiresAt)
 		.run();
-	console.log(JSON.stringify({ msg: "held", ingestId: id, to: message.to, size: message.rawSize }));
+	console.log(JSON.stringify({ msg: "held", ingestId: id, to: await redactAddress(message.to), size: message.rawSize }));
 }
 
 /**
@@ -69,7 +70,7 @@ export async function releaseHeld(env: Env, address: string, mailboxIds?: string
 	for (let i = 0; i < jobs.length; i += QUEUE_BATCH) await env.INBOUND.sendBatch(jobs.slice(i, i + QUEUE_BATCH).map((body) => ({ body })));
 	// Only what was queued: mail held meanwhile waits for the next release.
 	await forget(env.DIRECTORY, results.map((r) => r.id));
-	if (results.length > 0) console.log(JSON.stringify({ msg: "released held mail", address, count: results.length, mailboxes: to }));
+	if (results.length > 0) console.log(JSON.stringify({ msg: "released held mail", address: await redactAddress(address), count: results.length, mailboxes: to }));
 	return results.length;
 }
 

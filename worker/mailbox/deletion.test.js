@@ -94,6 +94,17 @@ function attachment(id, key = `m/mb/original/att/${id}`) {
 }
 
 // These repeat with a fixed clock and injected I/O; no timers or sleeps drive assertions.
+describe("threading", () => {
+    it("joins a live reply to the newest thread its References know", async () => {
+        const h = mailbox();
+        const root = await h.box.ingest(message("root", { messageIdHeader: "<root@x>", subject: "Root" }));
+        const recent = await h.box.ingest(message("recent", { messageIdHeader: "<recent@x>", subject: "Recent" }));
+        const reply = await h.box.ingest(message("reply", { inReplyTo: [], references: ["<root@x>", "<recent@x>"], subject: "Re" }));
+        expect(recent.threadId).not.toBe(root.threadId);
+        expect(reply.threadId).toBe(recent.threadId);
+    });
+});
+
 describe("permanent deletion", () => {
     it("removes message content, search, labels, files, delivery state, send ids and the empty thread; retries are idempotent", async () => {
         const h = mailbox();

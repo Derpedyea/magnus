@@ -31,8 +31,11 @@ export type RecipientResolution =
 export async function resolveRecipient(db: D1Database, senders: string[], envelopeTo: string): Promise<RecipientResolution> {
 	const { base, tag } = stripSubaddress(envelopeTo);
 	const { domain } = splitAddress(base);
-	// Each sender, and everyone at its domain. A bounce's envelope sender is empty.
-	const blocks = senders.map(normalizeAddress).filter((s) => s.includes("@")).flatMap((s) => [s, `*@${splitAddress(s).domain}`]);
+	// Each sender, its address without a +tag, and everyone at its domain. A bounce's envelope sender is empty.
+	const blocks = senders.map(normalizeAddress).filter((s) => s.includes("@")).flatMap((s) => {
+		const base = stripSubaddress(s).base;
+		return [...new Set([s, base, `*@${splitAddress(s).domain}`])];
+	});
 
 	// A removed person's mailboxes (worker/removals.ts) take nothing.
 	const [routes, dom, blocked] = await Promise.all([
