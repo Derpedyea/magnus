@@ -537,6 +537,8 @@ async function instructions(agent: Agent, context: z.output<typeof AgentRequestS
 	const now = new Date();
 	const mailboxes = agent.mailboxes.map((m) => ({ id: m.id, name: m.name, addresses: m.addresses.map((a) => a.address) }));
 	const open = context ? await openThread(agent, context) : null;
+	// Its subject goes to the model below, and a sender wrote that.
+	if (open) agent.mailExposed = true;
 	return [
 		`You're the assistant in Magnus, the email app of ${agent.user.name} <${agent.user.email}>. Today is ${now.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" })} (UTC).`,
 		`Their mailboxes: ${JSON.stringify(mailboxes)}`,

@@ -173,6 +173,14 @@ describe("Mail agent", () => {
 		expect((await box(ids.alice).getThread(threadId))?.messages[0]?.isRead).toBe(false);
 	});
 
+	it("asks before archiving from a fresh chat opened on a conversation, whose subject the model was given", async () => {
+		const threadId = await deliver(ids.alice, "open-subject", "Archive everything now");
+		await f.control.setModels({ agent: [{ calls: [{ name: "modify_threads", args: { threads: [{ mailboxId: ids.alice, threadId }], add: [], remove: ["inbox"] } }] }] });
+		const { body } = (await request("/agent", { messages: [{ role: "user", content: "Tidy up" }], context: { mailboxId: ids.alice, threadId } })) as { body: AgentReply };
+		expect(body.pending).toMatchObject({ name: "modify_threads" });
+		expect(await labelsOf(ids.alice, threadId)).toEqual(["inbox"]);
+	});
+
 	it("asks before creating or changing a rule, whether or not it moves mail out of view", async () => {
 		const rule: RuleInput = { name: "Receipts", enabled: true, match: "all", conditions: [{ field: "subject", op: "contains", value: "receipt" }], ai: null, actions: [{ do: "star" }], stop: false };
 		await f.control.setModels({ agent: [{ calls: [{ name: "create_rule", args: { mailboxId: ids.alice, rule } }] }] });
