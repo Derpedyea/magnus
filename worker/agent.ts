@@ -2,15 +2,22 @@ import {
 	type Address,
 	type AgentMessage,
 	type AgentReply,
+	type AddressFilter,
 	type AgentThread,
+	canMatch,
 	type Label,
 	type LabelDef,
 	isOwnLabel,
 	labelChain,
+	type ListCursor,
 	type MailboxMembership,
 	type MailboxThread,
 	mergeLabels,
+	mergePage,
+	normalizeAddress,
+	parseCursor,
 	type PendingAction,
+	planScope,
 	type Rule,
 	type RuleAction,
 	type RuleCondition,
@@ -39,8 +46,11 @@ const MAX_HISTORY = 120_000;
 const MAX_RESULT = 50_000;
 /** Tool calls one answer can make. */
 const MAX_CALLS = 10;
-/** Threads a list or search gives, at most. */
-const MAX_THREADS = 20;
+/** Threads a list or search gives, at most, and when the model doesn't say. More come a page at a time (`next`). */
+const MAX_THREADS = 50;
+const DEFAULT_THREADS = 20;
+/** Threads a rule's preview gives. */
+const PREVIEW_THREADS = 20;
 /** Messages of a thread read_thread gives, the newest, and characters of each one's text. */
 const READ_MESSAGES = 10;
 const READ_TEXT = 4000;
@@ -112,7 +122,23 @@ function tool<A extends z.ZodObject>(t: {
 const MailboxId = z.string().max(100).describe("A mailbox's id, from the list of their mailboxes or a tool's result");
 const ThreadRef = z.object({ mailboxId: MailboxId, threadId: z.string().max(100) });
 const Threads = z.array(ThreadRef).min(1).max(100);
-const Limit = z.number().int().min(1).optional().transform((n) => Math.min(n ?? 10, MAX_THREADS));
+const Limit = z
+	.number()
+	.int()
+	.min(1)
+	.optional()
+	.transform((n) => Math.min(n ?? DEFAULT_THREADS, MAX_THREADS))
+	.describe(`Conversations to give, at most ${MAX_THREADS} (${DEFAULT_THREADS} if left out)`);
+/** Where a list or search looks: every mailbox of theirs, one, or only mail to and from some of their addresses. */
+const Scope = {
+	mailboxId: MailboxId.optional().describe("Look only in this mailbox"),
+	addresses: z.array(z.string().max(320)).min(1).max(50).optional().describe("Look only at mail to or from these of their addresses"),
+	next: z.string().max(200).optional().describe("A result's `next`, for the conversations after those it gave"),
+};
+const Day = z
+	.union([z.iso.date(), z.iso.datetime({ offset: true })])
+	.transform((d) => Date.parse(d))
+	.optional();
 
 /** Mail that takes these labels, or loses them, is lost from view or teaches the spam filter about its senders. */
 const RISKY_LABELS = new Set(["trash", "spam", "screener"]);
@@ -121,21 +147,32 @@ const RISKY_ACTIONS = new Set<RuleAction["do"]>(["spam", "trash"]);
 const TOOLS: Record<string, AgentTool> = {
 	search_mail: tool({
 		description:
-			"Searches all their mail for words in the subject, sender, recipients, or body (no operators like from: or before:; every word must match, the last as a prefix). Newest first.",
-		args: z.object({ query: z.string().trim().min(1).max(200), limit: Limit }),
-		run: async (agent, { query, limit }) => {
-			const threads = await across(agent, limit, (stub) => stub.search({ query, limit }));
-			return { content: { threads: threads.map(threadFacts) }, summary: `Searched “${query}” · ${count(threads.length, "conversation")}`, threads: threads.map(shown) };
+			"Searches their mail, newest first, for words in the subject, sender, recipients, or body (no operators like from: or before:; every word must match, the last as a prefix). Narrow it with the other arguments; it needs words in `query` or `from`. When there are more than it gave, the result has a `next` to call again with.",
+		args: z
+			.object({
+				query: z.string().trim().max(200).default("").describe("Words anywhere in the mail"),
+				from: z.string().trim().max(200).optional().describe("Words in the sender's name or address"),
+				label: z.string().trim().min(1).max(64).optional().describe("Only conversations with this label: inbox, starred, sent, spam, trash, screener, all (everything but Spam and Trash), or one of their own by key"),
+				since: Day.describe("Only messages from this day (YYYY-MM-DD, UTC) or time on"),
+				until: Day.describe("Only messages before this day (YYYY-MM-DD, UTC) or time"),
+				...Scope,
+				limit: Limit,
+			})
+			.refine((a) => a.query !== "" || !!a.from, "Give words to look for, in query or from"),
+		run: async (agent, { query, from, label, since, until, limit, ...scope }) => {
+			const found = await across(agent, scope, limit, (stub, page) => stub.search({ query, from, label, since, until, ...page }));
+			const what = [query && `“${query}”`, from && `from “${from}”`, label && `in ${await labelName(agent, label)}`].filter(Boolean).join(" ");
+			return { content: listed(found), summary: `Searched ${what} · ${count(found.threads.length, "conversation")}`, threads: found.threads.map(shown) };
 		},
 	}),
 
 	list_threads: tool({
 		description:
-			"Lists the newest conversations with a label, across their mailboxes: inbox, starred, sent, spam, trash, screener, all (everything but Spam and Trash), or one of their own labels by key.",
-		args: z.object({ label: z.string().trim().min(1).max(64), limit: Limit }),
-		run: async (agent, { label, limit }) => {
-			const threads = await across(agent, limit, (stub) => stub.listThreads({ label, limit }));
-			return { content: { threads: threads.map(threadFacts) }, summary: `Listed ${await labelName(agent, label)} · ${count(threads.length, "conversation")}`, threads: threads.map(shown) };
+			"Lists the newest conversations with a label: inbox, starred, sent, spam, trash, screener, all (everything but Spam and Trash), or one of their own labels by key. When there are more than it gave, the result has a `next` to call again with.",
+		args: z.object({ label: z.string().trim().min(1).max(64), ...Scope, limit: Limit }),
+		run: async (agent, { label, limit, ...scope }) => {
+			const found = await across(agent, scope, limit, (stub, page) => stub.listThreads({ label, ...page }));
+			return { content: listed(found), summary: `Listed ${await labelName(agent, label)} · ${count(found.threads.length, "conversation")}`, threads: found.threads.map(shown) };
 		},
 	}),
 
@@ -227,7 +264,7 @@ const TOOLS: Record<string, AgentTool> = {
 		description: "Tries a rule on the newest mail in a mailbox, without saving it: how much it would match, and some of it. An AI condition isn't checked here.",
 		args: z.object({ mailboxId: MailboxId, rule: RuleInputSchema }),
 		run: async (agent, { mailboxId, rule }) => {
-			const preview = await (await mailbox(agent, mailboxId)).previewRule(rule, MAX_THREADS);
+			const preview = await (await mailbox(agent, mailboxId)).previewRule(rule, PREVIEW_THREADS);
 			const threads = preview.threads.map((t) => ({ ...t, mailboxId }));
 			return {
 				content: { matched: preview.matched, scanned: preview.scanned, aiConditionNotChecked: preview.aiNotChecked, threads: threads.slice(0, 10).map(threadFacts) },
@@ -528,14 +565,35 @@ async function grouped(agent: Agent, threads: { mailboxId: string; threadId: str
 	return Promise.all([...ids].map(async ([mailboxId, threadIds]): Promise<[string, Stub, string[]]> => [mailboxId, await mailbox(agent, mailboxId), [...new Set(threadIds)]]));
 }
 
-/** Newest first, from every one of their mailboxes. */
-async function across(agent: Agent, limit: number, read: (stub: Stub) => Promise<ThreadSummary[]>): Promise<MailboxThread[]> {
-	const lists = await Promise.all(agent.mailboxes.map(async (m) => (await read(agent.env.MAILBOX.getByName(m.id))).map((t) => ({ ...t, mailboxId: m.id }))));
-	return lists
-		.flat()
-		.sort((a, b) => b.lastMessageAt - a.lastMessageAt)
-		.slice(0, limit);
+type Scoped = { mailboxId?: string; addresses?: string[]; next?: string };
+type Page = { limit: number; before?: ListCursor } & AddressFilter;
+
+/**
+ * A page of `limit` threads, newest first, from the mailboxes and addresses of theirs that `scope` names (every one, by
+ * default), after its `next`. `next` comes back when there are more, as the app's lists page (mergePage()).
+ */
+async function across(agent: Agent, scope: Scoped, limit: number, read: (stub: Stub, page: Page) => Promise<ThreadSummary[]>): Promise<{ threads: MailboxThread[]; next: string | null }> {
+	let mailboxes = agent.mailboxes;
+	if (scope.mailboxId) {
+		await mailbox(agent, scope.mailboxId);
+		mailboxes = mailboxes.filter((m) => m.id === scope.mailboxId);
+	}
+	const selected = (scope.addresses ?? []).map(normalizeAddress).filter(Boolean);
+	const queries = planScope(
+		mailboxes.map((m) => ({ id: m.id, addresses: m.addresses.map((a) => a.address) })),
+		selected,
+	).filter(canMatch);
+	if (queries.length === 0 && selected.length > 0) throw new ToolError(`None of those is an address of theirs${scope.mailboxId ? " in that mailbox" : ""}`);
+	const before = parseCursor(scope.next);
+	if (scope.next && !before) throw new ToolError("That `next` isn't one a result gave");
+	const lists = await Promise.all(
+		queries.map(async (q) => (await read(agent.env.MAILBOX.getByName(q.mailboxId), { limit: limit + 1, before, addresses: q.addresses })).map((t) => ({ ...t, mailboxId: q.mailboxId }))),
+	);
+	return mergePage(lists, limit);
 }
+
+/** A page of threads as the model reads it, and where the next one starts. */
+const listed = ({ threads, next }: { threads: MailboxThread[]; next: string | null }) => ({ threads: threads.map(threadFacts), ...(next ? { next } : {}) });
 
 /** The first few of these conversations, for the panel to link to. Ones that aren't there are left out. */
 async function peek(agent: Agent, threads: { mailboxId: string; threadId: string }[]): Promise<AgentThread[]> {
