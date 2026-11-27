@@ -3,7 +3,7 @@ import type { ImportPlacement } from "#shared/import";
 import PostalMime, { type Address as ParsedAddress } from "postal-mime";
 
 /** Where a message's headers must end. Real ones run to tens of KB at most; past this it isn't mail. */
-const MAX_HEADER_BYTES = 256 * 1024;
+export const MAX_HEADER_BYTES = 256 * 1024;
 /** The latest time a ULID holds. */
 const MAX_ULID_TIME = 2 ** 48 - 1;
 
@@ -81,7 +81,7 @@ export async function importMessage(env: Env, mailboxId: string, raw: Uint8Array
 }
 
 /** The header block, through the blank line that ends it, or the whole file when it's all headers. Null when it never ends. */
-function headerBlock(raw: Uint8Array): Uint8Array | null {
+export function headerBlock(raw: Uint8Array): Uint8Array | null {
 	const end = Math.min(raw.length, MAX_HEADER_BYTES);
 	for (let i = 0; i < end - 1; i++) {
 		if (raw[i] !== 10) continue;

@@ -36,6 +36,7 @@ import {
 	newLinkToken,
 	normalizeAddress,
 	normalizeSubject,
+	offersUnsubscribe,
 	r2Keys,
 	replyParents,
 	RETRYABLE,
@@ -179,6 +180,7 @@ interface MessageRow extends Row {
 	sender: string | null;
 	delivery_status: DeliveryStatus | null;
 	delivery_detail: string | null;
+	headers_json: string | null;
 	labels: string;
 }
 
@@ -1289,6 +1291,14 @@ export class Mailbox extends DurableObject<Env> {
 		};
 	}
 
+	/** Received mail's original, and the address of ours it came to, for unsubscribing from its list. Null otherwise. */
+	async unsubscribeSource(messageId: string): Promise<{ rawKey: string; envelopeTo: string } | null> {
+		const row = this.sql
+			.exec<{ raw_key: string | null; envelope_to: string }>(`SELECT raw_key, envelope_to FROM messages WHERE id = ?1 AND direction = 'in'`, messageId)
+			.toArray()[0];
+		return row?.raw_key ? { rawKey: row.raw_key, envelopeTo: row.envelope_to } : null;
+	}
+
 	/** Draft-file cleanup must keep originals until a queued send has copied them. */
 	async holdsFile(key: string): Promise<boolean> {
 		return this.sql.exec(`SELECT 1 FROM attachments WHERE r2_key = ?1 LIMIT 1`, key).toArray().length > 0;
@@ -2217,7 +2227,7 @@ export class Mailbox extends DurableObject<Env> {
 			for (const a of attachments) this.insertAttachment(id, a);
 			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc, ...input.bcc], text);
 			this.touchThread(threadId, sendAt, snippet, [input.from, ...input.to, ...input.cc]);
-			released = this.recordContacts([...input.to, ...input.cc, ...input.bcc], true, now);
+			if (!input.automatic) released = this.recordContacts([...input.to, ...input.cc, ...input.bcc], true, now);
 			this.sql.exec(`INSERT INTO outbox (message_id, send_at, payload) VALUES (?1, ?2, ?3)`, id, sendAt, JSON.stringify(payload));
 			return { threadId };
 		});
@@ -2826,6 +2836,8 @@ function toMessageDetail(m: MessageRow, attachments: AttachmentRow[], undelivere
 		verdict: m.verdict_json ? JSON.parse(m.verdict_json) : null,
 		senderVerified: m.sender !== null,
 		rules,
+		// Mail from before headers were kept has none to offer.
+		unsubscribe: m.direction === "in" && m.headers_json !== null && m.headers_json.includes('"list-unsubscribe"') && offersUnsubscribe(JSON.parse(m.headers_json)),
 	};
 }
 

@@ -357,6 +357,8 @@ export interface MessageDetail {
 	senderVerified: boolean;
 	/** The rules that filed it, in the order they ran. */
 	rules: RuleHit[];
+	/** Received mail whose List-Unsubscribe header offers a way off its list (shared/unsubscribe.ts). */
+	unsubscribe: boolean;
 }
 
 /** A message as its thread shows it. */
@@ -492,6 +494,11 @@ export interface SendInput {
 	localRecipients: LocalRecipient[];
 	/** Every recipient is local, so nothing is handed to Email Sending. */
 	localOnly: boolean;
+	/**
+	 * Sent for the person rather than written by them (a request to leave a list): its recipients aren't remembered,
+	 * and aren't trusted or let in from the Screener the way writing to someone does (Mailbox.recordContacts()).
+	 */
+	automatic?: true;
 }
 
 export interface LocalRecipient {

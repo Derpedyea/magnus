@@ -1,6 +1,7 @@
 import { zValidator } from "@hono/zod-validator";
 import {
 	canMatch,
+	escapeMarkdown,
 	formatBytes,
 	forwardedPart,
 	type Label,
@@ -26,6 +27,7 @@ import {
 	r2Keys,
 	type RuleInput,
 	type SendAttachmentRef,
+	stripSubaddress,
 	THROUGH_MAX,
 	type ThreadSummary,
 	type User,
@@ -68,6 +70,7 @@ import { draftRoutes } from "./draft-api";
 import { pushRoutes } from "./push-api";
 import { claimDraft, draftsChanged, finishDraftSend, readDraft, releaseDraft } from "./drafts";
 import { importMessage } from "./mail/import";
+import { originalHeaders, postOneClick, unsubscribePlan } from "./mail/unsubscribe";
 
 type MailboxStub = DurableObjectStub<Mailbox>;
 
@@ -462,6 +465,51 @@ const mb = new Hono<AppEnv>()
 		const { messageId, attachmentId } = c.req.param();
 		const ok = await c.var.mailbox.setLinkShared(messageId, attachmentId, c.req.valid("json").shared);
 		return ok ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
+	})
+
+	/**
+	 * Takes the address received mail came to off its list, the way its List-Unsubscribe header offers: the list's
+	 * one-click POST (RFC 8058), else mail to the list from that address (RFC 2369), else the list's page, which the
+	 * browser opens for the person to finish on.
+	 */
+	.post("/messages/:messageId/unsubscribe", async (c) => {
+		const messageId = c.req.param("messageId");
+		const source = await c.var.mailbox.unsubscribeSource(messageId);
+		const headers = source && (await originalHeaders(c.env.MAIL, source.rawKey));
+		const plan = headers && unsubscribePlan(headers);
+		if (!source || !plan) return c.json({ error: "This message doesn't say how to unsubscribe" }, 404);
+		if (plan.oneClick && (await postOneClick(plan.oneClick))) return c.json({ done: "one-click" as const });
+
+		const address = stripSubaddress(source.envelopeTo).base;
+		const identity = plan.mail && (await sendIdentity(c, address));
+		if (plan.mail && identity) {
+			const recipients = plan.mail.to;
+			const local = await localTo(c, identity.address, recipients);
+			const queued = await c.var.mailbox.enqueueSend({
+				// One per message, so asking twice sends it once.
+				id: `unsubscribe-${messageId}`,
+				mailboxId: c.var.mailboxId,
+				senderId: c.var.user.id,
+				from: { address: identity.address, name: identity.displayName ?? c.var.user.name },
+				to: recipients.map((a) => ({ address: a })),
+				cc: [],
+				bcc: [],
+				subject: plan.mail.subject,
+				// As the list wrote it, which can be a token: markdown would take `*` or `_` in it for formatting.
+				markdown: escapeMarkdown(plan.mail.body),
+				attachments: [],
+				links: [],
+				linkBase: `${new URL(c.req.url).origin}/f/${c.var.mailboxId}/`,
+				delayMs: 0,
+				localRecipients: local,
+				localOnly: local.length === recipients.length,
+				automatic: true,
+			});
+			if (!("refused" in queued)) return c.json({ done: "mail" as const });
+			if (queued.refused === "restoring") return c.json({ error: RESTORING }, 503);
+		}
+		if (plan.page) return c.json({ page: plan.page });
+		return c.json({ error: plan.mail ? `The list takes requests by mail, and this mailbox can't send as ${address}` : "The list didn't take the request. Try again later." }, 502);
 	})
 
 	.get("/messages/:messageId/raw", async (c) => {
