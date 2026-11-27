@@ -2,7 +2,7 @@ import { preview, type StoredAttachment } from "#shared";
 import { isInvisibleImage, isTrackerUrl } from "./trackers";
 
 /** Elements removed with their content before mail is shown (and so not read by the spam checks either). */
-export const REMOVED_ELEMENTS = ["script", "noscript", "iframe", "frame", "frameset", "object", "embed", "applet", "form", "base", "link"];
+export const REMOVED_ELEMENTS = ["script", "noscript", "iframe", "frame", "frameset", "object", "embed", "applet", "form", "input", "textarea", "select", "button", "base", "link"];
 
 /** What a blocked image shows instead: a transparent pixel, so the layout around it holds. */
 const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
@@ -11,13 +11,27 @@ const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAA
  * HTMLRewriter hands attribute values over as written, entities and all (`?a=1&amp;b=2`), so they're decoded before
  * being read as addresses or CSS. Named entities beyond these are rare in either.
  */
-const NAMED: Record<string, string> = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: "\u00a0" };
+const NAMED: Record<string, string> = {
+	amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0", colon: ":", sol: "/", bsol: "\\", period: ".",
+	commat: "@", quest: "?", num: "#", percnt: "%", equals: "=", lowbar: "_", hyphen: "-", dash: "-", plus: "+",
+	excl: "!", comma: ",", semi: ";", ast: "*", lpar: "(", rpar: ")", lsqb: "[", rsqb: "]", lcub: "{", rcub: "}",
+	verbar: "|", grave: "`", tab: "\t", newline: "\n", zwsp: "\u200b", shy: "\u00ad",
+};
 const decodeEntities = (value: string) =>
 	value.replace(/&(#x[\da-f]+|#\d+|[a-z]+);?/gi, (match, name: string) => {
 		const code = name[0] !== "#" ? null : name[1] === "x" || name[1] === "X" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
 		if (code === null) return NAMED[name.toLowerCase()] ?? match;
 		return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "\ufffd";
 	});
+/** URL text as the browser canonicalizes it before scheme matching: references decoded, tab/CR/LF ignored, leading C0/space trimmed. */
+const canonicalUrlText = (value: string) => decodeEntities(value).replace(/[\t\n\r]/g, "").replace(/^[\u0000-\u0020]+/, "");
+const dangerousScheme = /^(?:javascript|vbscript|data:text\/html)/i;
+const NAVIGATION_SCHEMES = new Set(["http:", "https:", "mailto:", "cid:", "tel:"]);
+/** Links may be absolute on schemes mail uses, or relative; everything else isn't a navigation we make clickable. */
+function navigationAllowed(canonical: string): boolean {
+	const scheme = canonical.match(/^[a-z][a-z0-9+.-]*:/i)?.[0].toLowerCase();
+	return !scheme || NAVIGATION_SCHEMES.has(scheme);
+}
 /** Back into an attribute: HTMLRewriter's setAttribute() writes the value as given, inside double quotes. */
 const encodeAttribute = (value: string) => value.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
 
@@ -82,8 +96,16 @@ export function renderEmailHtml(
 			element(el) {
 				const drop: string[] = [];
 				for (const [name = "", value = ""] of el.attributes) {
+					const attribute = name.toLowerCase();
+					const canonical = canonicalUrlText(value);
 					// data-blocked-src is ours, so the mail can't fake a blocked tracker.
-					if (name.startsWith("on") || name === "ping" || name === "data-blocked-src" || /^\s*(javascript|vbscript|data:text\/html)/i.test(value)) drop.push(name);
+					if (
+						attribute.startsWith("on") ||
+						attribute === "ping" ||
+						attribute === "data-blocked-src" ||
+						dangerousScheme.test(canonical) ||
+						((el.tagName === "a" || el.tagName === "area") && (attribute === "href" || attribute === "xlink:href") && !navigationAllowed(canonical))
+					) drop.push(name);
 				}
 				for (const name of drop) el.removeAttribute(name);
 				const style = decodeEntities(el.getAttribute("style") ?? "");
