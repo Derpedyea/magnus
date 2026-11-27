@@ -98,7 +98,10 @@ export class DraftSync {
 	}
 
 	async flushAll() {
-		for (const entry of this.drafts.values()) if (entry.state === "active") {
+		for (const entry of this.drafts.values()) {
+			// Sending entries have no draft save left to settle: lock() follows a completed flush(), so the server's
+			// copy is the recovery copy whether or not the send request arrived. Session end clears the local journal.
+			if (entry.state !== "active") continue;
 			if (entry.removing) await this.discard(entry.id);
 			else await this.flush(entry.id);
 		}
