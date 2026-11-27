@@ -5,6 +5,7 @@ import {
 	type AddressFilter,
 	type AgentThread,
 	canMatch,
+	cursorOf,
 	type Label,
 	type LabelDef,
 	isOwnLabel,
@@ -589,7 +590,17 @@ async function across(agent: Agent, scope: Scoped, limit: number, read: (stub: S
 	const lists = await Promise.all(
 		queries.map(async (q) => (await read(agent.env.MAILBOX.getByName(q.mailboxId), { limit: limit + 1, before, addresses: q.addresses })).map((t) => ({ ...t, mailboxId: q.mailboxId }))),
 	);
-	return mergePage(lists, limit);
+	return fitting(mergePage(lists, limit));
+}
+
+/** The first threads of a page whose facts fit in a tool result (MAX_RESULT) whole, `next` after the last of them. */
+function fitting(found: { threads: MailboxThread[]; next: string | null }): { threads: MailboxThread[]; next: string | null } {
+	// Room for the rest of the result: its keys, and `next`.
+	let size = 200;
+	const end = found.threads.findIndex((t, i) => (size += JSON.stringify(threadFacts(t)).length + 1) > MAX_RESULT && i > 0);
+	if (end === -1) return found;
+	const threads = found.threads.slice(0, end);
+	return { threads, next: cursorOf(threads.at(-1)!) };
 }
 
 /** A page of threads as the model reads it, and where the next one starts. */
