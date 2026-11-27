@@ -10,10 +10,13 @@ const compose = {
 };
 
 describe("outbound schemas", () => {
+	it("turns control characters in a subject or name into spaces", () => {
+		const parsed = ComposeSchema.parse({ ...compose, subject: "Re: Hi\r\nBcc: evil@outside.test", to: [{ address: "friend@outside.test", name: "\nFriend\tBcc: evil" }] });
+		expect(parsed.subject).toBe("Re: Hi Bcc: evil@outside.test");
+		expect(parsed.to[0]?.name).toBe("Friend Bcc: evil");
+	});
+
 	it.each([
-		["subject", { subject: "Hi\r\nBcc: evil@outside.test" }],
-		["recipient name", { to: [{ address: "friend@outside.test", name: "Friend\nBcc: evil" }] }],
-		["recipient name edge", { to: [{ address: "friend@outside.test", name: "\nFriend" }] }],
 		["attachment filename", { attachments: [{ r2Key: "uploads/a", filename: "a\r\nb.pdf", contentType: "application/pdf", size: 1 }] }],
 		["attachment content type", { attachments: [{ r2Key: "uploads/a", filename: "a.pdf", contentType: "application/pdf\u0000", size: 1 }] }],
 	])("rejects control characters in %s", (_field, change) => {

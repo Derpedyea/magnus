@@ -12,10 +12,12 @@ export const MAX_ATTACHMENTS = 32;
 /** Header-ish fields never carry C0 controls or DEL. Body text is not one of these. */
 const NO_CONTROLS = /^[^\u0000-\u001f\u007f]*$/;
 const CONTROL_CHARS = "Control characters aren't allowed";
+/** A subject or name can come from mail being answered, where a folded line leaves a tab: those become spaces. */
+const spaceControls = (value: string) => value.replace(/[\u0000-\u001f\u007f]+/g, " ");
 
 export const AddressSchema = z.object({
 	address: z.email(),
-	name: z.string().regex(NO_CONTROLS, CONTROL_CHARS).trim().max(200).optional(),
+	name: z.string().overwrite(spaceControls).trim().max(200).optional(),
 });
 
 export const AttachmentRefSchema = z.object({
@@ -31,7 +33,7 @@ export const ComposeSchema = z
 		to: z.array(AddressSchema).min(1),
 		cc: z.array(AddressSchema).default([]),
 		bcc: z.array(AddressSchema).default([]),
-		subject: z.string().max(998).regex(NO_CONTROLS, CONTROL_CHARS),
+		subject: z.string().max(998).overwrite(spaceControls),
 		/** Markdown (plain text reads the same). The message's text and HTML parts are both rendered from it (noteBody()). */
 		text: z.string(),
 		replyToMessageId: z.string().optional(),
