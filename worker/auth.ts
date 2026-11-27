@@ -87,8 +87,8 @@ function createAuth(baseURL: string, secret: string) {
 		database: env.DIRECTORY,
 		user: { modelName: "auth_users" },
 		// People are added before they first sign in, so a Google account can join an existing one by email only
-		// when Google vouches for that address (mapProfileToUser below).
-		account: { modelName: "auth_accounts" },
+		// when Google vouches for that address (mapProfileToUser below). Those pre-added emails start unverified locally.
+		account: { modelName: "auth_accounts", accountLinking: { requireLocalEmailVerified: false } },
 		verification: { modelName: "auth_verifications" },
 		session: {
 			modelName: "auth_sessions",

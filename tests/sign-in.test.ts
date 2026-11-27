@@ -65,7 +65,7 @@ describe("sign-in", () => {
 		["a Gmail address", "alice@gmail.com", {}],
 		["a Workspace account", "alice@login.test", { hd: "workspace.test" }],
 	])("still joins the existing person with %s", async (_, email, claims) => {
-		await f.env.DIRECTORY.prepare("UPDATE auth_users SET email = ?1 WHERE id = 'alice'").bind(email).run();
+		await f.env.DIRECTORY.prepare("UPDATE auth_users SET email = ?1, emailVerified = 0 WHERE id = 'alice'").bind(email).run();
 		const response = await googleSignIn({ email, email_verified: true, ...claims });
 		expect(response.status).toBe(200);
 		expect(signsIn(response)).toBe(true);
