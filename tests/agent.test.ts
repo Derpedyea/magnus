@@ -68,6 +68,42 @@ describe("Mail agent", () => {
 		expect(JSON.parse(calls[1].at(-1).content).threads).toEqual([expect.objectContaining({ mailboxId: ids.alice, threadId: mine, subject: "Your receipt" })]);
 	});
 
+	it("searches past the first few, narrowed as asked, a page at a time", async () => {
+		for (let i = 0; i < 12; i++) await deliver(ids.alice, `bulk-${i}`, `Receipt ${i}`);
+		const shop = ((await box(ids.alice).ingest({ ...inbound(ids.alice, "shop"), from: { address: "orders@shop.test", name: "Shop" }, subject: "Receipt from the shop" })) as { threadId: string }).threadId;
+		await f.control.setModels({
+			agent: [
+				{
+					calls: [
+						{ name: "search_mail", args: { query: "receipt" } },
+						{ name: "search_mail", args: { query: "receipt", from: "shop", label: "inbox", since: "2000-01-01" } },
+						{ name: "search_mail", args: { query: "receipt", limit: 5 } },
+						{ name: "search_mail", args: { query: "receipt", addresses: ["someone@else.test"] } },
+					],
+				},
+				{ content: "Found them." },
+			],
+		});
+
+		expect(await ask("Find my receipts")).toMatchObject({
+			status: 200,
+			body: {
+				messages: [
+					{ role: "assistant" },
+					{ role: "tool", summary: "Searched “receipt” · 13 conversations" },
+					{ role: "tool", summary: "Searched “receipt” from “shop” in Inbox · 1 conversation", threads: [{ id: shop }] },
+					{ role: "tool", summary: "Searched “receipt” · 5 conversations" },
+					{ role: "tool", summary: "Couldn't do that: None of those is an address of theirs" },
+					{ role: "assistant", content: "Found them." },
+				],
+			},
+		});
+		const results = (await f.control.state()).modelCalls.filter((c) => c.model === RULES_MODEL).at(-1)!;
+		const [all, , page] = JSON.parse(results.inputs).messages.filter((m: { role: string }) => m.role === "tool").map((m: { content: string }) => JSON.parse(m.content));
+		expect(all.next).toBeUndefined();
+		expect(page.next).toEqual(expect.any(String));
+	});
+
 	it("asks before what could lose mail, one thing at a time, and does it once approved", async () => {
 		const mine = await deliver(ids.alice, "mine", "Old newsletter");
 		// Safe on its own, but after a call that asks: run at once, it could change what the person approves.

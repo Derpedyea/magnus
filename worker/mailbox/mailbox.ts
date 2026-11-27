@@ -296,6 +296,16 @@ const addressParam = (filter: AddressFilter) => (filter.addresses ? JSON.stringi
 const SUBTREE = (param: string) =>
 	`WITH RECURSIVE sub(key, depth) AS (SELECT ${param}, 1 UNION SELECT l.key, sub.depth + 1 FROM labels l JOIN sub ON l.parent = sub.key WHERE sub.depth < ${MAX_LABEL_DEPTH})
 	 SELECT key FROM sub`;
+/**
+ * Predicate on thread alias `t`: `label`'s view lists it, its key read from `param`. One of its messages carries the label, or
+ * one inside it, and belongs to the filtered addresses (?2); All mail is everything but Spam and Trash.
+ */
+const IN_LABEL = (param: string, label: string) =>
+	label === ALL_MAIL
+		? `EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id AND ${IN_ADDRESSES("?2")} AND NOT EXISTS (
+				SELECT 1 FROM message_labels l WHERE l.message_id = m.id AND l.label IN ('trash', 'spam')))`
+		: `EXISTS (SELECT 1 FROM messages m JOIN message_labels l ON l.message_id = m.id
+				WHERE m.thread_id = t.id AND l.label IN (${SUBTREE(param)}) AND ${IN_ADDRESSES("?2")})`;
 /** Where a label goes last among those inside the label in `param` (NULL for the top). */
 const LAST_POSITION = (param: string) => `(SELECT coalesce(max(position), 0) + 1 FROM labels WHERE parent IS ${param})`;
 /** IN_ADDRESSES for the failed table, whose rows carry the one address they were delivered to. */
@@ -1158,26 +1168,29 @@ export class Mailbox extends DurableObject<Env> {
 	 * addresses.
 	 */
 	async listThreads(query: { label: string } & ListPage & AddressFilter): Promise<ThreadSummary[]> {
-		const filter =
-			query.label === ALL_MAIL
-				? `EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id AND ${IN_ADDRESSES("?2")} AND NOT EXISTS (
-						SELECT 1 FROM message_labels l WHERE l.message_id = m.id AND l.label IN ('trash', 'spam')))`
-				: `EXISTS (SELECT 1 FROM messages m JOIN message_labels l ON l.message_id = m.id
-						WHERE m.thread_id = t.id AND l.label IN (${SUBTREE("?1")}) AND ${IN_ADDRESSES("?2")})`;
-		return this.page(filter, query.label, query);
+		return this.page(IN_LABEL("?1", query.label), query.label, query);
 	}
 
-	/** Threads with a matching message, in list order like any other view so they page the same way. */
-	async search(query: { query: string } & ListPage & AddressFilter): Promise<ThreadSummary[]> {
-		const match = toFtsQuery(query.query);
+	/**
+	 * Threads with a matching message, in list order like any other view so they page the same way. The assistant's
+	 * search can narrow it further: to words in the sender (`from`), to messages dated from `since` up to `until`, and to
+	 * threads a label's view lists. `query` or `from` has to have a word.
+	 */
+	async search(query: { query: string; from?: string; since?: number; until?: number; label?: string } & ListPage & AddressFilter): Promise<ThreadSummary[]> {
+		const match = [toFtsQuery(query.query), query.from ? toFtsQuery(query.from, "sender") : null].filter(Boolean).join(" ");
 		if (!match) return [];
 		const filter = `t.id IN (SELECT m.thread_id FROM messages_fts f JOIN messages m ON m.rowid = f.rowid
-			WHERE messages_fts MATCH ?1 AND ${IN_ADDRESSES("?2")})`;
-		return this.page(filter, match, query);
+			WHERE messages_fts MATCH ?1 AND ${IN_ADDRESSES("?2")} AND (?7 IS NULL OR m.date >= ?7) AND (?8 IS NULL OR m.date < ?8))
+			${query.label ? `AND ${IN_LABEL("?6", query.label)}` : ""}`;
+		// Every view's SQL reads the highest parameter (?8 here) and may leave out lower ones, as All mail does its key.
+		return this.page(filter, match, query, [query.label ?? null, query.since ?? null, query.until ?? null]);
 	}
 
-	/** One page of threads passing `filter` (see ListPage), which reads its own parameter as ?1 and the address filter as ?2. */
-	private page(filter: string, param: string, query: ListPage & AddressFilter): ThreadSummary[] {
+	/**
+	 * One page of threads passing `filter` (see ListPage), which reads its own parameter as ?1, the address filter as ?2,
+	 * and any `more` from ?6 on.
+	 */
+	private page(filter: string, param: string, query: ListPage & AddressFilter, more: (string | number | null)[] = []): ThreadSummary[] {
 		const read = (side: "<" | ">=", cursor: ListCursor, limit: number) =>
 			this.sql
 				.exec<ThreadRow>(
@@ -1188,6 +1201,7 @@ export class Mailbox extends DurableObject<Env> {
 					cursor.at,
 					cursor.id,
 					limit,
+					...more,
 				)
 				.toArray()
 				.map(toThreadSummary);
@@ -2739,14 +2753,14 @@ function summarizeDelivery(rows: { status: DeliveryStatus; detail: string | null
 }
 
 /** Turn free text into a safe FTS5 query: every term quoted, last term prefix-matched. */
-function toFtsQuery(input: string): string | null {
+function toFtsQuery(input: string, column?: "sender"): string | null {
 	const terms = input
 		.split(/\s+/)
 		.map((t) => t.replaceAll('"', ""))
 		.filter(Boolean)
 		.slice(0, 12);
 	if (terms.length === 0) return null;
-	return terms.map((t, i) => (i === terms.length - 1 ? `"${t}"*` : `"${t}"`)).join(" ");
+	return terms.map((t, i) => `${column ? `${column} : ` : ""}${i === terms.length - 1 ? `"${t}"*` : `"${t}"`}`).join(" ");
 }
 
 /** A label's name with a number after it, for one beside a label of the same name: still a name LabelNameSchema takes. */
