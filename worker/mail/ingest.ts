@@ -59,7 +59,7 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 	// Imported mail's verdicts were stamped by its old provider, or by whoever wrote the file: they can't be shown as ours
 	// or vouch for its sender, and it goes where it was there rather than where a verdict or a model would put it.
 	const { imported } = job;
-	const results = imported ? null : stampedResults(email);
+	const results = imported ? null : stampedResults(email.headers);
 	const sender = await checkSender(env, from.address, results);
 	const text = email.text ?? (email.html ? htmlToText(email.html) : null);
 	const replyTo = flatten(email.replyTo);
@@ -304,9 +304,9 @@ type AuthResult = { method: string; result: string; props: Map<string, string> }
  * X-CF-SpamH-Score, so anything below that came from the sender and can claim anything, and it doesn't always stamp
  * one (workerd#6740).
  */
-function stampedResults(email: Email): AuthResult[] | null {
-	const end = email.headers.findIndex((h) => h.key === "x-cf-spamh-score");
-	const header = email.headers
+export function stampedResults(headers: { key: string; value: string }[]): AuthResult[] | null {
+	const end = headers.findIndex((h) => h.key === "x-cf-spamh-score");
+	const header = headers
 		.slice(0, Math.max(end, 0))
 		.find((h) => h.key === "authentication-results" && h.value.split(";")[0]?.trim().toLowerCase() === AUTHSERV_ID);
 	return header ? resultsOf(header.value) : null;

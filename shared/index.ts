@@ -15,3 +15,4 @@ export * from "./rules";
 export * from "./scope";
 export * from "./threading";
 export * from "./types";
+export * from "./unsubscribe";

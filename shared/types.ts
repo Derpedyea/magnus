@@ -357,6 +357,8 @@ export interface MessageDetail {
 	senderVerified: boolean;
 	/** The rules that filed it, in the order they ran. */
 	rules: RuleHit[];
+	/** Received mail whose List-Unsubscribe header offers a way off its list (shared/unsubscribe.ts). */
+	unsubscribe: boolean;
 }
 
 /** A message as its thread shows it. */

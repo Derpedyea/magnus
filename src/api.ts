@@ -109,6 +109,8 @@ export const api = {
 	/** Not spam (trusted) or Spam for one message and its sender, not the whole thread. */
 	judge: (mailboxId: string, messageId: string, verdict: "trusted" | "spam") =>
 		parseResponse(mailbox.messages[":messageId"].judge.$post({ param: { mailboxId, messageId }, json: { verdict } })),
+	/** Asks the list received mail came from to stop sending it: done here, or a page to finish on. */
+	unsubscribe: (mailboxId: string, messageId: string) => parseResponse(mailbox.messages[":messageId"].unsubscribe.$post({ param: { mailboxId, messageId } })),
 	settings: (mailboxId: string) => parseResponse(mailbox.settings.$get({ param: { mailboxId } })),
 	updateSettings: (mailboxId: string, change: Partial<MailSettings>) => parseResponse(mailbox.settings.$patch({ param: { mailboxId }, json: change })),
 	/** A mailbox's rules, in the order they run. */

@@ -42,6 +42,7 @@ import { FileViewer } from "./FileViewer";
 import { LabelChip, LabelPicker, useLabelThreads } from "./LabelPicker";
 import { PermanentDelete } from "./PermanentDelete";
 import { Shortcut } from "./Shortcut";
+import { Unsubscribe } from "./Unsubscribe";
 
 const route = getRouteApi("/_app/_mail/$view/$mailboxId/$threadId");
 
@@ -508,7 +509,7 @@ function Message(props: {
 		>
 			{props.outgoing ? null : <Avatar message={m} />}
 			<div className={cn("flex min-w-0 items-start gap-2", props.outgoing && "max-w-full self-stretch")}>
-				<MessageHeader message={m} outgoing={props.outgoing} replyingTo={props.replyingTo} />
+				<MessageHeader mailboxId={props.mailboxId} message={m} outgoing={props.outgoing} replyingTo={props.replyingTo} />
 				{actions}
 			</div>
 			<div
@@ -588,8 +589,10 @@ function Message(props: {
 }
 
 /** Who sent it, to whom, and when, like a letter's heading. */
-function MessageHeader(props: { message: MessageDetail; outgoing: boolean; replyingTo?: MessageDetail }) {
+function MessageHeader(props: { mailboxId: string; message: MessageDetail; outgoing: boolean; replyingTo?: MessageDetail }) {
 	const m = props.message;
+	// Not for Spam or a forged sender: asking tells whoever sent it that the address reads its mail.
+	const unsubscribe = m.unsubscribe && !props.outgoing && m.verdict?.kind !== "spoofed" && !m.labels.includes("spam");
 	const date = new Date(m.date);
 	return (
 		<div className={cn("flex min-w-0 flex-1 flex-col gap-0.5", props.outgoing && "items-end")}>
@@ -608,8 +611,12 @@ function MessageHeader(props: { message: MessageDetail; outgoing: boolean; reply
 					{letterDate(date)}
 				</time>
 			</span>
-			<span className="max-w-full truncate text-sm text-muted-foreground" title={recipientsLine(m)}>
-				{toLine(m)}
+			{/* Unsubscribe goes here rather than beside the sender, whose name it would squeeze out on a phone. */}
+			<span className={cn("flex max-w-full min-w-0 items-baseline gap-2", props.outgoing && "justify-end")}>
+				<span className="min-w-0 truncate text-sm text-muted-foreground" title={recipientsLine(m)}>
+					{toLine(m)}
+				</span>
+				{unsubscribe ? <Unsubscribe mailboxId={props.mailboxId} message={m} /> : null}
 			</span>
 		</div>
 	);
