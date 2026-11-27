@@ -416,12 +416,13 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	/**
-	 * Whether this queued send may go now. Undefined means the directory couldn't say, false that the message has been
-	 * permanently failed, true that it may proceed.
+	 * Whether this queued send may go now. Undefined means the directory couldn't say, "undone" that Undo took it out of
+	 * the outbox while asking, false that the message has been permanently failed, true that it may proceed.
 	 */
-	private async reauthorizeSend(messageId: string, threadId: string, payload: OutboxPayload, senderId: string): Promise<boolean | undefined> {
+	private async reauthorizeSend(messageId: string, threadId: string, payload: OutboxPayload, senderId: string): Promise<boolean | "undone" | undefined> {
 		const access = await this.askDirectory(() => outboxSendAccess(this.env.DIRECTORY, this.mailboxId(), senderId, payload.from.address));
 		if (!access) return undefined;
+		if (!this.inOutbox(messageId)) return "undone";
 		const { user, member, identity } = access.answer;
 		if (user && member && identity) return true;
 		const detail = !member
@@ -2474,7 +2475,7 @@ export class Mailbox extends DurableObject<Env> {
 			}
 			const allowed = await this.reauthorizeSend(row.message_id, row.thread_id, payload, senderId);
 			if (allowed === undefined) return;
-			if (!allowed) continue;
+			if (allowed !== true) continue;
 
 			let providerMessageId: string | undefined;
 			let handoff: number;
@@ -2484,14 +2485,15 @@ export class Mailbox extends DurableObject<Env> {
 				const attachments = await this.keepAttachments(row.message_id, payload.attachments);
 				// Linked files stay behind; the text already links to them. (Rows queued before links existed lack the field.)
 				const attached = payload.localOnly ? [] : await this.loadAttachments(attachments.filter((a) => !a.link));
-				// Undo may have landed during those, or while an earlier row sent: the message is gone, so its copies go too.
-				if (!this.inOutbox(row.message_id)) {
+				// Asked again after file work, immediately before the handoff, so a revocation meanwhile can't slip through. Undo
+				// may have landed during the file work, this question, or while an earlier row sent: the message is gone, so
+				// its copies go too. Nothing awaits between this and the handoff, so Undo can't land after it.
+				const stillAllowed = await this.reauthorizeSend(row.message_id, row.thread_id, payload, senderId);
+				if (stillAllowed === undefined) return;
+				if (stillAllowed === "undone") {
 					await this.deleteCopies(row.message_id, payload.attachments);
 					continue;
 				}
-				// Asked again after file work, immediately before the handoff, so a revocation meanwhile can't slip through.
-				const stillAllowed = await this.reauthorizeSend(row.message_id, row.thread_id, payload, senderId);
-				if (stillAllowed === undefined) return;
 				if (!stillAllowed) continue;
 				this.sql.exec(`UPDATE outbox SET attempts = attempts + 1 WHERE message_id = ?1`, row.message_id);
 				attemptCounted = true;

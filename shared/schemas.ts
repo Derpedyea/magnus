@@ -13,7 +13,7 @@ export const MAX_ATTACHMENTS = 32;
 const NO_CONTROLS = /^[^\u0000-\u001f\u007f]*$/;
 const CONTROL_CHARS = "Control characters aren't allowed";
 /** A subject or name can come from mail being answered, where a folded line leaves a tab: those become spaces. */
-const spaceControls = (value: string) => value.replace(/[\u0000-\u001f\u007f]+/g, " ");
+export const spaceControls = (value: string) => value.replace(/[\u0000-\u001f\u007f]+/g, " ");
 
 export const AddressSchema = z.object({
 	address: z.email(),
