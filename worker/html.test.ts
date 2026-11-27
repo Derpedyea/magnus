@@ -53,7 +53,12 @@ describe("email HTML sanitizing", () => {
 			<input value="x"><textarea>x</textarea><select><option>x</option></select>
 			<button formaction="jav&#x61;script:alert(1)">Pay now</button><p>keep</p>`);
 		expect(html).not.toMatch(/<(input|textarea|select|button)\b|formaction/);
-		expect(html).toContain("Pay now<p>keep</p>");
+		expect(html).toContain(">Pay now</span><p>keep</p>");
+	});
+
+	it("keeps a hidden button's contents hidden", async () => {
+		const html = await render(`<button hidden>Phish</button><button style="display:none">Phish</button>`);
+		expect(html).toBe(`<span hidden>Phish</span><span style="display:none">Phish</span>`);
 	});
 });
 

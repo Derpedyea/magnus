@@ -92,10 +92,12 @@ export function renderEmailHtml(
 				el.remove();
 			},
 		})
-		// A button does nothing in mail but take focus, though its label can be the call to action: that stays.
+		// A button does nothing in mail but take focus, though its label can be the call to action: it stays, as a span
+		// that keeps how it's shown (hidden, style), so what shows is what the spam checks read.
 		.on("button", {
 			element(el) {
-				el.removeAndKeepContent();
+				el.tagName = "span";
+				for (const name of ["formaction", "formmethod", "formtarget", "formenctype", "form", "type", "name", "value", "autofocus", "popovertarget"]) el.removeAttribute(name);
 			},
 		})
 		.on("*", {
