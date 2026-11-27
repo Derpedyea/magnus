@@ -416,7 +416,7 @@ export interface IngestInput {
 	envelopeTo: string;
 	receivedAt: number;
 	messageIdHeader: string | null;
-	/** SHA-256 of the raw body after the header block: what copies of one message have in common even as transit headers differ. */
+	/** SHA-256 of From, Sender, Reply-To, Subject, Date and the raw body: what copies of one message share even as transit headers differ. */
 	bodyDigest: string;
 	inReplyTo: string[];
 	references: string[];

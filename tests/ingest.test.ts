@@ -83,6 +83,16 @@ describe("ingest", () => {
 		expect((await f.env.MAILBOX.getByName(ids.alice).holding([first.ingestId, collision.ingestId])).toSorted()).toEqual([first.ingestId, collision.ingestId].toSorted());
 	});
 
+	it("keeps a copied body sent under the same Message-ID with another Reply-To", async () => {
+		const first = job(ids.alice, "real-2");
+		const collision = job(ids.alice, "collision-2");
+		await f.env.MAIL.put(first.rawKey, MIME);
+		await f.env.MAIL.put(collision.rawKey, MIME.replace(/^Reply-To:.*$/m, "Reply-To: attacker@outside.test"));
+		await f.control.parse(first);
+		await f.control.parse(collision);
+		expect((await f.env.MAILBOX.getByName(ids.alice).holding([first.ingestId, collision.ingestId])).toSorted()).toEqual([first.ingestId, collision.ingestId].toSorted());
+	});
+
 	it.each(["get", "put", "directory"] as const)("propagates %s failures and a replay completes from the retained original", async (operation) => {
 		const input = await store();
 		await f.control.failNext(operation, operation === "put" ? r2Keys.attachment(ids.alice, input.ingestId, `${input.ingestId}-2`) : "");

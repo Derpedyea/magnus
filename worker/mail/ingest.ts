@@ -52,8 +52,8 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 	}
 
 	const bytes = await raw.arrayBuffer();
-	const bodyDigest = await digestBody(bytes);
 	const email = await PostalMime.parse(bytes, { attachmentEncoding: "arraybuffer" });
+	const bodyDigest = await digestBody(bytes, email);
 	const messageId = job.ingestId;
 	const mailbox = env.MAILBOX.getByName(job.mailboxId);
 
@@ -179,10 +179,11 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 }
 
 /**
- * SHA-256 of the body after the header block. Transit headers (Received, Delivered-To) differ between copies of one
- * message, while the body is what makes a sender-controlled Message-ID collision a different message.
+ * SHA-256 of who the message says it's from, its subject and date, and the body after the header block. Transit headers
+ * (Received, Delivered-To) differ between copies of one message; these don't, so a sender-controlled Message-ID reused
+ * with another body, or with the same body under another From or Reply-To, is a different message.
  */
-async function digestBody(raw: ArrayBuffer): Promise<string> {
+async function digestBody(raw: ArrayBuffer, email: Email): Promise<string> {
 	const bytes = new Uint8Array(raw);
 	let body = bytes.subarray(bytes.length);
 	for (let i = 0; i < bytes.length - 1; i++) {
@@ -196,7 +197,11 @@ async function digestBody(raw: ArrayBuffer): Promise<string> {
 			break;
 		}
 	}
-	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", body));
+	const said = new TextEncoder().encode(`${JSON.stringify([email.from ?? null, email.sender ?? null, email.replyTo ?? null, email.subject ?? null, email.date ?? null])}\n`);
+	const whole = new Uint8Array(said.length + body.length);
+	whole.set(said);
+	whole.set(body, said.length);
+	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", whole));
 	return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
