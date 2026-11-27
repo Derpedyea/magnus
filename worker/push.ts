@@ -1,4 +1,5 @@
 import { fromBase64Url, type IngestInput, makeSnippet, toBase64Url } from "#shared";
+import { isPushServiceEndpoint } from "#shared/schemas";
 import { z } from "zod";
 
 // Web Push (RFC 8030) signed with VAPID (RFC 8292), its payload encrypted to the browser (RFC 8291, aes128gcm from
@@ -78,6 +79,12 @@ export async function forgetExpiredDevices(db: D1Database, now: number): Promise
 }
 
 async function push(db: D1Database, keys: VapidKeys, device: Device, notice: Notice, now: number): Promise<void> {
+	// Rows predate the subscribe-time check, and one could have been written directly. Never fetch an arbitrary endpoint.
+	if (!isPushServiceEndpoint(device.endpoint)) {
+		await db.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?1`).bind(device.endpoint).run();
+		console.log(JSON.stringify({ msg: "push subscription dropped", reason: "not a browser push service" }));
+		return;
+	}
 	const res = await fetch(device.endpoint, {
 		method: "POST",
 		headers: {
@@ -90,15 +97,17 @@ async function push(db: D1Database, keys: VapidKeys, device: Device, notice: Not
 		},
 		body: await encryptPayload(device, encode(JSON.stringify(notice))),
 		signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
+		redirect: "manual",
 	});
 	// The endpoint alone lets anyone push to the browser, so only its host is logged.
 	const host = new URL(device.endpoint).host;
-	// Any https URL can be an endpoint, so its answer is never read whole: just enough of a refusal to say why.
-	const reason = res.ok ? "" : await start(res, 200);
+	const redirect = res.status >= 300 && res.status < 400;
+	// A push service's answer is never read whole: just enough of a refusal to say why.
+	const reason = res.ok || redirect ? "" : await start(res, 200);
 	await res.body?.cancel();
 	if (res.ok) return;
-	if (res.status === 404 || res.status === 410) {
-		// Unsubscribed or expired. Push services never reuse an endpoint, so it can go whoever holds it now.
+	if (redirect || res.status === 404 || res.status === 410) {
+		// Unsubscribed, expired, or moved. Push services never reuse or redirect an endpoint, so it can go.
 		await db.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?1`).bind(device.endpoint).run();
 		console.log(JSON.stringify({ msg: "push subscription gone", host, status: res.status }));
 		return;

@@ -64,7 +64,7 @@ import {
 } from "#shared";
 import { importLabelChain } from "#shared/import";
 import { noteBody } from "#shared/markdown";
-import { hasMember, isRevokedSend, mailboxInUse, mailboxState } from "../directory";
+import { isRevokedSend, mailboxInUse, mailboxState, outboxSendAccess } from "../directory";
 import { retryAddressing } from "./retry";
 import { MIGRATIONS } from "./schema";
 
@@ -140,7 +140,7 @@ interface OutboxPayload {
 	// Optional so rows queued before local delivery existed still go out through Email Sending.
 	localRecipients?: LocalRecipient[];
 	localOnly?: boolean;
-	/** Who queued it (SendInput.senderId). Rows queued before it was recorded can't say, and go by the mailbox alone. */
+	/** Who queued it (SendInput.senderId). Rows queued before it was recorded can't be re-authorized, and fail closed. */
 	senderId?: string;
 }
 
@@ -415,6 +415,25 @@ export class Mailbox extends DurableObject<Env> {
 			await this.ctx.storage.setAlarm(Date.now() + TRASH_RETRY_MS);
 			return undefined;
 		}
+	}
+
+	/**
+	 * Whether this queued send may go now. Undefined means the directory couldn't say, "undone" that Undo took it out of
+	 * the outbox while asking, false that the message has been permanently failed, true that it may proceed.
+	 */
+	private async reauthorizeSend(messageId: string, threadId: string, payload: OutboxPayload, senderId: string): Promise<boolean | "undone" | undefined> {
+		const access = await this.askDirectory(() => outboxSendAccess(this.env.DIRECTORY, this.mailboxId(), senderId, payload.from.address));
+		if (!access) return undefined;
+		if (!this.inOutbox(messageId)) return "undone";
+		const { user, member, identity } = access.answer;
+		if (user && member && identity) return true;
+		const detail = !member
+			? "Not sent: whoever sent it had left this mailbox when it was due."
+			: !user
+				? "Not sent: whoever sent it was suspended or no longer in Magnus when it was due."
+				: `Not sent: this mailbox could no longer send as ${payload.from.address} when it was due.`;
+		this.finishSend(messageId, threadId, { status: "failed", detail });
+		return false;
 	}
 
 	/**
@@ -2475,31 +2494,38 @@ export class Mailbox extends DurableObject<Env> {
 				continue;
 			}
 			const payload: OutboxPayload = JSON.parse(row.payload);
-			// Nor does anything someone queued once they've left the mailbox, removed or not. In a shared mailbox the others
-			// see it failed, and send it again if it should go.
+			// Nor does anything someone queued once they may no longer send it: suspended or gone, out of the mailbox,
+			// or with the From address's send permission revoked. In a shared mailbox the others see it failed, and send it
+			// again if it should go. Rows from before senderId was recorded can't prove who queued them, so they fail closed.
 			const { senderId } = payload;
-			if (senderId !== undefined) {
-				const stayed = await this.askDirectory(() => hasMember(this.env.DIRECTORY, this.mailboxId(), senderId));
-				if (!stayed) return;
-				if (!stayed.answer) {
-					this.finishSend(row.message_id, row.thread_id, { status: "failed", detail: "Not sent: whoever sent it had left this mailbox when it was due." });
-					continue;
-				}
+			if (senderId === undefined) {
+				this.finishSend(row.message_id, row.thread_id, { status: "failed", detail: "Not sent: whoever sent it couldn't be checked when it was due." });
+				continue;
 			}
-			this.sql.exec(`UPDATE outbox SET attempts = attempts + 1 WHERE message_id = ?1`, row.message_id);
+			const allowed = await this.reauthorizeSend(row.message_id, row.thread_id, payload, senderId);
+			if (allowed === undefined) return;
+			if (allowed !== true) continue;
 
 			let providerMessageId: string | undefined;
 			let handoff: number;
+			let attemptCounted = false;
 			try {
 				// Kept while still `queued`, so Undo still works and a copy cut short is simply redone.
 				const attachments = await this.keepAttachments(row.message_id, payload.attachments);
 				// Linked files stay behind; the text already links to them. (Rows queued before links existed lack the field.)
 				const attached = payload.localOnly ? [] : await this.loadAttachments(attachments.filter((a) => !a.link));
-				// Undo may have landed during those, or while an earlier row sent: the message is gone, so its copies go too.
-				if (!this.inOutbox(row.message_id)) {
+				// Asked again after file work, immediately before the handoff, so a revocation meanwhile can't slip through. Undo
+				// may have landed during the file work, this question, or while an earlier row sent: the message is gone, so
+				// its copies go too. Nothing awaits between this and the handoff, so Undo can't land after it.
+				const stillAllowed = await this.reauthorizeSend(row.message_id, row.thread_id, payload, senderId);
+				if (stillAllowed === undefined) return;
+				if (stillAllowed === "undone") {
 					await this.deleteCopies(row.message_id, payload.attachments);
 					continue;
 				}
+				if (!stillAllowed) continue;
+				this.sql.exec(`UPDATE outbox SET attempts = attempts + 1 WHERE message_id = ?1`, row.message_id);
+				attemptCounted = true;
 				// Taken before anything reaches Email Sending, so every delivery event for this send is newer.
 				handoff = Date.now();
 				if (!payload.localOnly) {
@@ -2515,6 +2541,7 @@ export class Mailbox extends DurableObject<Env> {
 				}
 				const code = typeof err === "object" && err && "code" in err ? String(err.code) : "E_UNKNOWN";
 				const detail = `${code}: ${err instanceof Error ? err.message : String(err)}`;
+				if (!attemptCounted) this.sql.exec(`UPDATE outbox SET attempts = attempts + 1 WHERE message_id = ?1`, row.message_id);
 				const attempts = row.attempts + 1;
 				if (TRANSIENT_SEND_ERRORS.has(code) && attempts < MAX_SEND_ATTEMPTS) {
 					const backoff = Math.min(30_000 * 2 ** (attempts - 1), 3_600_000);
@@ -2761,20 +2788,31 @@ function storageFailed(err: unknown): never {
 	throw Object.assign(new Error(err instanceof Error ? err.message : String(err)), { code: "E_STORAGE" });
 }
 
+/** Defense in depth for header-ish structured fields, including names and metadata inbound mail supplied. */
+const stripHeaderBreaks = (value: string) => value.replace(/[\x00\r\n]/g, "");
+
 function buildSendRequest(p: OutboxPayload, attachments: EmailAttachment[]): EmailMessageBuilder {
-	const toEmail = (a: Address) => (a.name ? { email: a.address, name: a.name } : a.address);
+	const toEmail = (a: Address) => {
+		const name = a.name ? stripHeaderBreaks(a.name) : "";
+		return name ? { email: a.address, name } : a.address;
+	};
 	const cc = p.cc.length ? { cc: p.cc.map(toEmail) } : {};
 	const bcc = p.bcc.length ? { bcc: p.bcc.map(toEmail) } : {};
 	// A retry to Bcc'd recipients alone has nobody in To, which Email Sending allows as long as there's a Bcc.
 	const destinations: EmailDestinations = p.to.length ? { to: p.to.map(toEmail), ...cc, ...bcc } : { bcc: p.bcc.map(toEmail) };
+	const parts: EmailAttachment[] = attachments.map((a) =>
+		a.disposition === "inline"
+			? { ...a, filename: stripHeaderBreaks(a.filename), type: stripHeaderBreaks(a.type), contentId: stripHeaderBreaks(a.contentId) }
+			: { ...a, filename: stripHeaderBreaks(a.filename), type: stripHeaderBreaks(a.type) },
+	);
 	return {
 		from: toEmail(p.from),
 		...destinations,
-		subject: p.subject,
+		subject: stripHeaderBreaks(p.subject),
 		text: p.text,
 		...(p.html ? { html: p.html } : {}),
 		...(Object.keys(p.headers).length ? { headers: p.headers } : {}),
-		...(attachments.length ? { attachments } : {}),
+		...(parts.length ? { attachments: parts } : {}),
 	};
 }
 

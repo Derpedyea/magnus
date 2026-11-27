@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { AttachmentRefSchema, MAX_ATTACHMENTS, MAX_RECIPIENTS } from "./schemas";
+import { AttachmentRefSchema, MAX_ATTACHMENTS, MAX_RECIPIENTS, spaceControls } from "./schemas";
 
-// Drafts accept unfinished recipients; sending still uses ComposeSchema's email validation.
-const Recipient = z.object({ address: z.string().max(320), name: z.string().max(200).optional() });
+// Drafts accept unfinished recipients; sending still uses ComposeSchema's email validation. Names and the subject are
+// cleaned as ComposeSchema cleans them, so /send finds the saved draft and the request the same.
+const Recipient = z.object({ address: z.string().max(320), name: z.string().overwrite(spaceControls).trim().max(200).optional() });
 const File = z.object({
 	id: z.string(), filename: z.string(), contentType: z.string(), size: z.number().nonnegative(),
 	contentId: z.string().nullable(), inline: z.boolean(), link: z.object({ token: z.string(), shared: z.boolean() }).nullable(),
@@ -16,7 +17,7 @@ export const DraftSchema = z.object({
 	bcc: z.array(Recipient).max(MAX_RECIPIENTS),
 	/** Recipient text not yet committed to a chip (including unfinished addresses). */
 	recipientInputs: z.object({ to: z.string().max(10_000), cc: z.string().max(10_000), bcc: z.string().max(10_000) }).optional(),
-	subject: z.string().max(998),
+	subject: z.string().max(998).overwrite(spaceControls),
 	text: z.string().max(1_000_000),
 	attachments: z.array(AttachmentRefSchema).max(MAX_ATTACHMENTS),
 	replyToMessageId: z.string().optional(),

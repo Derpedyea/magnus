@@ -37,6 +37,71 @@ describe("send alarm", () => {
 		expect((await f.control.state()).sends).toHaveLength(1);
 	});
 
+	it.each([
+		{
+			name: "send permission revoked",
+			sql: "UPDATE address_routes SET can_send = 0 WHERE mailbox_id = ?1",
+			bind: true,
+			detail: "Not sent: this mailbox could no longer send as alice@example.com when it was due.",
+		},
+		{
+			name: "sender suspended",
+			sql: "UPDATE auth_users SET banned = 1 WHERE id = 'alice'",
+			bind: false,
+			detail: "Not sent: whoever sent it was suspended or no longer in Magnus when it was due.",
+		},
+		{
+			name: "sender deleted",
+			sql: "DELETE FROM auth_users WHERE id = 'alice'",
+			bind: false,
+			// Membership goes with the user row, so that's the state the send reports.
+			detail: "Not sent: whoever sent it had left this mailbox when it was due.",
+		},
+	])("fails a queued send permanently once its $name", async ({ sql, bind, detail }) => {
+		await mailbox().enqueueSend(sendInput(ids.alice, { delayMs: 10_000 }));
+		const change = f.env.DIRECTORY.prepare(sql);
+		await (bind ? change.bind(ids.alice) : change).run();
+		await f.control.setNow(NOW + 10_000);
+		await mailbox().drain();
+		expect((await f.control.state()).sends).toEqual([]);
+		expect(await (await storage()).exec("SELECT delivery_status, delivery_detail FROM messages")).toEqual([{ delivery_status: "failed", delivery_detail: detail }]);
+		expect(await (await storage()).exec("SELECT * FROM outbox")).toEqual([]);
+	});
+
+	it("re-authorizes a retry too, not just the first handoff", async () => {
+		await mailbox().enqueueSend(sendInput(ids.alice));
+		await f.control.setSendErrors(["E_RATE_LIMIT_EXCEEDED"]);
+		await mailbox().drain();
+		expect((await f.control.state()).sends).toHaveLength(1);
+		await f.env.DIRECTORY.prepare("UPDATE address_routes SET can_send = 0 WHERE mailbox_id = ?1").bind(ids.alice).run();
+		await f.control.setNow(NOW + 30_000);
+		await mailbox().drain();
+		expect((await f.control.state()).sends).toHaveLength(1);
+		expect(await (await storage()).exec("SELECT delivery_status, delivery_detail FROM messages")).toEqual([
+			{ delivery_status: "failed", delivery_detail: "Not sent: this mailbox could no longer send as alice@example.com when it was due." },
+		]);
+	});
+
+	it("strips CR, LF, and NUL from header-ish fields while leaving body tabs alone", async () => {
+		const ref = { ...(await upload()), filename: "receipt\r\nname\u0000.pdf", contentType: "application/pdf\r\nX-Evil: yes" };
+		await mailbox().enqueueSend(sendInput(ids.alice, {
+			from: { address: "alice@example.com", name: "Alice\r\nBcc: evil\u0000" },
+			to: [{ address: "recipient@outside.test", name: "Recipient\r\nBcc: evil\u0000" }],
+			subject: "Hello\r\nX-Evil: yes\u0000",
+			markdown: "Hello\tworld",
+			attachments: [ref],
+		}));
+		await mailbox().drain();
+		const [sent] = (await f.control.state()).sends;
+		expect(sent).toMatchObject({
+			from: { email: "alice@example.com", name: "AliceBcc: evil" },
+			to: [{ email: "recipient@outside.test", name: "RecipientBcc: evil" }],
+			subject: "HelloX-Evil: yes",
+			attachments: [{ filename: "receiptname.pdf", type: "application/pdfX-Evil: yes" }],
+		});
+		expect(sent?.text).toContain("Hello\tworld");
+	});
+
 	it("omits reply headers when the parent's id cannot fit in one", async () => {
 		const parent = inbound(ids.alice, "parent");
 		parent.messageIdHeader = `<${"x".repeat(3000)}@outside.test>`;

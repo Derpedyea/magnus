@@ -143,6 +143,15 @@ describe("API permissions", () => {
 		expect((await request(`/mailboxes/${ids.shared}/send`, "POST", compose())).status).toBe(403);
 	});
 
+	it("sends a saved draft whose subject and names carry a tab from the mail it answers", async () => {
+		const id = crypto.randomUUID();
+		const to = [{ address: "friend@outside.test", name: "Friend\tName" }];
+		const content = { mailboxId: ids.alice, from: "alice@example.com", to, cc: [], bcc: [], subject: "Re:\tHi", text: "Hi", attachments: [] };
+		expect((await request(`/drafts/${id}`, "PUT", { revision: 0, changeId: crypto.randomUUID(), content })).status).toBe(200);
+		const sent = await request(`/mailboxes/${ids.alice}/send`, "POST", { from: content.from, to, subject: content.subject, text: "Hi", draft: { id, revision: 1 } });
+		expect(sent.status).toBe(202);
+	});
+
 	it("allows normalized own identities and independently grants a group alias to each mailbox", async () => {
 		expect((await request(`/mailboxes/${ids.alice}/send`, "POST", compose("Alice@Example.com"))).status).toBe(202);
 		expect((await request(`/mailboxes/${ids.alice}/send`, "POST", compose("family@example.com"))).status).toBe(202);
