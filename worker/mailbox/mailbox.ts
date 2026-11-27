@@ -15,6 +15,7 @@ import {
 	type IngestInput,
 	isOwnLabel,
 	isValidAddress,
+	isValidMessageId,
 	type Label,
 	type LabelChange,
 	type LabelColor,
@@ -1014,7 +1015,8 @@ export class Mailbox extends DurableObject<Env> {
 		const candidates = [...new Set([...input.inReplyTo, ...input.references.toReversed()])];
 		const own = input.imported && input.messageIdHeader ? [input.messageIdHeader] : [];
 		const lookup = (id: string) => this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM thread_refs WHERE message_id_header = ?1`, id).toArray()[0]?.thread_id;
-		// An import's lookups are bounded like the ids it registers, so thousands of References stay cheap.
+		// An import's lookups are bounded like the ids it registers, so thousands of References stay cheap. Live mail's are
+		// bounded at parsing (ingest()), and go newest first, so a reply joins its nearest known ancestor's thread.
 		const ids = input.imported ? [...namedIds(input), ...own] : candidates;
 		if (!input.imported || input.labels.includes("spam")) {
 			for (const id of ids) {
@@ -2167,7 +2169,7 @@ export class Mailbox extends DurableObject<Env> {
 			: undefined;
 
 		const headers: Record<string, string> = {};
-		if (parent?.message_id_header) {
+		if (parent?.message_id_header && isValidMessageId(parent.message_id_header)) {
 			headers["In-Reply-To"] = parent.message_id_header;
 			headers.References = buildReferences(JSON.parse(parent.refs), parent.message_id_header).join(" ");
 		}
@@ -2343,8 +2345,8 @@ export class Mailbox extends DurableObject<Env> {
 		if (!target) return false;
 
 		const { row, recipients } = target;
-		const inReplyTo: string[] = JSON.parse(row.in_reply_to);
-		const refs: string[] = JSON.parse(row.refs);
+		const inReplyTo: string[] = JSON.parse(row.in_reply_to).filter(isValidMessageId).slice(0, 1);
+		const refs: string[] = buildReferences(JSON.parse(row.refs), null);
 		const localRecipients = local.filter((r) => recipients.has(r.address));
 		const payload: OutboxPayload = {
 			from: target.from,

@@ -35,6 +35,19 @@ describe("ingest", () => {
 		expect(await (await f.env.MAIL.get(r2Keys.attachment(ids.alice, input.ingestId, `${input.ingestId}-1`)))?.text()).toBe("%PDF");
 	});
 
+	it("stores only the first In-Reply-To id, and of 100 References the root and newest 63", async () => {
+		const refs = Array.from({ length: 100 }, (_, i) => `<r${i}@outside.test>`);
+		const raw = MIME
+			.replace("In-Reply-To: <parent@outside.test>", "In-Reply-To: <first@outside.test> <second@outside.test>")
+			.replace("References: <root@outside.test> <parent@outside.test>", `References: ${refs.join(" ")}`);
+		const input = await store(raw);
+		await f.control.parse(input);
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		expect(await db.exec("SELECT in_reply_to, refs FROM messages")).toEqual([
+			{ in_reply_to: '["<first@outside.test>"]', refs: JSON.stringify([refs[0], ...refs.slice(-63)]) },
+		]);
+	});
+
 	it("replays the same job without duplicate messages or orphaned objects, and isolates fan-out copies", async () => {
 		const input = await store();
 		await f.control.parse(input);
