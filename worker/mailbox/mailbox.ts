@@ -2227,7 +2227,7 @@ export class Mailbox extends DurableObject<Env> {
 			for (const a of attachments) this.insertAttachment(id, a);
 			this.indexMessage(rowid, input.subject, input.from, [...input.to, ...input.cc, ...input.bcc], text);
 			this.touchThread(threadId, sendAt, snippet, [input.from, ...input.to, ...input.cc]);
-			released = this.recordContacts([...input.to, ...input.cc, ...input.bcc], true, now);
+			if (!input.automatic) released = this.recordContacts([...input.to, ...input.cc, ...input.bcc], true, now);
 			this.sql.exec(`INSERT INTO outbox (message_id, send_at, payload) VALUES (?1, ?2, ?3)`, id, sendAt, JSON.stringify(payload));
 			return { threadId };
 		});

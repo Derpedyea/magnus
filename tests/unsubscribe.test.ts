@@ -31,14 +31,16 @@ describe("unsubscribing from list mail", () => {
 		f.worker.fetch(`https://magnus.test/api/mailboxes/${ids.alice}/messages/${messageId}/unsubscribe`, { method: "POST", headers: { Cookie: cookie } });
 
 	it("asks the list by email from the address the mail came to, once, and offers the page when that's all there is", async () => {
-		const byMail = await deliver("<mailto:leave+t0k3n@outside.test?subject=Remove%20me>, <http://outside.test/leave>");
+		const byMail = await deliver("<mailto:leave+t0k3n@outside.test?subject=Remove%20me&body=remove%20*t0k3n*>, <http://outside.test/leave>");
 		expect((await box().getMessage(byMail))?.message.unsubscribe).toBe(true);
 		for (let i = 0; i < 2; i++) {
 			const res = await unsubscribe(byMail);
 			expect(await res.json()).toEqual({ done: "mail" });
 		}
 		const sent = await box().getMessage(`unsubscribe-${byMail}`);
-		expect(sent?.message).toMatchObject({ direction: "out", from: { address: "alice@example.com" }, to: [{ address: "leave+t0k3n@outside.test" }], subject: "Remove me" });
+		expect(sent?.message).toMatchObject({ direction: "out", from: { address: "alice@example.com" }, to: [{ address: "leave+t0k3n@outside.test" }], subject: "Remove me", text: "remove *t0k3n*" });
+		// Asking to leave isn't writing to them: the list isn't trusted or suggested as a recipient.
+		expect(await box().contacts(100)).not.toContainEqual(expect.objectContaining({ address: "leave+t0k3n@outside.test" }));
 
 		const byPage = await deliver("<https://outside.test/leave?u=1>");
 		expect(await (await unsubscribe(byPage)).json()).toEqual({ page: "https://outside.test/leave?u=1" });

@@ -34,25 +34,19 @@ export function unsubscribePlan(headers: Headers): UnsubscribePlan | null {
 
 /**
  * §4: one-click needs a valid DKIM signature whose h= covers List-Unsubscribe and List-Unsubscribe-Post, else it
- * SHOULD NOT be offered. Email Routing verified the signatures; its stamp names each passing one's domain (header.d)
- * and, when it says, the start of its b= (header.b), which picks out the signature it means among several.
+ * SHOULD NOT be offered. Email Routing verified the signatures; its stamp names each passing one by its domain
+ * (header.d) and, when it says, the start of its b= (header.b). A pass that fits more than one signature counts for
+ * none: anyone handling the mail on the way can add a signature copying another's d= and b= with an h= of its own.
  */
 function signsBoth(headers: Headers): boolean {
 	const passed = (stampedResults(headers) ?? []).filter((r) => r.method === "dkim" && r.result === "pass");
-	if (passed.length === 0) return false;
-	return headers
-		.filter((h) => h.key === "dkim-signature")
-		.map((h) => dkimTags(h.value))
-		.some((tags) => {
-			const covered = (tags.get("h") ?? "").toLowerCase().split(":");
-			if (!covered.includes("list-unsubscribe") || !covered.includes("list-unsubscribe-post")) return false;
-			const domain = tags.get("d")?.toLowerCase();
-			const signature = tags.get("b") ?? "";
-			return passed.some((r) => {
-				const b = r.props.get("header.b");
-				return r.props.get("header.d")?.toLowerCase() === domain && (b === undefined || signature.startsWith(b));
-			});
-		});
+	const signatures = headers.filter((h) => h.key === "dkim-signature").map((h) => dkimTags(h.value));
+	return passed.some((r) => {
+		const b = r.props.get("header.b");
+		const named = signatures.filter((tags) => tags.get("d")?.toLowerCase() === r.props.get("header.d")?.toLowerCase() && (b === undefined || (tags.get("b") ?? "").startsWith(b)));
+		const covered = named.length === 1 ? (named[0]?.get("h") ?? "").toLowerCase().split(":") : [];
+		return covered.includes("list-unsubscribe") && covered.includes("list-unsubscribe-post");
+	});
 }
 
 /** RFC 6376 §3.2: `tag=value` pairs split by `;`, with folding whitespace anywhere in a value. */

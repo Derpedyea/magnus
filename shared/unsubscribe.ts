@@ -31,12 +31,14 @@ export function unsubscribeOptions(value: string): UnsubscribeOptions {
 	return { https: web.find((url) => url.protocol === "https:")?.href ?? null, page: web[0]?.href ?? null, mail };
 }
 
-/** Whether a message's kept headers (MailHeader) offer a way off its list: what the app shows the button for. */
+/**
+ * Whether a message's kept headers (MailHeader) offer a way off its list: what the app shows the button for. They're
+ * cut to 500 characters, which can end a long URI before its `>`, so the start of one is enough here; unsubscribing
+ * reads the original.
+ */
 export function offersUnsubscribe(headers: MailHeader[]): boolean {
 	const value = headers.find((h) => h.name === "list-unsubscribe")?.value;
-	if (!value) return false;
-	const options = unsubscribeOptions(value);
-	return options.page !== null || options.mail !== null;
+	return value !== undefined && /<\s*(?:https?|mailto):/i.test(value);
 }
 
 /**

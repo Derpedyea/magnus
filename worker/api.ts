@@ -1,6 +1,7 @@
 import { zValidator } from "@hono/zod-validator";
 import {
 	canMatch,
+	escapeMarkdown,
 	formatBytes,
 	forwardedPart,
 	type Label,
@@ -494,13 +495,15 @@ const mb = new Hono<AppEnv>()
 				cc: [],
 				bcc: [],
 				subject: plan.mail.subject,
-				markdown: plan.mail.body,
+				// As the list wrote it, which can be a token: markdown would take `*` or `_` in it for formatting.
+				markdown: escapeMarkdown(plan.mail.body),
 				attachments: [],
 				links: [],
 				linkBase: `${new URL(c.req.url).origin}/f/${c.var.mailboxId}/`,
 				delayMs: 0,
 				localRecipients: local,
 				localOnly: local.length === recipients.length,
+				automatic: true,
 			});
 			if (!("refused" in queued)) return c.json({ done: "mail" as const });
 			if (queued.refused === "restoring") return c.json({ error: RESTORING }, 503);

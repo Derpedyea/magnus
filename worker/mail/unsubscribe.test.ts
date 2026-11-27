@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { offersUnsubscribe } from "#shared";
 import { postOneClick, unsubscribePlan } from "./unsubscribe";
 
 vi.mock("cloudflare:workers", () => ({ env: {} }));
@@ -9,11 +10,11 @@ const LIST = "<mailto:leave+t0k3n@news.test?subject=unsubscribe>, <https://news.
 const SIGNATURE = "v=1; a=rsa-sha256; d=news.test; s=s1; h=From:To:Subject:List-Unsubscribe:\tList-Unsubscribe-Post; bh=x; b=AbCd EfGh==";
 
 /** Headers as PostalMime gives them, with Email Routing's stamp on top. */
-function headers(options: { stamped?: string | null; signature?: string; list?: string[]; post?: string[] } = {}) {
-	const { stamped = "dkim=pass header.d=news.test header.b=AbCdEfGh; dmarc=pass header.from=news.test", signature = SIGNATURE, list = [LIST], post = ["List-Unsubscribe=One-Click"] } = options;
+function headers(options: { stamped?: string | null; signatures?: string[]; list?: string[]; post?: string[] } = {}) {
+	const { stamped = "dkim=pass header.d=news.test header.b=AbCdEfGh; dmarc=pass header.from=news.test", signatures = [SIGNATURE], list = [LIST], post = ["List-Unsubscribe=One-Click"] } = options;
 	return [
 		...(stamped === null ? [] : [{ key: "authentication-results", value: `mx.cloudflare.net; ${stamped}` }, { key: "x-cf-spamh-score", value: "1" }]),
-		{ key: "dkim-signature", value: signature },
+		...signatures.map((value) => ({ key: "dkim-signature", value })),
 		...list.map((value) => ({ key: "list-unsubscribe", value })),
 		...post.map((value) => ({ key: "list-unsubscribe-post", value })),
 	];
@@ -24,7 +25,11 @@ describe("unsubscribePlan", () => {
 		const mail = { to: ["leave+t0k3n@news.test"], subject: "unsubscribe", body: "Unsubscribe" };
 		expect(unsubscribePlan(headers())).toEqual({ oneClick: "https://news.test/u/opaque", mail, page: "https://news.test/u/opaque" });
 		const without = (options: Parameters<typeof headers>[0]) => unsubscribePlan(headers(options))?.oneClick;
-		expect(without({ signature: SIGNATURE.replace(":\tList-Unsubscribe-Post", "") })).toBeNull();
+		const unsigned = SIGNATURE.replace(":\tList-Unsubscribe-Post", "");
+		expect(without({ signatures: [unsigned] })).toBeNull();
+		// A signature added on top on the way, copying the passing one's d= and b= with an h= of its own.
+		expect(without({ signatures: [SIGNATURE, unsigned], stamped: "dkim=pass header.d=news.test header.b=AbCdEfGh; dkim=fail header.d=news.test header.b=AbCdEfGh" })).toBeNull();
+		expect(without({ signatures: [SIGNATURE, unsigned], stamped: "dkim=pass header.d=news.test" })).toBeNull();
 		expect(without({ stamped: "dkim=fail header.d=news.test; dmarc=fail" })).toBeNull();
 		// A signature the stamp didn't pass, beside one it did.
 		expect(without({ stamped: "dkim=pass header.d=news.test header.b=Other123" })).toBeNull();
@@ -39,6 +44,12 @@ describe("unsubscribePlan", () => {
 		expect(unsubscribePlan(headers({ stamped: null, list: ["<javascript:alert(1)>, <http://news.test/leave>"] }))).toEqual({ oneClick: null, mail: null, page: "http://news.test/leave" });
 		expect(unsubscribePlan(headers({ list: ["<ftp://news.test/x>, <mailto:not-an-address>"] }))).toBeNull();
 		expect(unsubscribePlan([])).toBeNull();
+	});
+
+	it("shows the button for a URI cut short where the stored header ends", () => {
+		const cut = `<https://news.test/u/${"x".repeat(480)}`.slice(0, 500);
+		expect(offersUnsubscribe([{ name: "list-unsubscribe", value: cut }])).toBe(true);
+		expect(offersUnsubscribe([{ name: "list-unsubscribe", value: "<ftp://news.test/x>" }])).toBe(false);
 	});
 });
 
