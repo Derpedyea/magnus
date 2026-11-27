@@ -222,7 +222,7 @@ export interface SenderCheck {
 	verified: string | null;
 	/** Verified, and one of this install's own addresses. */
 	internal: boolean;
-	/** Failed its domain's authentication, so the From address is likely forged. */
+	/** Failed authentication, or claims one of this install's own addresses without verifying. */
 	spoofed: boolean;
 }
 
@@ -261,7 +261,7 @@ export type Verdict =
 	| { kind: "trusted" }
 	/** From someone whose mail this mailbox marked as spam. */
 	| { kind: "marked" }
-	/** Failed its sender's authentication. */
+	/** Failed its sender's authentication, or unverified while claiming one of this install's own addresses. */
 	| { kind: "spoofed" }
 	/** Nothing to go on: a sender it didn't need to check when the queue asked. */
 	| { kind: "unknown" }

@@ -129,10 +129,10 @@ describe("spam verdicts", () => {
 		expect((await deliver(from, stamped)).verdict).toEqual(verified ? { kind: "trusted" } : STRANGER);
 	});
 
-	it("trusts verified mail from the install's own addresses", async () => {
+	it("trusts verified mail from the install's own addresses, and treats unverified claims to one as forged", async () => {
 		const ours = "dkim=pass header.d=example.com; dmarc=pass header.from=example.com";
 		expect((await deliver("Bob <bob+notes@example.com>", ours)).verdict).toEqual({ kind: "trusted" });
-		expect((await deliver("Bob <bob@example.com>", FORGED)).verdict).toEqual(STRANGER);
+		expect(await deliver("Bob <bob@example.com>", FORGED)).toMatchObject({ verdict: { kind: "spoofed" }, labels: ["spam"] });
 	});
 
 	it("puts mail that fails its sender's authentication in Spam, even from someone trusted", async () => {

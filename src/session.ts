@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "@/components/ui/toast-manager";
 import { newChat } from "./agent";
 import { closeDraft } from "./compose";
+import { clearDraftJournals } from "./draft-journal";
 import { forgetDevice } from "./push";
 import { configQuery } from "./queries";
 
@@ -25,6 +26,11 @@ export const currentSession = () => session;
 export function endSession(qc: QueryClient): Promise<void> {
 	session++;
 	for (const stop of sessionEnd) stop();
+	try {
+		clearDraftJournals();
+	} catch (error) {
+		console.error("Couldn't clear draft recovery journals", error);
+	}
 	// All but the install's config, which isn't the account's. Refetching it would hold up the way to the sign-in
 	// page, long enough for the app, its account gone, to flash an error.
 	qc.removeQueries({ predicate: (q) => q.queryKey[0] !== configQuery.queryKey[0] });

@@ -405,21 +405,23 @@ async function checkSender(env: Env, address: string, results: AuthResult[] | nu
 	const passed = (method: string) => results?.filter((r) => r.method === method && r.result === "pass") ?? [];
 	const failed = (method: string) => results?.some((r) => r.method === method && r.result === "fail") ?? false;
 	const spf = results?.find((r) => r.method === "spf" && r.props.has("smtp.mailfrom"));
-	const spoofed = failed("dmarc") || (spf?.result === "fail" && passed("dkim").length === 0);
+	const failedAuthentication = failed("dmarc") || (spf?.result === "fail" && passed("dkim").length === 0);
 	const from = normalizeAddress(address);
-	if (!isValidAddress(from)) return { verified: null, internal: false, spoofed };
+	if (!isValidAddress(from)) return { verified: null, internal: false, spoofed: failedAuthentication };
 	const domain = splitAddress(from).domain;
 	const vouches = (d: string | undefined) => {
 		const name = d?.toLowerCase().replace(/^.*@/, "");
 		return name !== undefined && (domain === name || domain.endsWith(`.${name}`));
 	};
 	const verified =
-		!spoofed &&
+		!failedAuthentication &&
 		(passed("dmarc").some((r) => r.props.get("header.from")?.toLowerCase() === domain) ||
 			passed("dkim").some((r) => vouches(r.props.get("header.d"))) ||
 			(spf?.result === "pass" && vouches(spf.props.get("smtp.mailfrom"))));
+	const own = await isOwnAddress(env.DIRECTORY, stripSubaddress(from).base);
+	const spoofed = failedAuthentication || (own && !verified);
 	if (!verified) return { verified: null, internal: false, spoofed };
-	return { verified: from, internal: await isOwnAddress(env.DIRECTORY, stripSubaddress(from).base), spoofed };
+	return { verified: from, internal: own, spoofed };
 }
 
 /** RFC 8601: after the authserv-id, `method=result` then `ptype.property=value` pairs per `;`, with (comments) anywhere. */
