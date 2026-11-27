@@ -554,6 +554,8 @@ const mb = new Hono<AppEnv>()
 		if (!length) return c.json({ error: "Content-Length required" }, 411);
 		const tooBig = () => c.json({ error: `Messages over ${formatBytes(MAX_IMPORT_BYTES)} can't be imported` }, 413);
 		if (length > MAX_IMPORT_BYTES) return tooBig();
+		const limited = await c.env.IMPORT_LIMIT_60_PER_60S.limit({ key: c.var.user.id });
+		if (!limited.success) return c.json({ error: "Too many imported messages at once. Wait a minute, then keep going." }, 429);
 		const raw = new Uint8Array(await c.req.arrayBuffer());
 		if (raw.byteLength > MAX_IMPORT_BYTES) return tooBig();
 		const result = await importMessage(c.env, c.var.mailboxId, raw, c.req.valid("query"));
@@ -585,7 +587,7 @@ const mb = new Hono<AppEnv>()
 
 	/** Clears a finished import from the page. */
 	.delete("/proton-import", zValidator("query", ProtonJobRefSchema), async (c) => {
-		const result = await protonImport(c).dismiss(c.req.valid("query").job);
+		const result = await protonImport(c).dismiss(c.var.user.id, c.req.valid("query").job);
 		return "error" in result ? c.json({ error: result.error }, result.status) : c.json(result);
 	})
 

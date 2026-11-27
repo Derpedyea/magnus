@@ -15,9 +15,9 @@ export async function fixture() {
 		r2_buckets: [{ binding: "MAIL", bucket_name: "test-mail" }],
 		// Production's sign-in limits (wrangler.jsonc), raised: every request here comes from one address, and counts can't be reset.
 		ratelimits: [
-			...["AUTH_LIMIT_100_PER_10S", "AUTH_LIMIT_3_PER_10S", "AUTH_LIMIT_3_PER_60S", "AUTH_LIMIT_10_PER_60S"]
+			...["AUTH_LIMIT_100_PER_10S", "AUTH_LIMIT_3_PER_10S", "AUTH_LIMIT_3_PER_60S", "AUTH_LIMIT_10_PER_60S", "IMPORT_LIMIT_60_PER_60S"]
 				.map((name, i) => ({ name, namespace_id: String(i + 1), simple: { limit: 1000, period: 60 } })),
-			{ name: "OUTBOUND_LIMIT_30_PER_60S", namespace_id: "5", simple: { limit: 30, period: 60 } },
+			{ name: "OUTBOUND_LIMIT_30_PER_60S", namespace_id: "6", simple: { limit: 30, period: 60 } },
 		],
 		durable_objects: { bindings: [{ name: "MAILBOX", class_name: "Mailbox" }, { name: "VAULT", class_name: "Vault" }, { name: "PROTON_IMPORT", class_name: "ProtonImport" }] },
 		migrations: [{ tag: "v1", new_sqlite_classes: ["Mailbox", "Vault", "ProtonImport"] }],
@@ -49,7 +49,7 @@ export async function fixture() {
 
 	async function seed() {
 		await control.reset();
-		await env.DIRECTORY.batch(["domains", "mailboxes", "auth_users", "settings", "sender_blocks", "mailbox_deletions", "held_mail", "auth_email_throttles"].map((table) => env.DIRECTORY.prepare(`DELETE FROM ${table}`)));
+		await env.DIRECTORY.batch(["proton_imports", "domains", "mailboxes", "auth_users", "settings", "sender_blocks", "mailbox_deletions", "held_mail", "auth_email_throttles"].map((table) => env.DIRECTORY.prepare(`DELETE FROM ${table}`)));
 		const files = await env.MAIL.list();
 		if (files.objects.length) await env.MAIL.delete(files.objects.map((o) => o.key));
 		const ids = { alice: `alice-${++serial}`, bob: `bob-${serial}`, shared: `shared-${serial}` };

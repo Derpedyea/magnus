@@ -32,6 +32,9 @@ const SURE_CLEAN = 0.2;
 const SURE_OUTREACH = 0.8;
 /** Bounds what a message costs to check: about a thousand tokens of body, and little of anything else. */
 const MAX_BODY = 4000;
+/** The beginning and end of a longer visible body, so filler in either place can't push all of the rest out. */
+const BODY_HEAD = 2500;
+const BODY_TAIL = MAX_BODY - BODY_HEAD;
 /** A plain-text body searched for links, at most. */
 const MAX_LINK_SCAN = 200_000;
 const MAX_FIELD = 200;
@@ -160,8 +163,6 @@ export function parsedJson(text: string): unknown {
 
 /** Elements whose content isn't shown: what a browser doesn't render as text, and what the app's sanitizer removes. */
 const UNSHOWN = new Set<string>(["head", "title", "style", "template", "canvas", "video", "audio", ...REMOVED_ELEMENTS]);
-/** Visible text collected, at most: describe() cuts the body one character shorter. */
-const MAX_COLLECTED = MAX_BODY + 1;
 /** Image-map areas among the links, at most: one isn't known to be usable, so it can't fill the list. */
 const MAX_AREAS = 5;
 /** A plain-text body is read this much at a time, until enough of it shows. */
@@ -282,7 +283,11 @@ export async function readHtml(html: string, attached: ReadonlySet<string>): Pro
 
 /** Visible text, budgeted by what shows: whitespace collapsed, invisible formatting characters dropped. */
 class Collector {
+	// Kept whole until the budget is past; past it, only the ends are. Memory stays bounded either way.
 	private out = "";
+	private head = "";
+	private tail = "";
+	private length = 0;
 	private gap = false;
 
 	/** A boundary between elements: what comes next is a new word. */
@@ -296,20 +301,18 @@ class Collector {
 		const core = t.trim();
 		if (t.startsWith(" ")) this.gap = true;
 		if (!core) return false;
-		if (this.out.length < MAX_COLLECTED) {
-			if (this.gap && this.out) this.out += " ";
-			this.out += core.slice(0, MAX_COLLECTED - this.out.length);
-		}
+		const piece = `${this.gap && this.length > 0 ? " " : ""}${core}`;
+		this.length += piece.length;
+		if (this.out.length <= MAX_BODY) this.out = (this.out + piece).slice(0, MAX_BODY + 1);
+		if (this.head.length < BODY_HEAD) this.head = (this.head + piece).slice(0, BODY_HEAD);
+		this.tail = (this.tail + piece).slice(-BODY_TAIL);
 		this.gap = t.endsWith(" ");
 		return true;
 	}
 
-	full(): boolean {
-		return this.out.length >= MAX_COLLECTED;
-	}
-
+	/** The whole text when it fits; otherwise its first and last parts joined by an ellipsis. */
 	value(): string {
-		return this.out;
+		return this.length <= MAX_BODY ? this.out : `${this.head}…${this.tail}`;
 	}
 }
 
@@ -322,7 +325,7 @@ export function readText(text: string): Page {
 		if (links.size >= MAX_LINKS) break;
 	}
 	const shown = new Collector();
-	for (let at = 0; at < text.length && !shown.full(); at += TEXT_SLICE) shown.add(text.slice(at, at + TEXT_SLICE), false);
+	for (let at = 0; at < text.length; at += TEXT_SLICE) shown.add(text.slice(at, at + TEXT_SLICE), false);
 	return { text: shown.value(), links: [...links] };
 }
 
@@ -404,6 +407,7 @@ export function describe(facts: MailFacts) {
 		// Where links go, since phishing hides them behind text.
 		linkDomains: facts.page.links,
 		attachments: facts.attachments.slice(0, MAX_FILES).map((a) => ({ filename: cut(a.filename), contentType: cut(a.contentType) })),
-		body: cut(body, MAX_BODY),
+		// readHtml()/readText() already bound this to MAX_BODY plus the ellipsis, head and tail together.
+		body,
 	};
 }

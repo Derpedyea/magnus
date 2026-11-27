@@ -243,8 +243,10 @@ export interface RunOptions {
 	concurrency?: number;
 }
 
-/** Waits between tries of one message: the network or the server failing, or too many at once. */
+/** Waits between tries of one message: the network or the server failing. */
 export const RETRY_DELAYS = [1000, 4000, 15_000];
+/** Waits between tries when the import rate limit answers 429, then a minute apart until the person stops it or it goes through. */
+const THROTTLE_DELAYS = [5000, 15_000, 30_000, 60_000];
 /** Messages sent at once. More doesn't go faster: the browser allows about six requests to a host. */
 const CONCURRENCY = 4;
 
@@ -272,7 +274,7 @@ export async function runImport(items: ImportItem[], options: RunOptions): Promi
 	};
 
 	const sendOnce = async (item: ImportItem): Promise<void> => {
-		for (let attempt = 0; ; attempt++) {
+		for (let attempt = 0, throttled = 0; ;) {
 			try {
 				await options.upload(item, signal);
 				progress.done++;
@@ -281,17 +283,23 @@ export async function runImport(items: ImportItem[], options: RunOptions): Promi
 			} catch (error) {
 				if (signal.aborted) return;
 				const status = error instanceof ApiError ? error.status : null;
+				if (status === 429) {
+					await options.sleep(THROTTLE_DELAYS[Math.min(throttled++, THROTTLE_DELAYS.length - 1)]!, signal);
+					if (signal.aborted) return;
+					continue;
+				}
 				if (status === 401 || status === 403 || status === 404) {
 					fatal = status === 401 ? "You were signed out. Sign in and import the same export again to finish." : "You can't import into this mailbox anymore.";
 					halt.abort();
 					return;
 				}
-				const transient = status === null || status === 408 || status === 429 || status >= 500;
+				const transient = status === null || status === 408 || status >= 500;
 				const delay = RETRY_DELAYS[attempt];
 				if (!transient || delay === undefined) {
 					progress.failed.push({ item, error: error instanceof Error ? error.message : String(error) });
 					return;
 				}
+				attempt++;
 				await options.sleep(delay, signal);
 				if (signal.aborted) return;
 			}

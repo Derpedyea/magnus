@@ -86,7 +86,7 @@ describe("import", () => {
 		const { id, job: queued } = await importNow(eml({ auth: "spf=fail; dkim=fail; dmarc=fail" }));
 		expect(queued).toMatchObject({
 			rawKey: r2Keys.imported(ids.alice, id), mailboxId: ids.alice, envelopeFrom: "sender@outside.test", envelopeTo: "alice@example.com",
-			subaddress: null, receivedAt: RECEIVED, imported: { labels: ["inbox", "work"], read: true, sent: false },
+			subaddress: null, receivedAt: RECEIVED, imported: { source: "upload", labels: ["inbox", "work"], read: true, sent: false },
 		});
 		expect(await f.env.MAIL.head(queued.rawKey)).toMatchObject({ customMetadata: { mailboxes: ids.alice } });
 
@@ -104,6 +104,12 @@ describe("import", () => {
 		expect(queued).toMatchObject({ envelopeTo: "alice@example.com", imported: { labels: ["sent"], sent: true } });
 		expect((await alice().getMessage(id))?.message).toMatchObject({ direction: "out", labels: ["sent"] });
 		expect(await alice().contacts(10)).toEqual([expect.objectContaining({ address: "pal@outside.test", sent: 1 })]);
+	});
+
+	it("marks uploaded sent mail as imported", async () => {
+		const { id, job: queued } = await importNow(eml({ from: "Alice <alice@example.com>", to: "Pal <pal@outside.test>" }), "read=1");
+		expect(queued.imported).toMatchObject({ source: "upload", sent: true });
+		expect((await alice().getMessage(id))?.message).toMatchObject({ imported: true, importSource: "upload" });
 	});
 
 	it("keeps who sent mail was Bcc'd to, and learns them as people written to", async () => {

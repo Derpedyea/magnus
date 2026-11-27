@@ -73,7 +73,11 @@ export interface InboundJob {
 	imported?: Imported;
 }
 
+export type ImportSource = "upload" | "proton";
+
 export interface Imported {
+	/** Where the bytes came from. Jobs queued before provenance was kept have none. */
+	source?: ImportSource;
 	labels: string[];
 	/** Its own labels' folders and labels there, by path (ImportPlacement.paths). Jobs queued before these came have none. */
 	paths?: string[];
@@ -355,6 +359,10 @@ export interface MessageDetail {
 	verdict: Verdict | null;
 	/** Its sender's domain vouched for the From address, so judging this message judges them (Mailbox.judgeMessage()). */
 	senderVerified: boolean;
+	/** Whether it was imported rather than received or sent here. Imports before provenance was kept are known by their original's key. */
+	imported?: boolean;
+	/** Where an import came from, when it was imported after provenance was kept. */
+	importSource?: ImportSource | null;
 	/** The rules that filed it, in the order they ran. */
 	rules: RuleHit[];
 	/** Received mail whose List-Unsubscribe header offers a way off its list (shared/unsubscribe.ts). */

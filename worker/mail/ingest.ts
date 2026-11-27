@@ -190,7 +190,7 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		sender,
 		check,
 		labels: imported ? [...imported.labels] : job.subaddress ? [labelFromTag(job.subaddress)] : [],
-		imported: imported ? { paths: imported.paths, read: imported.read, sent: imported.sent, addresses: imported.addresses } : undefined,
+		imported: imported ? { source: imported.source, paths: imported.paths, read: imported.read, sent: imported.sent, addresses: imported.addresses } : undefined,
 		headers,
 		ruleAnswers,
 	};

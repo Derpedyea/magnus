@@ -183,6 +183,7 @@ interface MessageRow extends Row {
 	delivery_status: DeliveryStatus | null;
 	delivery_detail: string | null;
 	headers_json: string | null;
+	imported_source: "upload" | "proton" | null;
 	labels: string;
 }
 
@@ -818,8 +819,8 @@ export class Mailbox extends DurableObject<Env> {
 				.exec<{ rowid: number }>(
 					`INSERT INTO messages (id, thread_id, direction, message_id_header, in_reply_to, refs,
 						envelope_from, envelope_to, from_json, to_json, cc_json, reply_to_json, subject, snippet,
-						date, received_at, text_body, html_key, raw_key, is_read, auth_json, verdict_json, sender, bcc_json, headers_json, body_digest)
-					 VALUES (?1, ?2, ?22, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?23, ?19, ?20, ?21, ?24, ?25, ?26)
+						date, received_at, text_body, html_key, raw_key, is_read, auth_json, verdict_json, sender, bcc_json, headers_json, body_digest, imported_source)
+					 VALUES (?1, ?2, ?22, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?23, ?19, ?20, ?21, ?24, ?25, ?26, ?27)
 					 RETURNING rowid`,
 					input.id,
 					threadId,
@@ -847,6 +848,7 @@ export class Mailbox extends DurableObject<Env> {
 					JSON.stringify(input.bcc ?? []),
 					JSON.stringify(input.headers),
 					input.bodyDigest,
+					input.imported?.source ?? null,
 				)
 				.one();
 
@@ -1161,6 +1163,8 @@ export class Mailbox extends DurableObject<Env> {
 	 * trusts their mail, even if it was marked as spam before, and lets them in from the Screener; returns the threads
 	 * that moved. An undone send still counts: the address was typed on purpose. Sent mail imported from elsewhere
 	 * (`imported`) does so only for people not judged here yet: it's older than whatever this mailbox has said of them.
+	 * A member could trust anyone just as well by writing to them, so an import isn't a way around anything; it's marked
+	 * as imported where it's shown.
 	 */
 	private recordContacts(people: Address[], sent: boolean, at: number, imported = false): string[] {
 		const valid = people.filter((p) => isValidAddress(p.address));
@@ -2902,6 +2906,8 @@ function toMessageDetail(m: MessageRow, attachments: AttachmentRow[], undelivere
 		auth: m.auth_json ? JSON.parse(m.auth_json) : null,
 		verdict: m.verdict_json ? JSON.parse(m.verdict_json) : null,
 		senderVerified: m.sender !== null,
+		imported: m.imported_source !== null || (m.raw_key?.endsWith("/original.eml") ?? false),
+		importSource: m.imported_source,
 		rules,
 		// Mail from before headers were kept has none to offer.
 		unsubscribe: m.direction === "in" && m.headers_json !== null && m.headers_json.includes('"list-unsubscribe"') && offersUnsubscribe(JSON.parse(m.headers_json)),

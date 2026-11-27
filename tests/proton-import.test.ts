@@ -102,8 +102,8 @@ describe("importing from Proton on the server", () => {
 		const jobs = (await f.control.state()).jobs;
 		expect(jobs.map((j) => j.imported)).toEqual(
 			expect.arrayContaining([
-				{ labels: ["inbox", "work-clients"], paths: ["Work/Clients"], read: false, sent: false, addresses: ["alice@example.com"] },
-				{ labels: ["sent"], read: true, sent: true, addresses: ["alice@example.com"] },
+				{ source: "proton", labels: ["inbox", "work-clients"], paths: ["Work/Clients"], read: false, sent: false, addresses: ["alice@example.com"] },
+				{ source: "proton", labels: ["sent"], read: true, sent: true, addresses: ["alice@example.com"] },
 			]),
 		);
 		expect(jobs).toHaveLength(2);
@@ -126,6 +126,16 @@ describe("importing from Proton on the server", () => {
 		expect(await status()).toBeNull();
 	});
 
+	it("runs one import per person across mailboxes, releasing the slot when its container goes", async () => {
+		await exporting(ids.alice);
+		expect((await start(ids.shared)).status).toBe(409);
+
+		expect((await cancel()).status).toBe(200);
+		await drain(ids.alice);
+		await drain(ids.alice);
+		expect((await start(ids.shared)).status).toBe(202);
+	});
+
 	it("runs one import per mailbox, and refuses a sixth sign-in in an hour", async () => {
 		await exporting();
 		expect((await start()).status).toBe(409);
@@ -146,6 +156,38 @@ describe("importing from Proton on the server", () => {
 		expect(refused.status).toBe(429);
 		await f.control.setNow(NOW + 3_600_001);
 		expect((await start()).status).toBe(202);
+	});
+
+	it("lets only the starter clear a finished import, even in a shared mailbox", async () => {
+		const bob = await f.login("bob");
+		expect((await start(ids.shared)).status).toBe(202);
+		expect((await cancel(ids.shared)).status).toBe(200);
+		await drain(ids.shared);
+		await drain(ids.shared);
+		expect(await status(ids.shared)).toMatchObject({ phase: "cancelled" });
+
+		expect((await clear(ids.shared, bob)).status).toBe(403);
+		expect(await status(ids.shared, bob)).toMatchObject({ phase: "cancelled" });
+		expect((await clear(ids.shared)).status).toBe(200);
+		expect(await status(ids.shared)).toBeNull();
+	});
+
+	it("leaves nothing claimed when reserving the person's import slot fails", async () => {
+		await f.control.failNext("directory", "INSERT INTO proton_imports");
+		expect((await start()).status).toBe(500);
+		expect(await status()).toBeNull();
+		expect((await start()).status).toBe(202);
+	});
+
+	it("lets another member start over someone else's finished import without clearing it", async () => {
+		const bob = await f.login("bob");
+		expect((await start(ids.shared)).status).toBe(202);
+		expect((await cancel(ids.shared)).status).toBe(200);
+		await drain(ids.shared);
+		await drain(ids.shared);
+		expect(await status(ids.shared, bob)).toMatchObject({ phase: "cancelled", mine: false });
+		expect((await start(ids.shared, bob)).status).toBe(202);
+		expect(await status(ids.shared, bob)).toMatchObject({ mine: true });
 	});
 
 	it("asks only the starter Proton's questions, and refuses stale answers", async () => {

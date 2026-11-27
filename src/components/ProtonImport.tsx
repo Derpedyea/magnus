@@ -51,9 +51,10 @@ export function ProtonImport(props: { mailboxes: Me["mailboxes"] }) {
 	}
 	// One import per mailbox, each shown, so none can hide another's question; the rest can start one.
 	const named = props.mailboxes.length > 1;
+	// Someone else's finished import is theirs to clear, so it doesn't hold the mailbox: anyone else can start a new one.
 	const jobs = props.mailboxes.flatMap((mailbox, i) => {
 		const job = results[i]?.data?.job;
-		return job ? [{ mailbox, job }] : [];
+		return job && (job.mine || isLive(job)) ? [{ mailbox, job }] : [];
 	});
 	const free = props.mailboxes.filter((m) => !jobs.some((j) => j.mailbox.id === m.id));
 	return (
