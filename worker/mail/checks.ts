@@ -172,8 +172,6 @@ const TEXT_SLICE = 65_536;
 interface Inherited {
 	invisible: boolean;
 	tiny: boolean;
-	/** Text colored transparent, which a descendant can color again. */
-	clear: boolean;
 	/** Inside a closed <details>, where only its <summary> shows. */
 	folded: boolean;
 	/** Set on a closed <details>: whether what's around it was folded, which its first <summary> takes. */
@@ -192,15 +190,14 @@ interface Inherited {
  * past the checks into the inbox, where all of it went before there were checks.
  */
 export async function readHtml(html: string, attached: ReadonlySet<string>): Promise<Page> {
-	const byClass = classRules(html);
 	// Depth inside subtrees nothing in can show: display: none, `hidden`, opacity 0, elements the sanitizer removes.
 	// onEndTag fires on implicit closes too, so an unclosed one ends where the browser ends it.
 	let closed = 0;
 	// visibility and font-size, which descendants inherit but can set again.
-	const inherited: Inherited[] = [{ invisible: false, tiny: false, clear: false, folded: false }];
+	const inherited: Inherited[] = [{ invisible: false, tiny: false, folded: false }];
 	const shown = () => {
 		const top = inherited.at(-1);
-		return closed === 0 && !top?.invisible && !top?.tiny && !top?.clear && !top?.folded;
+		return closed === 0 && !top?.invisible && !top?.tiny && !top?.folded;
 	};
 	let areas = 0;
 	const text = new Collector();
@@ -214,9 +211,8 @@ export async function readHtml(html: string, attached: ReadonlySet<string>): Pro
 		.on("*", {
 			element(el) {
 				const tag = el.tagName;
-				const d = styleOf(byClass, el.getAttribute("class"), el.getAttribute("style"));
-				const parent = inherited.at(-1) ?? { invisible: false, tiny: false, clear: false, folded: false };
-				const color = d.get("color");
+				const d = declarations(el.getAttribute("style"));
+				const parent = inherited.at(-1) ?? { invisible: false, tiny: false, folded: false };
 				const visibility = d.get("visibility");
 				const size = d.get("font-size");
 				// A closed <details> shows its first <summary>, and only that.
@@ -226,17 +222,17 @@ export async function readHtml(html: string, attached: ReadonlySet<string>): Pro
 					invisible: visibility === undefined ? parent.invisible : visibility === "hidden" || visibility === "collapse",
 					// A relative size of nothing is still nothing.
 					tiny: size === undefined ? parent.tiny : isZero(size) || (parent.tiny && /(?:em|ex|ch|%)$/.test(size)),
-					clear: color === undefined || color === "inherit" ? parent.clear : color === "transparent",
 					folded: summary && parent.outer !== undefined ? parent.outer : parent.folded || (tag === "details" && !el.hasAttribute("open")),
 					...(tag === "details" && !el.hasAttribute("open") ? { outer: parent.folded } : {}),
 				};
 				const display = d.get("display");
 				const closes =
 					UNSHOWN.has(tag) ||
-					hidesElement(d) ||
+					display === "none" ||
+					isZero(d.get("opacity")) ||
 					(el.hasAttribute("hidden") && (display === undefined || display === "none")) ||
 					(tag === "dialog" && !el.hasAttribute("open"));
-				const visible = closed === 0 && !closes && !own.invisible && !own.tiny && !own.clear && !own.folded;
+				const visible = closed === 0 && !closes && !own.invisible && !own.tiny && !own.folded;
 				// Any anchor not removed: what's in it can show even if it can't (visibility set again), and its host counts then.
 				const href = closed === 0 && !closes && tag === "a" ? el.getAttribute("href") : null;
 				const host = href === null ? null : linkHost(decodeEntities(href));
@@ -343,115 +339,6 @@ function linkHost(href: string): string | null {
 	} catch {
 		return null;
 	}
-}
-
-/** One simple class rule's declarations, numbered in stylesheet order. */
-interface ClassRule {
-	order: number;
-	d: ReadonlyMap<string, string>;
-}
-
-/**
- * The rules simple stylesheets (`.x { … }` only; anything harder is beyond this reading) give each class. Only sheets
- * every screen applies count: none with a media attribute other than all or screen, and nothing inside an @-rule.
- */
-function classRules(html: string): ReadonlyMap<string, readonly ClassRule[]> {
-	const rules = new Map<string, ClassRule[]>();
-	let order = 0;
-	const lower = html.toLowerCase();
-	const open = /<style\b([^>]*)>/gi;
-	for (let match = open.exec(html); match; match = open.exec(html)) {
-		const start = match.index + match[0].length;
-		const close = lower.indexOf("</style", start);
-		const media = /\bmedia\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(match[1] ?? "");
-		const applies = !media || /^\s*(?:all|screen)?\s*$/i.test(media[1] ?? media[2] ?? media[3] ?? "");
-		const css = applies ? withoutAtRules(html.slice(start, close < 0 ? html.length : close).replaceAll(/\/\*[\s\S]*?(?:\*\/|$)/g, "")) : "";
-		for (const rule of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
-			const d = declarations(rule[2] ?? "");
-			const at = order++;
-			for (const selector of (rule[1] ?? "").split(",")) {
-				const simple = /^\.(-?[_a-zA-Z][_a-zA-Z0-9-]*)$/.exec(selector.trim())?.[1];
-				if (!simple) continue;
-				rules.set(simple, [...(rules.get(simple) ?? []), { order: at, d }]);
-			}
-		}
-		if (close < 0) break;
-		open.lastIndex = close + 8;
-	}
-	return rules;
-}
-
-/** CSS with every @-rule's block (@media, @supports, …) cut out, nested blocks and all. */
-function withoutAtRules(css: string): string {
-	let out = "";
-	for (let i = 0; i < css.length; ) {
-		const at = css.indexOf("@", i);
-		if (at < 0) return out + css.slice(i);
-		out += css.slice(i, at);
-		const brace = css.indexOf("{", at);
-		const semi = css.indexOf(";", at);
-		// A statement like @import ends at its semicolon; a block rule at its matching brace.
-		if (brace < 0 || (semi >= 0 && semi < brace)) {
-			i = semi < 0 ? css.length : semi + 1;
-			continue;
-		}
-		let depth = 0;
-		let j = brace;
-		for (; j < css.length; j++) {
-			if (css[j] === "{") depth++;
-			else if (css[j] === "}" && --depth === 0) break;
-		}
-		i = j + 1;
-	}
-	return out;
-}
-
-/** An element's declarations: its classes' rules in stylesheet order, then its own style attribute, which overrides them. */
-function styleOf(byClass: ReadonlyMap<string, readonly ClassRule[]>, classes: string | null, style: string | null): Map<string, string> {
-	const own = declarations(style);
-	if (byClass.size === 0 || !classes) return own;
-	const matched = [...new Set(classes.split(/\s+/))].flatMap((name) => byClass.get(name) ?? []).sort((a, b) => a.order - b.order);
-	const d = new Map<string, string>();
-	for (const rule of matched) for (const [k, v] of rule.d) d.set(k, v);
-	for (const [k, v] of own) d.set(k, v);
-	return d;
-}
-
-/** What hides a whole subtree without a descendant being able to show again, as far as inline/simple CSS says. */
-function hidesElement(d: Map<string, string>): boolean {
-	if (d.get("display") === "none" || isZero(d.get("opacity"))) return true;
-	if ((d.get("position") === "absolute" || d.get("position") === "fixed") && ["left", "right", "top", "bottom"].some((side) => largeNegativeOffset(d.get(side)))) return true;
-	if (zeroClip(d.get("clip")) || zeroClipPath(d.get("clip-path"))) return true;
-	const transform = d.get("transform") ?? "";
-	for (const scale of transform.matchAll(/scale(?:x|y|3d)?\(([^)]*)\)/g)) {
-		if ((scale[1] ?? "").split(/[\s,]+/).some((n) => isZero(n))) return true;
-	}
-	const overflowY = d.get("overflow-y") ?? d.get("overflow");
-	return (isZero(d.get("height")) || isZero(d.get("max-height"))) && (overflowY === "hidden" || overflowY === "clip");
-}
-
-/** A positioned box pushed well out of view: about a hundred CSS pixels, half its own size, or half the viewport. */
-function largeNegativeOffset(value: string | undefined): boolean {
-	const match = /^-(\d+(?:\.\d+)?)(px|pt|em|rem|vh|vw|%)?$/.exec((value ?? "").replaceAll(/\s+/g, ""));
-	if (!match) return false;
-	const n = Number(match[1]);
-	const unit = match[2] ?? "px";
-	if (unit === "%" || unit === "vh" || unit === "vw") return n >= 50;
-	if (unit === "em" || unit === "rem") return n >= 6;
-	if (unit === "pt") return n >= 75;
-	return n >= 100;
-}
-
-function zeroClip(value: string | undefined): boolean {
-	const body = /^rect\(([^)]*)\)$/.exec(value ?? "")?.[1];
-	if (!body) return false;
-	const sides = body.split(/[\s,]+/).filter(Boolean);
-	return sides.length === 4 && sides.every((side) => isZero(side));
-}
-
-function zeroClipPath(value: string | undefined): boolean {
-	const v = value ?? "";
-	return /^inset\(\s*(?:100%|50%)\s*\)$/.test(v) || /^circle\(\s*0(?:[a-z%]+)?\s*\)$/.test(v) || /^ellipse\(\s*0(?:[a-z%]+)?\s+0(?:[a-z%]+)?\s*\)$/.test(v);
 }
 
 /**
