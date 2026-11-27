@@ -20,6 +20,7 @@ const PRICES: Record<string, { input: number; output?: number; cached?: number }
 	"@cf/openai/gpt-oss-120b": { input: 0.35, output: 0.75 },
 	"@cf/thinkingmachines/inkling-2-small": { input: 0.3, output: 1, cached: 0.1 },
 	"@cf/qwen/qwen3.8-27b": { input: 0.45, output: 3.2, cached: 0.05 },
+	"@cf/zai-org/glm-5.3": { input: 1.4, output: 4.4, cached: 0.26 },
 	"@cf/meta/llama-4-scout-17b-16e-instruct": { input: 0.27, output: 0.85 },
 	"@cf/mistralai/mistral-small-3.1-24b-instruct": { input: 0.351, output: 0.555 },
 };

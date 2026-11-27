@@ -1,4 +1,4 @@
-import type { Address, AgentReply, Label, ListPage, PendingAction, Rule, RuleInput, ThreadSummary } from "#shared";
+import type { Address, AgentMessage, AgentReply, Label, ListPage, PendingAction, Rule, RuleInput, ThreadSummary } from "#shared";
 import { matchConditions } from "#shared/rules";
 import type { Agent } from "../../worker/agent";
 import type { Models } from "../../worker/mail/checks";
@@ -232,13 +232,15 @@ class FakeMailbox {
 		return this.ruleList.length < before;
 	}
 
-	/** As Mailbox.previewRule() scans: inbound mail outside Trash and Spam, matched by matchConditions(). */
+	/** Whether a rule's conditions (its AI condition aside) meet a thread's newest message, by matchConditions(). */
+	files(rule: Pick<RuleInput, "match" | "conditions">, t: FakeThread): boolean {
+		const m = t.messages.at(-1)!;
+		return matchConditions(rule, { from: m.from, to: [{ address: ME }], cc: [], envelopeTo: ME, subject: t.subject, text: m.text, headers: [], attachments: [], sender: { verified: m.from.address } });
+	}
+
+	/** As Mailbox.previewRule() scans: inbound mail outside Trash and Spam. */
 	async previewRule(input: Pick<RuleInput, "match" | "conditions" | "ai">, limit = 50) {
-		const hits = this.threads.filter((t) => {
-			if (t.labels.includes("trash") || t.labels.includes("spam")) return false;
-			const m = t.messages.at(-1)!;
-			return matchConditions(input, { from: m.from, to: [{ address: ME }], cc: [], envelopeTo: ME, subject: t.subject, text: m.text, headers: [], attachments: [], sender: { verified: m.from.address } });
-		});
+		const hits = this.threads.filter((t) => !t.labels.includes("trash") && !t.labels.includes("spam") && this.files(input, t));
 		return { threads: hits.slice(0, limit).map((t) => this.summary(t)), matched: hits.length, scanned: this.threads.length, aiNotChecked: input.ai !== null };
 	}
 
@@ -248,6 +250,9 @@ class FakeMailbox {
 		return { applied: (await this.previewRule(rule)).matched };
 	}
 }
+
+/** Approvals a task can take, at most. */
+const MAX_APPROVALS = 3;
 
 interface Task {
 	id: string;
@@ -316,10 +321,12 @@ export const TASKS: Task[] = [
 		check: (box) => {
 			const rule = box.ruleList.find((r) => r.createdBy === "agent");
 			if (!rule) return "no rule created";
-			const figma = rule.conditions.some((c) => "op" in c && c.field === "from" && /figma/i.test(c.value ?? ""));
+			// What it files, by production's matcher: Figma's invoice, and nothing else here.
+			const filed = box.threads.filter((t) => box.files(rule, t)).map((t) => t.id);
 			const label = rule.actions.some((a) => a.do === "label" && a.label === "receipts");
 			const skip = rule.actions.some((a) => a.do === "skip-inbox");
-			return figma && label && skip ? null : `rule is off: ${JSON.stringify({ conditions: rule.conditions, actions: rule.actions })}`;
+			const right = rule.enabled && filed.length === 1 && filed[0] === "t-figma" && label && skip;
+			return right ? null : `rule is off: files ${filed.join(",") || "nothing"}; ${JSON.stringify({ enabled: rule.enabled, conditions: rule.conditions, actions: rule.actions })}`;
 		},
 	},
 	{
@@ -395,8 +402,20 @@ export async function runTask(
 			return label;
 		},
 	} as unknown as Agent;
-	const request = { messages: [{ role: "user", content: task.ask }], context: task.context ? { mailboxId: MAILBOX, threadId: task.context } : null } as never;
-	const reply = await converse(agent, request);
-	if (reply.pending && task.approve !== false) await approveAction(agent, reply.pending);
-	return { problem: task.check(box, reply), reply };
+	const context = task.context ? { mailboxId: MAILBOX, threadId: task.context } : null;
+	// As the panel does (src/agent.ts approve()): the approval's result joins the conversation, and the agent goes on.
+	const history: AgentMessage[] = [{ role: "user", content: task.ask }];
+	const said: AgentMessage[] = [];
+	let reply = await converse(agent, { messages: history, context } as never);
+	for (let approvals = 0; ; approvals++) {
+		history.push(...reply.messages);
+		said.push(...reply.messages);
+		if (!reply.pending || task.approve === false || approvals === MAX_APPROVALS) break;
+		const approved = (await approveAction(agent, reply.pending)) as AgentMessage;
+		history.push(approved);
+		said.push(approved);
+		reply = await converse(agent, { messages: history, context } as never);
+	}
+	const all: AgentReply = { messages: said, pending: reply.pending };
+	return { problem: task.check(box, all), reply: all };
 }

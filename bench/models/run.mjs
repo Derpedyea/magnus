@@ -55,7 +55,7 @@ async function run(role, models, concurrency) {
 							: await bench.agent(b, model, concurrency, Number(values.repeat));
 			// What the models said stays out of the file: it's the mail, and big. Usage and timing stay.
 			const kept = verdicts.map((v) => ({ ...v, calls: v.calls.map(({ raw, ...c }) => (role === "quick" ? { ...c, probabilities: raw?.answers?.category?.probabilities } : c)) }));
-			writeFileSync(join(out, `${role}--${model.replaceAll("/", "_")}.json`), JSON.stringify({ role, model, at: new Date().toISOString(), verdicts: kept }, null, 1));
+			writeFileSync(join(out, `${role}--${model.replaceAll("/", "_")}.json`), JSON.stringify({ role, model, mail: values.mail ?? "mail.json", at: new Date().toISOString(), verdicts: kept }, null, 1));
 			console.log(`${role} ${model}: ${Math.round((performance.now() - t0) / 1000)} s`, JSON.stringify(score(role, verdicts)));
 		}
 	} finally {
@@ -90,6 +90,12 @@ function report() {
 		for (const q of quick)
 			for (const d of deep) {
 				const byId = new Map(d.verdicts.map((v) => [v.id, v]));
+				// Only runs on the same mail pair up: the deep run has to have read every message the quick one deferred.
+				const missing = q.verdicts.filter((v) => !v.alone && v.got && !byId.has(v.id)).length;
+				if (missing > 0) {
+					console.log(`| ${q.model} | ${d.model} | not paired: the deep run lacks ${missing} of the messages the quick run deferred (another --mail?) | | | | | |`);
+					continue;
+				}
 				const merged = q.verdicts.map((v) => {
 					// Decided by the quick model, or failed there: production doesn't ask the deep model then (checkMail()).
 					if (v.alone || !v.got) return v;

@@ -40,9 +40,9 @@ import type { Mailbox } from "./mailbox/mailbox";
 // back as a PendingAction for the person to approve (approveAction()). The app keeps the conversation.
 
 /**
- * Answers in the side panel. Billed as Workers AI. On bench/models' 12 tasks, six times each, it did 68 of 72, at
- * about 20 s and $0.55-0.73 a thousand questions. Of the other Workers AI models GLM 5.3 did 34 of 36 (17 s, priced
- * about four times higher per token), gpt-oss-120b 30 and Inkling 2 Small 23, and Gemma 4 refuses the tools' schemas.
+ * Answers in the side panel. Billed as Workers AI; the spam check's deep model too. On bench/models' 12 tasks, three
+ * times each, it did 33 of 36 at about 15 s and $0.64 a thousand questions, reading most of each step from its cache.
+ * GLM 5.3 did 35 for $5.14, gpt-oss-120b 29 and Inkling 2 Small 23, and Gemma 4 refuses the tools' schemas.
  */
 export const AGENT_MODEL = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
 /** Model calls per question, at most, tools in between. */
