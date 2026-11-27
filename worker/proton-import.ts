@@ -186,7 +186,7 @@ export class ProtonImport extends DurableObject<Env> {
 		const recent = this.ctx.storage.sql.exec<{ n: number }>(`SELECT count(*) AS n FROM starts`).one().n;
 		if (recent >= STARTS_PER_HOUR) return { error: `That's ${STARTS_PER_HOUR} tries this hour. Wait a while, then try again.`, status: 429 };
 
-		// Claimed before anything that waits, so a second start (another tab) finds it taken.
+		// Claimed before anything that waits, so a second start in this mailbox (another tab) finds it taken.
 		const id = crypto.randomUUID();
 		this.ctx.storage.transactionSync(() => {
 			this.#sql(`DELETE FROM job`);
@@ -199,8 +199,17 @@ export class ProtonImport extends DurableObject<Env> {
 				input.userId,
 				now,
 			);
-			this.#sql(`INSERT INTO starts (at) VALUES (?1)`, now);
 		});
+		// Containers are account-wide capacity, while this object is only one mailbox: D1 reserves one running import per person.
+		if (!(await this.#reserve(input.userId, input.mailboxId, id, now))) {
+			this.ctx.storage.transactionSync(() => {
+				this.#sql(`DELETE FROM job`);
+				this.#sql(`DELETE FROM outcomes`);
+				this.#sql(`DELETE FROM labels`);
+			});
+			return { error: "You already have a Proton import running. Wait for it or stop it first.", status: 409 };
+		}
+		this.#sql(`INSERT INTO starts (at) VALUES (?1)`, now);
 		await this.ctx.storage.setAlarm(now + POLL_MS);
 
 		try {
@@ -365,6 +374,7 @@ export class ProtonImport extends DurableObject<Env> {
 			await exporter.destroy();
 		}
 		this.#sql(`UPDATE job SET container = 0 WHERE id = ?1`, job.id);
+		await this.env.DIRECTORY.prepare(`DELETE FROM proton_imports WHERE user_id = ?1 AND job_id = ?2`).bind(job.user_id, job.id).run();
 	}
 
 	/** Files what's exported, a batch at a time. True when it filed anything. */
@@ -521,6 +531,25 @@ export class ProtonImport extends DurableObject<Env> {
 			Date.now(),
 			stoppedAt,
 		);
+	}
+
+	/** Reserves this person's one container slot. False when another mailbox still uses it; stale rows are reconciled. */
+	async #reserve(userId: string, mailboxId: string, jobId: string, now: number): Promise<boolean> {
+		const insert = () =>
+			this.env.DIRECTORY.prepare(`INSERT INTO proton_imports (user_id, mailbox_id, job_id, started_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT DO NOTHING`)
+				.bind(userId, mailboxId, jobId, now)
+				.run();
+		if ((await insert()).meta.changes === 1) return true;
+		const existing = await this.env.DIRECTORY.prepare(`SELECT mailbox_id, job_id FROM proton_imports WHERE user_id = ?1`).bind(userId).first<{ mailbox_id: string; job_id: string }>();
+		if (!existing) return false;
+		// Same object: being here means it had no running job when start() checked, so its row is stale without a recursive RPC.
+		let busy = false;
+		if (existing.mailbox_id !== mailboxId) {
+			busy = await this.env.PROTON_IMPORT.getByName(existing.mailbox_id).busy().catch(() => true);
+		}
+		if (busy) return false;
+		await this.env.DIRECTORY.prepare(`DELETE FROM proton_imports WHERE user_id = ?1 AND job_id = ?2`).bind(userId, existing.job_id).run();
+		return (await insert()).meta.changes === 1;
 	}
 
 	#isCurrent(id: string): boolean {

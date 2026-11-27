@@ -126,6 +126,16 @@ describe("importing from Proton on the server", () => {
 		expect(await status()).toBeNull();
 	});
 
+	it("runs one import per person across mailboxes, releasing the slot when its container goes", async () => {
+		await exporting(ids.alice);
+		expect((await start(ids.shared)).status).toBe(409);
+
+		expect((await cancel()).status).toBe(200);
+		await drain(ids.alice);
+		await drain(ids.alice);
+		expect((await start(ids.shared)).status).toBe(202);
+	});
+
 	it("runs one import per mailbox, and refuses a sixth sign-in in an hour", async () => {
 		await exporting();
 		expect((await start()).status).toBe(409);
