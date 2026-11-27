@@ -6,8 +6,15 @@ import { CheckError, describe, type MailFacts, type Models, parsedJson } from ".
 // match. One call reads the message once for all of them. Mail going to Spam isn't read (Mailbox.aiRules()), so a
 // condition can only file mail someone would see anyway.
 
-/** Reads new mail against rules' AI conditions. Billed as Workers AI. The mail agent uses it too. */
-export const RULES_MODEL = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
+/**
+ * Reads new mail against rules' AI conditions. Billed as Workers AI. Not DeepSeek V4.1 Flash, which the mail agent
+ * uses: on bench/models' 49 conditions, gpt-oss-120b was right 94% of the time (four runs) to DeepSeek's 96%
+ * (three), at about $0.23 a thousand messages to $0.31-0.37, and it has Workers AI's usual 300 requests a minute where
+ * DeepSeek, a Workers Paid model, has 20, which a burst of mail runs into. DeepSeek errs towards not matching; this
+ * one's few wrong matches were a $149 card alert taken for "a receipt over $100" and a phish, which goes to Spam
+ * unread here.
+ */
+export const RULES_MODEL = "@cf/openai/gpt-oss-120b";
 /** What the model says of why a rule matched, at most: shown with the message. */
 const MAX_REASON = 200;
 

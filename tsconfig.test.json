@@ -3,5 +3,5 @@
   "compilerOptions": {
     "types": ["./worker-configuration.d.ts", "vite/client"]
   },
-  "include": ["tests"]
+  "include": ["tests", "bench"]
 }

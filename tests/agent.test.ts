@@ -1,6 +1,6 @@
 import type { AgentReply, PendingAction, RuleInput } from "#shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { RULES_MODEL } from "../worker/mail/rules";
+import { AGENT_MODEL } from "../worker/agent";
 import { fixture, type Fixture, inbound, type Mailboxes } from "./runtime/fixture";
 
 describe("Mail agent", () => {
@@ -61,7 +61,7 @@ describe("Mail agent", () => {
 		expect(await labelsOf(ids.bob, theirs)).toEqual(["inbox"]);
 
 		// The model reads what the tools found as the answers to its calls, and mail as untrusted data.
-		const calls = (await f.control.state()).modelCalls.filter((c) => c.model === RULES_MODEL).map((c) => JSON.parse(c.inputs).messages);
+		const calls = (await f.control.state()).modelCalls.filter((c) => c.model === AGENT_MODEL).map((c) => JSON.parse(c.inputs).messages);
 		expect(calls).toHaveLength(3);
 		expect(calls[0][0].content).toContain("UNTRUSTED DATA");
 		expect(calls[1].at(-1)).toMatchObject({ role: "tool", tool_call_id: "call-1-0" });
@@ -98,7 +98,7 @@ describe("Mail agent", () => {
 				],
 			},
 		});
-		const results = (await f.control.state()).modelCalls.filter((c) => c.model === RULES_MODEL).at(-1)!;
+		const results = (await f.control.state()).modelCalls.filter((c) => c.model === AGENT_MODEL).at(-1)!;
 		const [all, , page] = JSON.parse(results.inputs).messages.filter((m: { role: string }) => m.role === "tool").map((m: { content: string }) => JSON.parse(m.content));
 		expect(all.next).toBeUndefined();
 		expect(page.next).toEqual(expect.any(String));
@@ -128,7 +128,7 @@ describe("Mail agent", () => {
 		expect(await labelsOf(ids.alice, mine)).toEqual(["inbox"]);
 		expect(await box(ids.alice).rules()).toEqual([]);
 		// It waits for the person, not the model.
-		expect((await f.control.state()).modelCalls.filter((c) => c.model === RULES_MODEL)).toHaveLength(1);
+		expect((await f.control.state()).modelCalls.filter((c) => c.model === AGENT_MODEL)).toHaveLength(1);
 
 		const pending = body.pending as PendingAction;
 		expect(await request("/agent/approve", { action: pending })).toMatchObject({ status: 200, body: { message: { role: "tool", toolCallId: pending.id, summary: "Moved to Trash · 1 conversation" } } });

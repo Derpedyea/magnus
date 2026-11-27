@@ -681,16 +681,16 @@ apart for one person's mailbox is who you know, and what you've said about who y
   learned from where the verdict put it, so rules and sender standing stay apart; mail a rule takes out of the
   inbox, or marks read, doesn't notify. Up to 20 rules can also have an AI condition in plain English. The queue
   asks `Mailbox.aiRules()` for them, which gives none for mail going to Spam, so no model reads spam. Those whose
-  other conditions match go to Workers AI's DeepSeek V4.1 Flash (`worker/mail/rules.ts`) in one call per
+  other conditions match go to Workers AI's gpt-oss-120b (`worker/mail/rules.ts`) in one call per
   message, with the same bounded summary and untrusted-data instruction the checks use and a strict JSON schema
   for the answers; the reason it gives (cut to 200 characters) is kept with the message. A failure queues the job
   again like a failed check (`ruleFailures`) and carries the checks' answer (`check`) so the sender isn't checked
   twice; after the third, the mail is delivered with those rules unmatched (logged as `rules unchecked`). A rule
   can be tried on the newest 1,000 inbound messages outside Trash and Spam (`/rules/preview`, its AI condition
   unchecked) and, without an AI condition, applied to what it matches (`/rules/:id/apply`).
-- **Mail agent** (`worker/agent.ts`, `POST /api/agent`, the app's right-hand panel). The same DeepSeek V4.1 Flash,
-  with function calling, answers in a loop of at most 8 model calls per question: it can search, list, and read
-  conversations (a read gives the newest 10 messages, 4,000 characters of each), list and make labels, label,
+- **Mail agent** (`worker/agent.ts`, `POST /api/agent`, the app's right-hand panel). Workers AI's DeepSeek V4.1
+  Flash, with function calling, answers in a loop of at most 8 model calls per question: it can search, list, and
+  read conversations (a read gives the newest 10 messages, 4,000 characters of each), list and make labels, label,
   archive, star, and mark read, and list, try, write, delete, and apply rules. Each tool acts as the signed-in
   person through `mailboxAccess()`, as the API does, so an id from someone else's mailbox is refused, and a call
   naming one changes nothing. It reads hostile mail, so mail is passed as untrusted data and the instructions say
@@ -726,11 +726,12 @@ apart for one person's mailbox is who you know, and what you've said about who y
   about 0.012¢ a message, inside Workers AI's free 10,000 neurons a day for several hundred messages. GPT-6 Luna
   ($0.10/M input, $0.50/M output) reads only the ones Clef isn't sure of, billed by OpenRouter to the key stored
   on the gateway (see §5.6).
-- Rules cost nothing unless one has an AI condition. Then DeepSeek V4.1 Flash on Workers AI ($0.30/M input, $1.20/M
+- Rules cost nothing unless one has an AI condition. Then gpt-oss-120b on Workers AI ($0.35/M input, $0.75/M
   output) reads a message once, for all such rules, only when one's other conditions match and the mail isn't
   going to Spam: about 1,500 tokens in, a few hundred out.
-- The mail agent costs only when asked: each question is one to eight calls of the same model, each rereading the
-  conversation and its tools' results.
+- The mail agent costs only when asked: each question is one to eight calls of DeepSeek V4.1 Flash ($0.30/M input,
+  $1.20/M output, $0.006/M for input it has cached), each rereading the conversation and its tools' results, most
+  of it cached. `bench/models` measures what each model call costs and gets right, to choose models by.
 
 ## 7. Checked on the pilot install
 

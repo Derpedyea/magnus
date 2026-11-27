@@ -23,7 +23,8 @@
     "test:e2e": "e2e run",
     "cf-typegen": "wrangler types --strict-vars=false",
     "db:seed:local": "wrangler d1 migrations apply DIRECTORY --local && wrangler d1 execute DIRECTORY --local --file scripts/seed-dev.sql",
-    "mail:test": "node scripts/send-test-email.mjs"
+    "mail:test": "node scripts/send-test-email.mjs",
+    "bench:models": "node bench/models/run.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

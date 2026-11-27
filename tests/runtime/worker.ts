@@ -8,6 +8,7 @@ import { auth, signInWithoutCode } from "../../worker/auth";
 import { email, queue } from "../../worker/mail/inbound";
 import { DEEP_MODEL, type Models, QUICK_MODEL } from "../../worker/mail/checks";
 import { ingest } from "../../worker/mail/ingest";
+import { AGENT_MODEL } from "../../worker/agent";
 import { RULES_MODEL } from "../../worker/mail/rules";
 import { Mailbox as ProductionMailbox } from "../../worker/mailbox/mailbox";
 import { type Exporter, ProtonImport as ProductionProtonImport } from "../../worker/proton-import";
@@ -63,7 +64,7 @@ const models: Models = {
 				: answers.quick;
 			return { model: "clef", answers: { category: { type: "choice", choice: "personal", probabilities, confidence: 1 } }, usage: { input_tokens: 1, output_tokens: 0 } };
 		}
-		if (model === RULES_MODEL && "tools" in inputs) {
+		if (model === AGENT_MODEL) {
 			const [step = { content: "Done." }, ...rest] = answers.agent;
 			answers = { ...answers, agent: rest };
 			const calls = step.calls?.map((c, i) => ({ id: `call-${modelCalls.length}-${i}`, type: "function", function: { name: c.name, arguments: JSON.stringify(c.args) } }));
