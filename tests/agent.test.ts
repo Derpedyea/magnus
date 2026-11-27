@@ -181,6 +181,14 @@ describe("Mail agent", () => {
 		expect(await labelsOf(ids.alice, threadId)).toEqual(["inbox"]);
 	});
 
+	it("asks before marking mail read even when this turn read nothing, since an earlier one may have", async () => {
+		const threadId = await deliver(ids.alice, "later-turn", "Mark me read");
+		await f.control.setModels({ agent: [{ calls: [{ name: "mark_read", args: { threads: [{ mailboxId: ids.alice, threadId }], read: true } }] }] });
+		const { body } = (await ask("Mark it read")) as { body: AgentReply };
+		expect(body.pending).toMatchObject({ name: "mark_read" });
+		expect((await box(ids.alice).getThread(threadId))?.messages[0]?.isRead).toBe(false);
+	});
+
 	it("asks before creating or changing a rule, whether or not it moves mail out of view", async () => {
 		const rule: RuleInput = { name: "Receipts", enabled: true, match: "all", conditions: [{ field: "subject", op: "contains", value: "receipt" }], ai: null, actions: [{ do: "star" }], stop: false };
 		await f.control.setModels({ agent: [{ calls: [{ name: "create_rule", args: { mailboxId: ids.alice, rule } }] }] });
