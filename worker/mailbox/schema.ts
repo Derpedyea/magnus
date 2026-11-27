@@ -265,4 +265,9 @@ export const MIGRATIONS: string[] = [
 		PRIMARY KEY (message_id, rule_id)
 	);
 	`,
+	`
+	-- SHA-256 of each inbound message's From, Sender, Reply-To, Subject, Date and raw body. Message-ID alone is sender-controlled,
+	-- so ingest() only merges two independent inbound copies when this agrees. Outbound and preexisting rows have none.
+	ALTER TABLE messages ADD COLUMN body_digest TEXT;
+	`,
 ];

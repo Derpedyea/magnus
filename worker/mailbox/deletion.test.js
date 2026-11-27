@@ -82,7 +82,7 @@ function message(id, options = {}) {
     return {
         id, rawKey: `raw/${id}`, receivedAt: NOW - 2 * DAY,
         envelopeFrom: "sender@example.org", envelopeTo: "me@example.com",
-        messageIdHeader: `<${id}@example.org>`, inReplyTo: [], references: [],
+        messageIdHeader: `<${id}@example.org>`, bodyDigest: `digest-${id}`, inReplyTo: [], references: [],
         from: { address: "sender@example.org" }, to: [{ address: "me@example.com" }],
         cc: [], replyTo: [], subject: "Order receipt", date: NOW - DAY, text: `Body ${id}`,
         htmlKey: `m/mb/${id}/body.html`, attachments: [], auth: null, sender: { verified: null, internal: false, spoofed: false }, check: null, labels: ["trash"], headers: [],
@@ -94,6 +94,46 @@ function attachment(id, key = `m/mb/original/att/${id}`) {
 }
 
 // These repeat with a fixed clock and injected I/O; no timers or sleeps drive assertions.
+describe("ingest duplicates", () => {
+    it("keeps both inbound messages when one Message-ID is used for different content", async () => {
+        const h = mailbox();
+        const first = await h.box.ingest(message("first", { messageIdHeader: "<same@example.org>" }));
+        const second = await h.box.ingest(message("second", { messageIdHeader: "<same@example.org>" }));
+        expect(second).toMatchObject({ duplicate: false });
+        expect(second.threadId).not.toBe(first.threadId);
+        expect(h.sql.exec("SELECT id FROM messages ORDER BY id").toArray().map((row) => row.id)).toEqual(["first", "second"]);
+    });
+
+    it("still merges our own outbound copy coming back by its provider id", async () => {
+        const h = mailbox();
+        h.sql.exec("INSERT INTO threads (id, subject, subject_key, last_message_at) VALUES ('out-thread', 'Hello', 'hello', ?1)", NOW - DAY);
+        h.sql.exec(
+            "INSERT INTO messages (id, thread_id, direction, provider_message_id, from_json, subject, date, received_at) VALUES ('out', 'out-thread', 'out', '<provider@example.net>', '{}', 'Hello', ?1, ?1)",
+            NOW - DAY,
+        );
+        const copy = message("loopback", { messageIdHeader: "<provider@example.net>", bodyDigest: "different-after-transit" });
+        await expect(h.box.ingest(copy)).resolves.toMatchObject({ threadId: "out-thread", duplicate: true });
+        expect(h.sql.exec("SELECT count(*) AS n FROM messages").one().n).toBe(1);
+        expect(h.sql.exec("SELECT label FROM message_labels WHERE message_id = 'out'").toArray().map((row) => row.label)).toContain("inbox");
+    });
+
+    it("merges a copy with the same content and cleans the objects parsing it wrote", async () => {
+        const h = mailbox();
+        const file = attachment("copy-file", "m/mb/second/att/copy-file");
+        await h.box.ingest(message("first", { messageIdHeader: "<same@example.org>", bodyDigest: "same-body" }));
+        const copy = message("second", { messageIdHeader: "<same@example.org>", bodyDigest: "same-body", attachments: [file] });
+        await expect(h.box.ingest(copy)).resolves.toMatchObject({ duplicate: true, inbox: false });
+        expect(h.sql.exec("SELECT id FROM messages").toArray().map((row) => row.id)).toEqual(["first"]);
+        expect(h.bucket.delete.mock.calls.flat(2)).toEqual(expect.arrayContaining([copy.htmlKey, file.r2Key]));
+        expect(h.bucket.delete.mock.calls.flat(2)).not.toContain(copy.rawKey);
+        expect(h.sql.exec("SELECT raw_key FROM deleted_messages WHERE id = 'second'").one().raw_key).toBe(copy.rawKey);
+        vi.setSystemTime(NOW + DAY);
+        await h.runAlarm();
+        expect(h.bucket.delete.mock.calls.flat(2)).toContain(copy.rawKey);
+        expect(h.bucket.delete.mock.calls.flat(2)).not.toContain("raw/first");
+    });
+});
+
 describe("threading", () => {
     it("joins a live reply to the newest thread its References know", async () => {
         const h = mailbox();

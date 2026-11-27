@@ -175,6 +175,7 @@ interface MessageRow extends Row {
 	text_body: string | null;
 	html_key: string | null;
 	raw_key: string | null;
+	body_digest: string | null;
 	is_read: number;
 	auth_json: string | null;
 	verdict_json: string | null;
@@ -739,8 +740,13 @@ export class Mailbox extends DurableObject<Env> {
 		if (input.messageIdHeader) {
 			const twin = this.sql
 				.exec<{ id: string; thread_id: string; direction: "in" | "out" }>(
-					`SELECT id, thread_id, direction FROM messages WHERE message_id_header = ?1 OR provider_message_id = ?1 LIMIT 1`,
+					`SELECT id, thread_id, direction FROM messages
+					 WHERE (message_id_header = ?1 OR provider_message_id = ?1)
+					   AND (direction = 'out' OR body_digest = ?2 OR (?3 = 1 AND body_digest IS NULL))
+					 LIMIT 1`,
 					input.messageIdHeader,
+					input.bodyDigest,
+					input.imported ? 1 : 0,
 				)
 				.toArray()[0];
 			if (twin && input.imported) {
@@ -761,11 +767,18 @@ export class Mailbox extends DurableObject<Env> {
 			}
 			if (twin) {
 				// Our own mail came back because it was sent to us too: it arrives like local delivery would leave it. A copy
-				// that came in before keeps where its verdict put it, since this one's could disagree.
-				this.addLabels([twin.id], twin.direction === "out" ? ["inbox", ...input.labels] : input.labels);
-				this.addAddress(twin.id, stripSubaddress(input.envelopeTo).base);
-				this.clearFailed(input.id);
+				// that came in before keeps where its verdict put it, since this one's could disagree. Whatever parsing this
+				// duplicate wrote is cleaned first, with the alarm armed before the commit as deleted mail's cleanup is.
+				await this.ctx.storage.setAlarm(Date.now());
+				this.ctx.storage.transactionSync(() => {
+					this.queueCopyTrash(input);
+					this.addLabels([twin.id], twin.direction === "out" ? ["inbox", ...input.labels] : input.labels);
+					this.addAddress(twin.id, stripSubaddress(input.envelopeTo).base);
+					this.clearFailed(input.id);
+				});
 				this.broadcast({ type: "threads.changed", threadIds: [twin.thread_id] });
+				await this.emptyTrash();
+				await this.scheduleOutbox();
 				return { threadId: twin.thread_id, duplicate: true, inbox: false };
 			}
 		}
@@ -786,8 +799,8 @@ export class Mailbox extends DurableObject<Env> {
 				.exec<{ rowid: number }>(
 					`INSERT INTO messages (id, thread_id, direction, message_id_header, in_reply_to, refs,
 						envelope_from, envelope_to, from_json, to_json, cc_json, reply_to_json, subject, snippet,
-						date, received_at, text_body, html_key, raw_key, is_read, auth_json, verdict_json, sender, bcc_json, headers_json)
-					 VALUES (?1, ?2, ?22, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?23, ?19, ?20, ?21, ?24, ?25)
+						date, received_at, text_body, html_key, raw_key, is_read, auth_json, verdict_json, sender, bcc_json, headers_json, body_digest)
+					 VALUES (?1, ?2, ?22, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?23, ?19, ?20, ?21, ?24, ?25, ?26)
 					 RETURNING rowid`,
 					input.id,
 					threadId,
@@ -814,6 +827,7 @@ export class Mailbox extends DurableObject<Env> {
 					input.imported?.read ? 1 : 0,
 					JSON.stringify(input.bcc ?? []),
 					JSON.stringify(input.headers),
+					input.bodyDigest,
 				)
 				.one();
 
@@ -881,10 +895,10 @@ export class Mailbox extends DurableObject<Env> {
 	}
 
 	/** Whether the queue should have Workers AI check mail from this sender before delivering it (worker/mail/checks.ts). */
-	async needsCheck(sender: SenderCheck, messageIdHeader: string | null, ingestId: string): Promise<boolean> {
+	async needsCheck(sender: SenderCheck, messageIdHeader: string | null, ingestId: string, bodyDigest: string): Promise<boolean> {
 		// Being deleted: its mail goes nowhere, so it isn't shown to the models either.
 		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) return false;
-		if (this.alreadyHere(ingestId, messageIdHeader)) return false;
+		if (this.alreadyHere(ingestId, messageIdHeader, bodyDigest)) return false;
 		return this.judge(sender, null).kind === "unknown";
 	}
 
@@ -892,12 +906,14 @@ export class Mailbox extends DurableObject<Env> {
 	 * Already delivered or deleted (the queue redelivered it), or a second copy of a message, which keeps where the first
 	 * went (ingest()): no need to check it again, or show it to a model at all.
 	 */
-	private alreadyHere(ingestId: string, messageIdHeader: string | null): boolean {
+	private alreadyHere(ingestId: string, messageIdHeader: string | null, bodyDigest: string): boolean {
 		const known = this.sql.exec(
-			`SELECT 1 FROM messages WHERE id = ?1 OR (?2 IS NOT NULL AND (message_id_header = ?2 OR provider_message_id = ?2))
+			`SELECT 1 FROM messages WHERE id = ?1 OR (?2 IS NOT NULL AND (message_id_header = ?2 OR provider_message_id = ?2)
+				AND (direction = 'out' OR body_digest = ?3))
 			 UNION ALL SELECT 1 FROM deleted_messages WHERE id = ?1 LIMIT 1`,
 			ingestId,
 			messageIdHeader,
+			bodyDigest,
 		);
 		return known.toArray().length > 0;
 	}
@@ -992,10 +1008,10 @@ export class Mailbox extends DurableObject<Env> {
 	 * RFC 5322 threading: match In-Reply-To/References against known Message-IDs, and for imported mail, its own
 	 * Message-ID against those imported replies named (ingest()). If the message claims to be a reply but nothing
 	 * matches (e.g. a reply to an outbound message whose final Message-ID we never saw), fall back to normalized subject
-	 * + sender already being a participant, within a recent window. Not for imported mail: it comes in any order, so what
+	 * + a verified sender already being a participant, within a recent window. Not for imported mail: it comes in any order, so what
 	 * a reply answers can still be on its way, and the subject would put it with an older conversation instead.
 	 */
-	private findThread(input: Pick<IngestInput, "messageIdHeader" | "inReplyTo" | "references" | "subject" | "from" | "date" | "imported" | "labels">): string | null {
+	private findThread(input: Pick<IngestInput, "messageIdHeader" | "inReplyTo" | "references" | "subject" | "from" | "date" | "imported" | "labels" | "sender">): string | null {
 		const candidates = [...new Set([...input.inReplyTo, ...input.references.toReversed()])];
 		const own = input.imported && input.messageIdHeader ? [input.messageIdHeader] : [];
 		const lookup = (id: string) => this.sql.exec<{ thread_id: string }>(`SELECT thread_id FROM thread_refs WHERE message_id_header = ?1`, id).toArray()[0]?.thread_id;
@@ -1015,7 +1031,7 @@ export class Mailbox extends DurableObject<Env> {
 			for (const other of others) this.mergeThread(other, thread!);
 			if (thread) return thread;
 		}
-		if (candidates.length === 0 || input.imported) return null;
+		if (candidates.length === 0 || input.imported || input.sender.verified === null) return null;
 
 		const key = normalizeSubject(input.subject);
 		if (!key) return null;
@@ -1556,9 +1572,9 @@ export class Mailbox extends DurableObject<Env> {
 	 * be told from mail going to Spam, and which ingest() drops whatever the model says. Nor while the mailbox is being
 	 * deleted.
 	 */
-	async aiRules(sender: SenderCheck, check: MailCheck | null, messageIdHeader: string | null, ingestId: string): Promise<Rule[]> {
+	async aiRules(sender: SenderCheck, check: MailCheck | null, messageIdHeader: string | null, ingestId: string, bodyDigest: string): Promise<Rule[]> {
 		if (this.sql.exec(`SELECT 1 FROM _meta WHERE key = 'destroying'`).toArray().length > 0) return [];
-		if (this.alreadyHere(ingestId, messageIdHeader)) return [];
+		if (this.alreadyHere(ingestId, messageIdHeader, bodyDigest)) return [];
 		const verdict = this.judge(sender, check);
 		if (verdict.kind === "spoofed" || placeFor(verdict, this.mailSettings()) === "spam") return [];
 		return this.ruleList().filter((r) => r.enabled && r.ai !== null);
@@ -1923,6 +1939,17 @@ export class Mailbox extends DurableObject<Env> {
 		await this.deleteTrashedOriginals();
 		await this.scheduleOutbox();
 		return result.restoring ? { blocked: false, deleted: 0, restoring: true } : { blocked: result.blocked, deleted: result.deleted };
+	}
+
+	/**
+	 * The extracted objects of a copy no message row will point at. Its original goes through deleted_messages instead:
+	 * one inbound original can be shared with other mailboxes, whose rows this object can't see, so only the delayed
+	 * shared-original cleanup can say no one needs it.
+	 */
+	private queueCopyTrash(input: IngestInput): void {
+		if (input.htmlKey) this.queueTrash(input.htmlKey);
+		for (const a of input.attachments) this.queueTrash(a.r2Key);
+		this.sql.exec(`INSERT OR IGNORE INTO deleted_messages (id, raw_key, received_at) VALUES (?1, ?2, ?3)`, input.id, input.rawKey, input.receivedAt);
 	}
 
 	private queueTrash(key: string): void {
