@@ -21,6 +21,10 @@ describe("parseMessageIds", () => {
 	it("handles empty input", () => {
 		expect(parseMessageIds(null)).toEqual([]);
 	});
+	it("drops overlong and non-printable ids", () => {
+		expect(parseMessageIds(`<good@x> <${"x".repeat(1000)}@y> <é@z> <a\u0000@z>`)).toEqual(["<good@x>"]);
+		expect(parseMessageIds("x".repeat(1000))).toEqual([]);
+	});
 });
 
 describe("buildReferences", () => {
@@ -36,6 +40,11 @@ describe("buildReferences", () => {
 		expect(out[0]).toBe(refs[0]);
 		expect(out.at(-1)).toBe("<parent@example.com>");
 		expect(new TextEncoder().encode(out.join(" ")).length).toBeLessThanOrEqual(MAX_HEADER_VALUE_BYTES);
+	});
+	it("drops ids that cannot fit in a header instead of emitting an overlong one", () => {
+		const overlong = `<${"x".repeat(3000)}@example.com>`;
+		expect(buildReferences([overlong], null)).toEqual([]);
+		expect(buildReferences(["<root@example.com>"], overlong)).toEqual(["<root@example.com>"]);
 	});
 });
 

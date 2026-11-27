@@ -462,7 +462,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	restored() { return restored; }
 	state() {
 		return { jobs, modelCalls, sends: sends.map((message) => ({
-			from: message.from, to: message.to, cc: message.cc, bcc: message.bcc, subject: message.subject, text: message.text, html: message.html,
+			from: message.from, to: message.to, cc: message.cc, bcc: message.bcc, subject: message.subject, text: message.text, html: message.html, headers: message.headers,
 			attachments: message.attachments?.map((a) => ({
 				filename: a.filename, type: a.type, disposition: a.disposition, contentId: a.contentId,
 				content: typeof a.content === "string" ? a.content : new TextDecoder().decode(a.content),
