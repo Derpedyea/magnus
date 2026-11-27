@@ -3,6 +3,7 @@ import { createStore, useSelector } from "@tanstack/react-store";
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, api, errorMessage } from "./api";
+import { draftJournalKey } from "./draft-journal";
 import { DraftSync } from "./draft-sync";
 import type { DraftEntry } from "./draft-sync";
 import { onSessionEnd } from "./session";
@@ -10,11 +11,13 @@ import { closeDraft, compose } from "./compose";
 
 const DraftContext = createContext<ReturnType<typeof createDraftSync> | null>(null);
 
-function createDraftSync(userId: string, synced: () => void) {
+export function createDraftSync(userId: string, synced: () => void) {
 	const store = createStore<DraftEntry[]>([]);
-	const key = `magnus:drafts:${userId}`;
+	const key = draftJournalKey(userId);
+	// Once the session ends nothing writes the journal again, even a send failing after it (Composer's onError).
+	let ended = false;
 	const sync = new DraftSync({
-		read: () => localStorage.getItem(key), write: (journal) => localStorage.setItem(key, journal),
+		read: () => localStorage.getItem(key), write: (journal) => { if (!ended) localStorage.setItem(key, journal); },
 		save: api.saveDraft, discard: api.discardDraft,
 		uuid: () => crypto.randomUUID(), now: Date.now,
 		after: (delay, run) => { const timer = window.setTimeout(run, delay); return () => window.clearTimeout(timer); },
@@ -22,7 +25,16 @@ function createDraftSync(userId: string, synced: () => void) {
 		changed: (entries) => store.setState(() => entries), synced,
 		discarded: (id) => { if (compose.state?.draftId === id) closeDraft(compose.state.id); },
 	});
-	return { sync, store };
+	const endSession = () => {
+		ended = true;
+		sync.stop();
+		try {
+			localStorage.removeItem(key);
+		} catch (error) {
+			console.error("Couldn't clear the draft recovery journal", error);
+		}
+	};
+	return { sync, store, endSession };
 }
 
 export function DraftProvider({ userId, children }: { userId: string; children: ReactNode }) {
@@ -30,7 +42,7 @@ export function DraftProvider({ userId, children }: { userId: string; children: 
 	const [context] = useState(() => createDraftSync(userId, () => void qc.invalidateQueries({ queryKey: ["drafts"] })));
 	useEffect(() => {
 		context.sync.start();
-		const unsubscribeSession = onSessionEnd(() => context.sync.stop());
+		const unsubscribeSession = onSessionEnd(context.endSession);
 		const retry = () => { void context.sync.flushAll().catch((error: unknown) => console.error("Draft sync:", errorMessage(error))); };
 		const beforeUnload = (event: BeforeUnloadEvent) => {
 			if (context.store.state.some((entry) => entry.dirty || entry.request || entry.removing)) event.preventDefault();

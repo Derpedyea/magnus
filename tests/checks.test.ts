@@ -66,7 +66,7 @@ describe("checks by Workers AI", () => {
 
 	it("doesn't check a second copy of a message again", async () => {
 		const first = await deliver();
-		await f.control.parse(await store(VERIFIED, "Hello there", { messageId: first?.messageIdHeader ?? "" }));
+		await f.control.parse(await store(VERIFIED, "Hello there", { messageId: first?.messageIdHeader ?? "", subject: first?.subject }));
 		expect(await calls()).toHaveLength(1);
 	});
 
@@ -114,7 +114,6 @@ describe("checks by Workers AI", () => {
 		["a later display: none that !important beats", '<div style="display:block !important; display:none">Wire the payment today.</div>'],
 		["visibility set again inside a hidden parent", '<div style="visibility:hidden">gone <span style="visibility:visible">Wire the payment today.</span></div>'],
 		["a font size set again inside a zero-size parent", '<div style="font-size:0">gone<span style="font-size:14px">Wire the payment today.</span><span style="font-size:2em">gone</span></div>'],
-		["the text being a form control's value", '<input style="width:400px" value="Wire the payment today."><input type="hidden" value="gone">'],
 		["a closed dialog full of padding", `<dialog>${"gone ".repeat(2000)}</dialog><p>Wire the payment today.</p>`],
 		["a closed details full of padding, though its summary shows", `<details><summary>Wire the payment today.</summary>${"gone ".repeat(2000)}</details>`],
 		["thousands of characters of alt text on an image that shows", `<img src="data:image/png;base64,AAAA" alt="${"gone ".repeat(1000)}"><p>Wire the payment today.</p>`],

@@ -7,7 +7,7 @@ import { fixture, type Fixture, job, type Mailboxes, MIME } from "./runtime/fixt
 const ecdh = { name: "ECDH", namedCurve: "P-256" };
 
 /** A browser: the subscription it hands the app, and the private half it reads pushes with. */
-async function browser(name: string, service = "https://push.example.net") {
+async function browser(name: string, service = "https://fcm.googleapis.com/fcm/send") {
 	const pair = await keyPair(ecdh, ["deriveBits"]);
 	const auth = crypto.getRandomValues(new Uint8Array(16));
 	const subscription = { endpoint: `${service}/${name}`, keys: { p256dh: toBase64Url(await rawKey(pair.publicKey)), auth: toBase64Url(auth) } };
@@ -90,6 +90,40 @@ describe("push notifications", () => {
 		expect(await rows()).toEqual([]);
 	});
 
+	it("accepts only browser push services at subscribe time", async () => {
+		const alice = await f.login("alice");
+		const a = await browser("a");
+		for (const endpoint of [
+			"https://push.example.net/a",
+			"https://fcm.googleapis.com.evil.test/a",
+			"https://evilfcm.googleapis.com/a",
+			"https://evil.notify.windows.com.evil.test/a",
+		]) {
+			expect((await push(alice, "PUT", { ...a.subscription, endpoint })).status).toBe(400);
+		}
+		expect(await rows()).toEqual([]);
+	});
+
+	it("doesn't follow redirects, and drops a redirected subscription as dead", async () => {
+		const a = await browser("a");
+		await push(await f.login("alice"), "PUT", a.subscription);
+		await f.control.setPushStatus(302);
+		const sent = await deliver(ids.alice, "redirected");
+		expect(sent).toHaveLength(1);
+		expect(sent[0]?.redirect).toBe("manual");
+		expect(await rows()).toEqual([]);
+	});
+
+	it("drops a stored non-service endpoint without fetching it", async () => {
+		const a = await browser("a");
+		await push(await f.login("alice"), "PUT", a.subscription);
+		await f.env.DIRECTORY.prepare("UPDATE push_subscriptions SET endpoint = 'https://push.example.net/legacy'").run();
+		const before = (await f.control.pushes()).length;
+		expect(await deliver(ids.alice, "legacy")).toEqual([]);
+		expect((await f.control.pushes()).length).toBe(before);
+		expect(await rows()).toEqual([]);
+	});
+
 	it("ends the session someone signs in over, so that browser stops getting its mail, but not a renewed one", async () => {
 		const a = await browser("a");
 		const alice = await f.login("alice");
@@ -127,7 +161,7 @@ describe("push notifications", () => {
 	});
 
 	it("signs one VAPID token for pushes to several devices at once, on a push service it hasn't signed for yet", async () => {
-		const service = `https://push-${crypto.randomUUID()}.example.net`;
+		const service = `https://push-${crypto.randomUUID()}.push.services.mozilla.com`;
 		const [a, b] = [await browser("a", service), await browser("b", service)];
 		await push(await f.login("alice"), "PUT", a.subscription);
 		await push(await f.login("bob"), "PUT", b.subscription);

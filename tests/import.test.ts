@@ -49,6 +49,13 @@ describe("import", () => {
 		return { id, job: queued };
 	}
 	const alice = () => f.env.MAILBOX.getByName(ids.alice);
+	/** Delivers the same bytes as live mail, so an import of them is a true duplicate rather than only an id collision. */
+	async function liveNow(body: string, id = "live-1") {
+		const live = job(ids.alice, id);
+		await f.env.MAIL.put(live.rawKey, body);
+		await f.control.parse(live);
+		return live;
+	}
 
 	it("refuses people outside the mailbox", async () => {
 		expect((await upload(eml(), undefined, ids.alice, "")).status).toBe(401);
@@ -160,7 +167,7 @@ describe("import", () => {
 
 	it("doesn't notify about mail imported into the inbox, as it does about mail that just arrived", async () => {
 		const pair = await keyPair({ name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
-		const subscription = { endpoint: "https://push.example.net/alice", keys: { p256dh: toBase64Url(await rawKey(pair.publicKey)), auth: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) } };
+		const subscription = { endpoint: "https://fcm.googleapis.com/fcm/send/alice", keys: { p256dh: toBase64Url(await rawKey(pair.publicKey)), auth: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) } };
 		await f.worker.fetch("https://magnus.test/api/push", { method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify(subscription) });
 		await importNow(eml(), "labels=inbox&read=0&sent=0");
 		expect(await f.control.pushes()).toEqual([]);
@@ -181,13 +188,13 @@ describe("import", () => {
 	});
 
 	it("leaves mail already here as it is, and keeps nothing of the imported copy", async () => {
-		const here = inbound(ids.alice, "live-1");
-		await alice().ingest({ ...here, messageIdHeader: "<hello@outside.test>", labels: ["inbox"] });
+		const original = eml();
+		await liveNow(original);
 		await alice().modifyThreads({ threadIds: (await alice().listThreads({ label: "inbox", limit: 50 })).map((t) => t.id), remove: ["inbox"] });
-		await importNow(eml(), "labels=trash&read=0");
+		const copy = await importNow(original, "labels=trash&read=0");
 		expect((await alice().getMessage("live-1"))?.message).toMatchObject({ labels: [], isRead: false });
 		expect(await alice().listThreads({ label: "all", limit: 50 })).toMatchObject([{ messageCount: 1 }]);
-		expect((await f.env.MAIL.list()).objects).toEqual([]);
+		expect((await f.env.MAIL.list()).objects.map((o) => o.key).filter((key) => key.includes(copy.id))).toEqual([]);
 	});
 
 	it("names a folder as it was there, inside the one it was in, even one an earlier import named after its key", async () => {
@@ -284,8 +291,9 @@ describe("import", () => {
 	});
 
 	it("doesn't bring back a dropped duplicate once the mail it duplicated is deleted for good", async () => {
-		await alice().ingest({ ...inbound(ids.alice, "live-1"), messageIdHeader: "<hello@outside.test>" });
-		await importNow(eml());
+		const original = eml();
+		await liveNow(original);
+		await importNow(original);
 		await alice().modifyThreads({ threadIds: (await alice().listThreads({ label: "inbox", limit: 50 })).map((t) => t.id), add: ["trash"] });
 		await alice().deleteTrash({});
 		await importNow(eml());

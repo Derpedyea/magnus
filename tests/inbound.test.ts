@@ -46,6 +46,7 @@ describe("email() and inbound queue", () => {
 
 	it.each([
 		["sender@outside.test", "sender@outside.test", MIME],
+		["sender@outside.test", "sender+tag@outside.test", MIME],
 		["*@outside.test", "sender@outside.test", MIME],
 		["blocked@header.test", "bounce@delivery.test", MIME.replace("Sender <sender@outside.test>", "Allowed <allowed@header.test>, Blocked <blocked@header.test>")],
 	])("blocks %s against the envelope and every From header address", async (pattern, from, raw) => {

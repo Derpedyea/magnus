@@ -32,6 +32,8 @@
 		{ "name": "AUTH_LIMIT_3_PER_10S", "namespace_id": "62702", "simple": { "limit": 3, "period": 10 } },
 		{ "name": "AUTH_LIMIT_3_PER_60S", "namespace_id": "62703", "simple": { "limit": 3, "period": 60 } },
 		{ "name": "AUTH_LIMIT_10_PER_60S", "namespace_id": "62704", "simple": { "limit": 10, "period": 60 } },
+		// Outbound mail and attachments, one user at a time.
+		{ "name": "OUTBOUND_LIMIT_30_PER_60S", "namespace_id": "62705", "simple": { "limit": 30, "period": 60 } },
 		// Imported messages share the live inbound queue, so one person's imports are paced account-wide.
 		{ "name": "IMPORT_LIMIT_60_PER_60S", "namespace_id": "62706", "simple": { "limit": 60, "period": 60 } }
 	],

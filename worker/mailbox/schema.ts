@@ -266,6 +266,11 @@ export const MIGRATIONS: string[] = [
 	);
 	`,
 	`
+	-- SHA-256 of each inbound message's From, Sender, Reply-To, Subject, Date and raw body. Message-ID alone is sender-controlled,
+	-- so ingest() only merges two independent inbound copies when this agrees. Outbound and preexisting rows have none.
+	ALTER TABLE messages ADD COLUMN body_digest TEXT;
+	`,
+	`
 	-- Where a message came from when it was imported (Imported.source); null for live mail and imports before provenance was kept.
 	ALTER TABLE messages ADD COLUMN imported_source TEXT;
 	`,

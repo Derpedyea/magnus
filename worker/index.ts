@@ -7,6 +7,7 @@ import { mtaStsPolicy, POLICY_PATH } from "./mta-sts";
 import { cleanDraftFiles } from "./drafts";
 import { forgetExpiredDevices } from "./push";
 import { cleanHeld } from "./held";
+import { forgetEmailThrottles } from "./auth";
 import { deleteMailboxObjects } from "./removals";
 
 export { Mailbox } from "./mailbox/mailbox";
@@ -36,16 +37,18 @@ export default {
 		await migrate(env.DIRECTORY);
 		const now = Date.now();
 		// Independent, so one failing doesn't hold the others up. All run again next hour.
-		const [drafts, devices, mailboxes, held] = await Promise.allSettled([
+		const [drafts, devices, mailboxes, held, throttles] = await Promise.allSettled([
 			cleanDraftFiles(env, now),
 			forgetExpiredDevices(env.DIRECTORY, now),
 			deleteMailboxObjects(env),
 			cleanHeld(env, now),
+			forgetEmailThrottles(env.DIRECTORY, now),
 		]);
 		if (drafts.status === "rejected") console.error(JSON.stringify({ msg: "draft cleanup failed", error: String(drafts.reason) }));
 		if (devices.status === "rejected") console.error(JSON.stringify({ msg: "push cleanup failed", error: String(devices.reason) }));
 		if (mailboxes.status === "rejected") console.error(JSON.stringify({ msg: "mailbox deletion failed", error: String(mailboxes.reason) }));
 		if (held.status === "rejected") console.error(JSON.stringify({ msg: "held mail cleanup failed", error: String(held.reason) }));
-		if ([drafts, devices, mailboxes, held].some((r) => r.status === "rejected")) throw new Error("Hourly cleanup failed");
+		if (throttles.status === "rejected") console.error(JSON.stringify({ msg: "sign-in throttle cleanup failed", error: String(throttles.reason) }));
+		if ([drafts, devices, mailboxes, held, throttles].some((r) => r.status === "rejected")) throw new Error("Hourly cleanup failed");
 	},
 } satisfies ExportedHandler<Env>;
