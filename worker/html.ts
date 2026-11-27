@@ -17,10 +17,12 @@ const NAMED: Record<string, string> = {
 	excl: "!", comma: ",", semi: ";", ast: "*", lpar: "(", rpar: ")", lsqb: "[", rsqb: "]", lcub: "{", rcub: "}",
 	verbar: "|", grave: "`", tab: "\t", newline: "\n", zwsp: "\u200b", shy: "\u00ad",
 };
+/** Named references a browser also decodes without their semicolon. Others, like `&num=` in a URL, stay as written. */
+const LEGACY = new Set(["amp", "lt", "gt", "quot", "nbsp"]);
 const decodeEntities = (value: string) =>
 	value.replace(/&(#x[\da-f]+|#\d+|[a-z]+);?/gi, (match, name: string) => {
 		const code = name[0] !== "#" ? null : name[1] === "x" || name[1] === "X" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
-		if (code === null) return NAMED[name.toLowerCase()] ?? match;
+		if (code === null) return match.endsWith(";") || LEGACY.has(name.toLowerCase()) ? (NAMED[name.toLowerCase()] ?? match) : match;
 		return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "\ufffd";
 	});
 /** URL text as the browser canonicalizes it before scheme matching: references decoded, tab/CR/LF ignored, leading C0/space trimmed. */

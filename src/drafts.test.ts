@@ -42,6 +42,9 @@ describe("draft journal session cleanup", () => {
 
 		expect(data.has("magnus:drafts:alice")).toBe(false);
 		expect(data.has("magnus:drafts:bob")).toBe(false);
+		// A send failing after sign-out puts its draft back into the stopped sync: nothing reaches storage.
+		context.sync.update("00000000-0000-4000-8000-000000000001", { mailboxId: "mbx", from: "alice@example.com", to: [], cc: [], bcc: [], subject: "Saturday", text: "Secret draft, unquoted", attachments: [] });
+		expect(data.has("magnus:drafts:alice")).toBe(false);
 		unsubscribe();
 	});
 });

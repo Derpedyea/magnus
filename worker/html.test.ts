@@ -56,6 +56,11 @@ describe("email HTML sanitizing", () => {
 		expect(html).toContain(">Pay now</span><p>keep</p>");
 	});
 
+	it("leaves a URL's &num= and &plus= alone, as a browser does without a semicolon", async () => {
+		const html = await render(`<img width="600" height="400" src="https://example.com/i?id=1&num=2&plus=3">`);
+		expect(html).toContain(encodeURIComponent("https://example.com/i?id=1&num=2&plus=3"));
+	});
+
 	it("keeps a hidden button's contents hidden", async () => {
 		const html = await render(`<button hidden>Phish</button><button style="display:none">Phish</button>`);
 		expect(html).toBe(`<span hidden>Phish</span><span style="display:none">Phish</span>`);

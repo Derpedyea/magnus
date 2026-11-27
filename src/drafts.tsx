@@ -14,8 +14,10 @@ const DraftContext = createContext<ReturnType<typeof createDraftSync> | null>(nu
 export function createDraftSync(userId: string, synced: () => void) {
 	const store = createStore<DraftEntry[]>([]);
 	const key = draftJournalKey(userId);
+	// Once the session ends nothing writes the journal again, even a send failing after it (Composer's onError).
+	let ended = false;
 	const sync = new DraftSync({
-		read: () => localStorage.getItem(key), write: (journal) => localStorage.setItem(key, journal),
+		read: () => localStorage.getItem(key), write: (journal) => { if (!ended) localStorage.setItem(key, journal); },
 		save: api.saveDraft, discard: api.discardDraft,
 		uuid: () => crypto.randomUUID(), now: Date.now,
 		after: (delay, run) => { const timer = window.setTimeout(run, delay); return () => window.clearTimeout(timer); },
@@ -24,6 +26,7 @@ export function createDraftSync(userId: string, synced: () => void) {
 		discarded: (id) => { if (compose.state?.draftId === id) closeDraft(compose.state.id); },
 	});
 	const endSession = () => {
+		ended = true;
 		sync.stop();
 		try {
 			localStorage.removeItem(key);
