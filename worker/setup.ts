@@ -184,13 +184,12 @@ async function hashSetupSecret(secret: string): Promise<string> {
 }
 
 /**
- * Whether this browser may resume. New setups need the cookie whose hash committed with the account. One started
- * before that hash existed can't know its browser retroactively; there, the owner has to be signed in as its admin.
+ * Whether this browser may resume: it holds the cookie whose hash committed with the account, or it's signed in as the
+ * first admin (/complete signs them in, so that covers a lost setup cookie, and setups from before the hash existed).
  */
 async function resumesSetup(request: Request, setup: NonNullable<Install["setup"]>): Promise<boolean> {
 	const secret = setupSecret(request);
 	if (secret && setup.resumeHash && (await hashSetupSecret(secret)) === setup.resumeHash) return true;
-	if (setup.resumeHash) return false;
 	const signedIn = await currentUser(request);
 	return signedIn?.user.isAdmin === true && signedIn.user.email === setup.email;
 }

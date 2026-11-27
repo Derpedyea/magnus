@@ -280,6 +280,11 @@ async function signInOTPAllowed(action: "send" | "verify", email: string): Promi
 	return (row?.n ?? limit + 1) <= limit;
 }
 
+/** Hourly: buckets before this hour count nothing any more. */
+export async function forgetEmailThrottles(db: D1Database, now: number): Promise<void> {
+	await db.prepare(`DELETE FROM auth_email_throttles WHERE bucket < ?1`).bind(Math.floor(now / 3_600_000)).run();
+}
+
 async function sha256Hex(value: string): Promise<string> {
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
 	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");

@@ -56,13 +56,14 @@ export function cloudflare(token: string) {
 		put: <T>(schema: z.ZodType<T>, need: Permission, path: string, json: unknown) => call(schema, need, "PUT", path, json),
 		delete: (need: Permission, path: string) => call(z.unknown(), need, "DELETE", path),
 		/**
-		 * A DELETE of something that isn't there: true when the token is allowed to write it (Cloudflare answers
-		 * 404 after its permission check), false when it isn't (401/403). Lets setup prove write access without changing anything.
+		 * A DELETE of something that isn't there: false when the token isn't allowed to write it (401/403), true for any
+		 * other answer short of a server error (Cloudflare says 404 after its permission check). Lets setup prove write
+		 * access without changing anything, and without an unexpected client error locking every first run out.
 		 */
 		probeDelete: async (need: Permission, path: string): Promise<boolean> => {
 			const res = await request("DELETE", path);
 			if (res.status === 401 || res.status === 403) return false;
-			if (res.status === 404 || res.body?.errors?.some((error) => error.code === 81044) || (res.ok && res.body?.success)) return true;
+			if (res.status < 500) return true;
 			throw failure(res.status, res.body?.errors ?? [], need);
 		},
 		/** A GET where any client error other than auth means "no". */
