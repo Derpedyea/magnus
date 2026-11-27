@@ -90,7 +90,8 @@ function report() {
 			for (const d of deep) {
 				const byId = new Map(d.verdicts.map((v) => [v.id, v]));
 				const merged = q.verdicts.map((v) => {
-					if (v.alone) return v;
+					// Decided by the quick model, or failed there: production doesn't ask the deep model then (checkMail()).
+					if (v.alone || !v.got) return v;
 					const dv = byId.get(v.id);
 					return { ...v, got: dv?.got ?? null, calls: [...v.calls, ...(dv?.calls ?? [])] };
 				});

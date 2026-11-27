@@ -1,4 +1,5 @@
-import type { Address, AgentReply, Label, ListPage, PendingAction, Rule, RuleCondition, RuleInput, ThreadSummary } from "#shared";
+import type { Address, AgentReply, Label, ListPage, PendingAction, Rule, RuleInput, ThreadSummary } from "#shared";
+import { matchConditions } from "#shared/rules";
 import type { Agent } from "../../worker/agent";
 import type { Models } from "../../worker/mail/checks";
 
@@ -231,18 +232,13 @@ class FakeMailbox {
 		return this.ruleList.length < before;
 	}
 
-	private matches(t: FakeThread, c: RuleCondition): boolean {
-		if (!("op" in c) || c.op === "exists" || c.field === "header") return false;
-		const m = t.messages.at(-1)!;
-		const value = { from: `${m.from.name ?? ""} ${m.from.address}`, to: ME, cc: "", recipient: ME, subject: t.subject, body: m.text, "list-id": "" }[c.field] ?? "";
-		const v = value.toLowerCase();
-		const want = (c.value ?? "").toLowerCase();
-		const hit = c.op === "contains" ? v.includes(want) : c.op === "is" ? v.trim() === want : c.op === "starts-with" ? v.startsWith(want) : v.endsWith(want);
-		return c.not ? !hit : hit;
-	}
-
+	/** As Mailbox.previewRule() scans: inbound mail outside Trash and Spam, matched by matchConditions(). */
 	async previewRule(input: Pick<RuleInput, "match" | "conditions" | "ai">, limit = 50) {
-		const hits = this.threads.filter((t) => input.conditions.length > 0 && (input.match === "all" ? input.conditions.every((c) => this.matches(t, c)) : input.conditions.some((c) => this.matches(t, c))));
+		const hits = this.threads.filter((t) => {
+			if (t.labels.includes("trash") || t.labels.includes("spam")) return false;
+			const m = t.messages.at(-1)!;
+			return matchConditions(input, { from: m.from, to: [{ address: ME }], cc: [], envelopeTo: ME, subject: t.subject, text: m.text, headers: [], attachments: [], sender: { verified: m.from.address } });
+		});
 		return { threads: hits.slice(0, limit).map((t) => this.summary(t)), matched: hits.length, scanned: this.threads.length, aiNotChecked: input.ai !== null };
 	}
 

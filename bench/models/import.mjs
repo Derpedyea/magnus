@@ -5,6 +5,7 @@
 //   node bench/models/import.mjs --label phishing --out set.json [--accept phishing,spam] [--limit 300] [--list paths.txt] <file|dir>…
 //
 // Real mail carries real people's addresses: keep the output out of the repository.
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
@@ -50,7 +51,11 @@ try {
 			const { facts, spoofed, stamped, date } = await worker.facts(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
 			if (spoofed) skipped.spoofed++;
 			else if (!facts.from.address || (!facts.page.text && !facts.subject)) skipped.empty++;
-			else mail.push({ id: `${values.source ?? "real"}:${basename(file)}`, category, accept, source: values.source ?? null, date, stamped, facts });
+			else {
+				// The content's hash too: files of the same name in different directories are different messages.
+				const id = `${values.source ?? "real"}:${basename(file)}:${createHash("sha256").update(raw).digest("hex").slice(0, 12)}`;
+				mail.push({ id, category, accept, source: values.source ?? null, date, stamped, facts });
+			}
 		} catch {
 			skipped.failed++;
 		}
