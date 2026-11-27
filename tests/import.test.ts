@@ -154,7 +154,7 @@ describe("import", () => {
 
 	it("doesn't notify about mail imported into the inbox, as it does about mail that just arrived", async () => {
 		const pair = await keyPair({ name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
-		const subscription = { endpoint: "https://push.example.net/alice", keys: { p256dh: toBase64Url(await rawKey(pair.publicKey)), auth: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) } };
+		const subscription = { endpoint: "https://fcm.googleapis.com/fcm/send/alice", keys: { p256dh: toBase64Url(await rawKey(pair.publicKey)), auth: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) } };
 		await f.worker.fetch("https://magnus.test/api/push", { method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify(subscription) });
 		await importNow(eml(), "labels=inbox&read=0&sent=0");
 		expect(await f.control.pushes()).toEqual([]);

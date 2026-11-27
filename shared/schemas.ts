@@ -9,15 +9,19 @@ export const MAX_RECIPIENTS = 50;
 /** Email Service: max entries in the attachments array. */
 export const MAX_ATTACHMENTS = 32;
 
+/** Header-ish fields never carry C0 controls or DEL. Body text is not one of these. */
+const NO_CONTROLS = /^[^\u0000-\u001f\u007f]*$/;
+const CONTROL_CHARS = "Control characters aren't allowed";
+
 export const AddressSchema = z.object({
 	address: z.email(),
-	name: z.string().trim().max(200).optional(),
+	name: z.string().regex(NO_CONTROLS, CONTROL_CHARS).trim().max(200).optional(),
 });
 
 export const AttachmentRefSchema = z.object({
 	r2Key: z.string().min(1),
-	filename: z.string().min(1).max(255),
-	contentType: z.string().min(1).max(255),
+	filename: z.string().min(1).max(255).regex(NO_CONTROLS, CONTROL_CHARS),
+	contentType: z.string().min(1).max(255).regex(NO_CONTROLS, CONTROL_CHARS),
 	size: z.number().int().nonnegative(),
 });
 
@@ -27,7 +31,7 @@ export const ComposeSchema = z
 		to: z.array(AddressSchema).min(1),
 		cc: z.array(AddressSchema).default([]),
 		bcc: z.array(AddressSchema).default([]),
-		subject: z.string().max(998),
+		subject: z.string().max(998).regex(NO_CONTROLS, CONTROL_CHARS),
 		/** Markdown (plain text reads the same). The message's text and HTML parts are both rendered from it (noteBody()). */
 		text: z.string(),
 		replyToMessageId: z.string().optional(),
@@ -206,12 +210,26 @@ const base64url = (bytes: number, check: (decoded: Uint8Array) => boolean = () =
 			return decoded.length === bytes && check(decoded);
 		}, `Expected ${bytes} bytes`);
 
+const PUSH_HOSTS = ["fcm.googleapis.com", "web.push.apple.com"];
+const PUSH_HOST_SUFFIXES = ["push.services.mozilla.com", "notify.windows.com", "push.apple.com"];
+
+/** Whether an endpoint is on a browser vendor's push service: Chromium/FCM, Firefox, Edge/WNS, or Safari/APNs. */
+export function isPushServiceEndpoint(endpoint: string): boolean {
+	try {
+		const url = new URL(endpoint);
+		const host = url.hostname.toLowerCase();
+		return url.protocol === "https:" && (PUSH_HOSTS.includes(host) || PUSH_HOST_SUFFIXES.some((suffix) => host === suffix || host.endsWith(`.${suffix}`)));
+	} catch {
+		return false;
+	}
+}
+
 /**
  * A browser's push subscription (PushSubscription.toJSON()). The Worker posts to the endpoint, so it has to be an
- * https URL of bounded length.
+ * https URL of bounded length on a browser vendor's push service.
  */
 export const PushSubscriptionSchema = z.object({
-	endpoint: z.url({ protocol: /^https$/ }).max(2048),
+	endpoint: z.url({ protocol: /^https$/ }).max(2048).refine(isPushServiceEndpoint, "Not a browser push service"),
 	keys: z.object({
 		/** An uncompressed P-256 point. */
 		p256dh: base64url(65, (point) => point[0] === 4),
