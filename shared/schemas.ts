@@ -10,8 +10,6 @@ export const MAX_RECIPIENTS = 50;
 export const MAX_ATTACHMENTS = 32;
 
 /** Header-ish fields never carry C0 controls or DEL. Body text is not one of these. */
-const NO_CONTROLS = /^[^\u0000-\u001f\u007f]*$/;
-const CONTROL_CHARS = "Control characters aren't allowed";
 /** A subject or name can come from mail being answered, where a folded line leaves a tab: those become spaces. */
 export const spaceControls = (value: string) => value.replace(/[\u0000-\u001f\u007f]+/g, " ");
 
@@ -22,8 +20,9 @@ export const AddressSchema = z.object({
 
 export const AttachmentRefSchema = z.object({
 	r2Key: z.string().min(1),
-	filename: z.string().min(1).max(255).regex(NO_CONTROLS, CONTROL_CHARS),
-	contentType: z.string().min(1).max(255).regex(NO_CONTROLS, CONTROL_CHARS),
+	// Spaced rather than refused: drafts saved before this kept such names, and one must still load.
+	filename: z.string().overwrite(spaceControls).min(1).max(255),
+	contentType: z.string().overwrite(spaceControls).min(1).max(255),
 	size: z.number().int().nonnegative(),
 });
 

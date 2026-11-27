@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { toBase64Url } from "./base64url";
+import { DraftSchema } from "./drafts";
 import { ComposeSchema, PushSubscriptionSchema } from "./schemas";
 
 const compose = {
@@ -16,11 +17,9 @@ describe("outbound schemas", () => {
 		expect(parsed.to[0]?.name).toBe("Friend Bcc: evil");
 	});
 
-	it.each([
-		["attachment filename", { attachments: [{ r2Key: "uploads/a", filename: "a\r\nb.pdf", contentType: "application/pdf", size: 1 }] }],
-		["attachment content type", { attachments: [{ r2Key: "uploads/a", filename: "a.pdf", contentType: "application/pdf\u0000", size: 1 }] }],
-	])("rejects control characters in %s", (_field, change) => {
-		expect(ComposeSchema.safeParse({ ...compose, ...change }).success).toBe(false);
+	it("turns control characters in an attachment's name and type into spaces, so a draft saved with them still loads", () => {
+		const parsed = DraftSchema.parse({ mailboxId: "mbx", from: "alice@example.com", to: [], cc: [], bcc: [], subject: "", text: "", attachments: [{ r2Key: "uploads/a", filename: "a\r\nb.pdf", contentType: "application/pdf\u0000", size: 1 }] });
+		expect(parsed.attachments[0]).toMatchObject({ filename: "a b.pdf", contentType: "application/pdf " });
 	});
 
 	it("still accepts ordinary text", () => {
