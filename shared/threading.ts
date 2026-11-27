@@ -5,14 +5,28 @@ export function normalizeSubject(subject: string | null | undefined): string {
 	return (subject ?? "").replace(SUBJECT_PREFIX_RE, "").replaceAll(/\s+/g, " ").trim().toLowerCase();
 }
 
+export const MAX_MESSAGE_ID_BYTES = 998;
+export const MAX_THREAD_REFERENCES = 64;
+
+export function isValidMessageId(id: string): boolean {
+	if (id.length > MAX_MESSAGE_ID_BYTES || !id.startsWith("<") || !id.endsWith(">") || id.length < 3) return false;
+	for (let i = 1; i < id.length - 1; i++) {
+		const code = id.charCodeAt(i);
+		if (code < 33 || code > 126 || code === 60 || code === 62) return false;
+	}
+	return true;
+}
+
 /** Extract `<id@host>` tokens from Message-ID / In-Reply-To / References header values. */
 export function parseMessageIds(header: string | null | undefined): string[] {
 	if (!header) return [];
 	const ids = header.match(/<[^<>\s]+>/g);
-	if (ids) return ids;
+	if (ids) return ids.filter(isValidMessageId);
 	// Some senders omit the angle brackets on a single id.
 	const bare = header.trim();
-	return bare && !/\s/.test(bare) ? [`<${bare}>`] : [];
+	if (!bare || /\s/.test(bare)) return [];
+	const id = `<${bare}>`;
+	return isValidMessageId(id) ? [id] : [];
 }
 
 export function ensureAngleBrackets(id: string): string {
@@ -29,14 +43,15 @@ export const MAX_HEADER_VALUE_BYTES = 2048;
  * (RFC 5322 §3.6.4 allows trimming the middle).
  */
 export function buildReferences(parentReferences: string[], parentMessageId: string | null): string[] {
-	const refs = [...parentReferences];
-	if (parentMessageId && !refs.includes(parentMessageId)) refs.push(parentMessageId);
+	const refs = parentReferences.filter(isValidMessageId);
+	if (parentMessageId && isValidMessageId(parentMessageId) && !refs.includes(parentMessageId)) refs.push(parentMessageId);
 	if (refs.length === 0) return refs;
 
 	const byteLength = (ids: string[]) => new TextEncoder().encode(ids.join(" ")).length;
 	if (byteLength(refs) <= MAX_HEADER_VALUE_BYTES) return refs;
 
 	const [root, ...rest] = refs as [string, ...string[]];
+	if (byteLength([root]) > MAX_HEADER_VALUE_BYTES) return [];
 	const tail: string[] = [];
 	for (let i = rest.length - 1; i >= 0; i--) {
 		const candidate = [root, rest[i]!, ...tail];

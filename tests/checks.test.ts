@@ -66,7 +66,7 @@ describe("checks by Workers AI", () => {
 
 	it("doesn't check a second copy of a message again", async () => {
 		const first = await deliver();
-		await f.control.parse(await store(VERIFIED, "Hello there", { messageId: first?.messageIdHeader ?? "" }));
+		await f.control.parse(await store(VERIFIED, "Hello there", { messageId: first?.messageIdHeader ?? "", subject: first?.subject }));
 		expect(await calls()).toHaveLength(1);
 	});
 

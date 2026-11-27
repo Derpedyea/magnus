@@ -91,7 +91,7 @@ describe("notifyNewMail", () => {
 	it("signs its pushes when another push's token never came", async () => {
 		const { keyPair, notifyNewMail, rawKey } = await import("./push");
 		const browser = await keyPair({ name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
-		const device = { endpoint: "https://push.example.net/abc", origin: "https://mail.example.com", p256dh: toBase64Url(await rawKey(browser.publicKey)), auth: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) };
+		const device = { endpoint: "https://fcm.googleapis.com/fcm/send/abc", origin: "https://mail.example.com", p256dh: toBase64Url(await rawKey(browser.publicKey)), auth: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) };
 		const signing = await keyPair({ name: "ECDSA", namedCurve: "P-256" }, ["sign", "verify"]);
 		const vapid = JSON.stringify({ publicKey: toBase64Url(await rawKey(signing.publicKey)), privateKey: await crypto.subtle.exportKey("jwk", signing.privateKey) });
 		/** The device and the install's keys; the stored push token answers with `token`. */

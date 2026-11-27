@@ -14,8 +14,11 @@ export async function fixture() {
 		d1_databases: [{ binding: "DIRECTORY", database_name: "test-directory", database_id: "test-directory", migrations_dir: "migrations" }],
 		r2_buckets: [{ binding: "MAIL", bucket_name: "test-mail" }],
 		// Production's sign-in limits (wrangler.jsonc), raised: every request here comes from one address, and counts can't be reset.
-		ratelimits: ["AUTH_LIMIT_100_PER_10S", "AUTH_LIMIT_3_PER_10S", "AUTH_LIMIT_3_PER_60S", "AUTH_LIMIT_10_PER_60S"]
-			.map((name, i) => ({ name, namespace_id: String(i + 1), simple: { limit: 1000, period: 60 } })),
+		ratelimits: [
+			...["AUTH_LIMIT_100_PER_10S", "AUTH_LIMIT_3_PER_10S", "AUTH_LIMIT_3_PER_60S", "AUTH_LIMIT_10_PER_60S"]
+				.map((name, i) => ({ name, namespace_id: String(i + 1), simple: { limit: 1000, period: 60 } })),
+			{ name: "OUTBOUND_LIMIT_30_PER_60S", namespace_id: "5", simple: { limit: 30, period: 60 } },
+		],
 		durable_objects: { bindings: [{ name: "MAILBOX", class_name: "Mailbox" }, { name: "VAULT", class_name: "Vault" }, { name: "PROTON_IMPORT", class_name: "ProtonImport" }] },
 		migrations: [{ tag: "v1", new_sqlite_classes: ["Mailbox", "Vault", "ProtonImport"] }],
 		version_metadata: { binding: "CF_VERSION_METADATA" },
@@ -88,7 +91,7 @@ export type Mailboxes = Awaited<ReturnType<Fixture["seed"]>>;
 export function inbound(mailboxId: string, id = "inbound-1"): IngestInput {
 	return {
 		id, rawKey: r2Keys.raw(id, NOW), envelopeFrom: "sender@outside.test", envelopeTo: "alice@example.com", receivedAt: NOW,
-		messageIdHeader: `<${id}@outside.test>`, inReplyTo: [], references: [], from: { address: "sender@outside.test" }, to: [{ address: "alice@example.com" }],
+		messageIdHeader: `<${id}@outside.test>`, bodyDigest: `digest-${id}`, inReplyTo: [], references: [], from: { address: "sender@outside.test" }, to: [{ address: "alice@example.com" }],
 		cc: [], replyTo: [], subject: "Secret letter", date: NOW, text: "Secret content", htmlKey: r2Keys.html(mailboxId, id), attachments: [], auth: null,
 		sender: { verified: null, internal: false, spoofed: false }, check: null, labels: [], headers: [],
 	};

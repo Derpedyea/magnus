@@ -34,7 +34,7 @@ let failures: Failure[] = [];
 // R2 deletes under these prefixes never finish, so a test can restart the Worker mid-delete as a crash would.
 let stalls: string[] = [];
 let hook: Hook | null = null;
-let pushes: { url: string; headers: Record<string, string>; body: Uint8Array }[] = [];
+let pushes: { url: string; headers: Record<string, string>; body: Uint8Array; redirect?: string }[] = [];
 let pushStatus = 201;
 // A push service answering with a body that never ends, as any endpoint someone registers could.
 let pushEndless = false;
@@ -141,7 +141,7 @@ async function withPushService<T>(run: () => Promise<T>): Promise<T> {
 	const original = globalThis.fetch;
 	Reflect.set(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
 		const request = new Request(input, init);
-		pushes.push({ url: request.url, headers: Object.fromEntries(request.headers), body: new Uint8Array(await request.arrayBuffer()) });
+		pushes.push({ url: request.url, headers: Object.fromEntries(request.headers), body: new Uint8Array(await request.arrayBuffer()), redirect: request.redirect });
 		const endless = new ReadableStream({ start: (controller) => controller.enqueue(new TextEncoder().encode("x".repeat(1000))) });
 		return new Response(pushEndless ? endless : null, { status: pushStatus });
 	});
@@ -500,7 +500,7 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	restored() { return restored; }
 	state() {
 		return { jobs, modelCalls, sends: sends.map((message) => ({
-			from: message.from, to: message.to, cc: message.cc, bcc: message.bcc, subject: message.subject, text: message.text, html: message.html,
+			from: message.from, to: message.to, cc: message.cc, bcc: message.bcc, subject: message.subject, text: message.text, html: message.html, headers: message.headers,
 			attachments: message.attachments?.map((a) => ({
 				filename: a.filename, type: a.type, disposition: a.disposition, contentId: a.contentId,
 				content: typeof a.content === "string" ? a.content : new TextDecoder().decode(a.content),

@@ -31,8 +31,11 @@ export type RecipientResolution =
 export async function resolveRecipient(db: D1Database, senders: string[], envelopeTo: string): Promise<RecipientResolution> {
 	const { base, tag } = stripSubaddress(envelopeTo);
 	const { domain } = splitAddress(base);
-	// Each sender, and everyone at its domain. A bounce's envelope sender is empty.
-	const blocks = senders.map(normalizeAddress).filter((s) => s.includes("@")).flatMap((s) => [s, `*@${splitAddress(s).domain}`]);
+	// Each sender, its address without a +tag, and everyone at its domain. A bounce's envelope sender is empty.
+	const blocks = senders.map(normalizeAddress).filter((s) => s.includes("@")).flatMap((s) => {
+		const base = stripSubaddress(s).base;
+		return [...new Set([s, base, `*@${splitAddress(s).domain}`])];
+	});
 
 	// A removed person's mailboxes (worker/removals.ts) take nothing.
 	const [routes, dom, blocked] = await Promise.all([
@@ -235,6 +238,32 @@ export async function isRevokedSend(db: D1Database, mailboxId: string, sendId: s
 /** For work no request is behind (an import running on): whether the person is still in the mailbox. */
 export async function hasMember(db: D1Database, mailboxId: string, userId: string): Promise<boolean> {
 	return (await db.prepare(`SELECT 1 AS ok FROM mailbox_members WHERE user_id = ?1 AND mailbox_id = ?2`).bind(userId, mailboxId).first()) !== null;
+}
+
+export interface OutboxSendAccess {
+	user: boolean;
+	member: boolean;
+	identity: boolean;
+}
+
+/**
+ * Whether a queued send may still go: its sender is present and unsuspended, still in the mailbox, and the From
+ * address is still routed there with send permission on an enabled sending domain. One fresh directory answer, so a
+ * revocation can't slip between separate checks.
+ */
+export async function outboxSendAccess(db: D1Database, mailboxId: string, userId: string, address: string): Promise<OutboxSendAccess> {
+	const row = await db
+		.prepare(
+			`SELECT EXISTS(SELECT 1 FROM auth_users WHERE id = ?2 AND coalesce(banned, 0) = 0) AS user_active,
+				EXISTS(SELECT 1 FROM mailbox_members WHERE user_id = ?2 AND mailbox_id = ?1) AS member,
+				EXISTS(SELECT 1 FROM address_routes r
+					JOIN addresses a ON a.address = r.address
+					JOIN domains d ON d.name = a.domain
+					WHERE r.mailbox_id = ?1 AND r.address = ?3 AND r.can_send = 1 AND a.enabled = 1 AND d.sending = 1) AS identity`,
+		)
+		.bind(mailboxId, userId, normalizeAddress(address))
+		.first<{ user_active: number; member: number; identity: number }>();
+	return { user: row?.user_active === 1, member: row?.member === 1, identity: row?.identity === 1 };
 }
 
 /** Still in the directory, its person removed or not: mail queued for it is delivered, so a restore loses none. */
