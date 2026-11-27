@@ -607,6 +607,7 @@ function MessageHeader(props: { mailboxId: string; message: MessageDetail; outgo
 					</span>
 				) : null}
 				{props.outgoing ? <DeliveryBadge message={m} /> : null}
+				{m.imported ? <Badge variant="secondary">Imported</Badge> : null}
 				<time dateTime={date.toISOString()} className={cn("shrink-0 text-xs text-muted-foreground", !props.outgoing && "ml-auto")}>
 					{letterDate(date)}
 				</time>

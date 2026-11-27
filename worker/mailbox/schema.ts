@@ -265,4 +265,8 @@ export const MIGRATIONS: string[] = [
 		PRIMARY KEY (message_id, rule_id)
 	);
 	`,
+	`
+	-- Where a message came from when it was imported (Imported.source); null for live mail and imports before provenance was kept.
+	ALTER TABLE messages ADD COLUMN imported_source TEXT;
+	`,
 ];

@@ -181,6 +181,7 @@ interface MessageRow extends Row {
 	delivery_status: DeliveryStatus | null;
 	delivery_detail: string | null;
 	headers_json: string | null;
+	imported_source: "upload" | "proton" | null;
 	labels: string;
 }
 
@@ -770,8 +771,7 @@ export class Mailbox extends DurableObject<Env> {
 		}
 
 		const snippet = makeSnippet(input.text);
-		// Threads of held mail that imported sent mail lets in, writing to its senders (recordContacts()).
-		let released: string[] = [];
+		// Contacts imported sent mail names, without trusting their mail just because a file claims they were written to.
 		const delivered = this.ctx.storage.transactionSync(() => {
 			const threadId =
 				this.findThread(input) ?? this.createThread(input.subject, input.date);
@@ -785,8 +785,8 @@ export class Mailbox extends DurableObject<Env> {
 				.exec<{ rowid: number }>(
 					`INSERT INTO messages (id, thread_id, direction, message_id_header, in_reply_to, refs,
 						envelope_from, envelope_to, from_json, to_json, cc_json, reply_to_json, subject, snippet,
-						date, received_at, text_body, html_key, raw_key, is_read, auth_json, verdict_json, sender, bcc_json, headers_json)
-					 VALUES (?1, ?2, ?22, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?23, ?19, ?20, ?21, ?24, ?25)
+						date, received_at, text_body, html_key, raw_key, is_read, auth_json, verdict_json, sender, bcc_json, headers_json, imported_source)
+					 VALUES (?1, ?2, ?22, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?23, ?19, ?20, ?21, ?24, ?25, ?26)
 					 RETURNING rowid`,
 					input.id,
 					threadId,
@@ -813,6 +813,7 @@ export class Mailbox extends DurableObject<Env> {
 					input.imported?.read ? 1 : 0,
 					JSON.stringify(input.bcc ?? []),
 					JSON.stringify(input.headers),
+					input.imported?.source ?? null,
 				)
 				.one();
 
@@ -842,7 +843,7 @@ export class Mailbox extends DurableObject<Env> {
 					input.date,
 				);
 			}
-			if (input.imported?.sent) released = this.recordContacts([...input.to, ...input.cc, ...bcc], true, input.date, true);
+			if (input.imported?.sent) this.recordContacts([...input.to, ...input.cc, ...bcc], true, input.date, false);
 			else if (!labels.includes("spam")) this.recordContacts([input.from], false, input.date);
 			// Delivered by a retry.
 			this.sql.exec(`DELETE FROM failed WHERE id = ?1`, input.id);
@@ -858,7 +859,7 @@ export class Mailbox extends DurableObject<Env> {
 			return { threadId, inbox: !input.imported && placed[0] === "inbox" && (!ruled || waiting()) };
 		});
 
-		this.broadcast({ type: "threads.changed", threadIds: [...new Set([delivered.threadId, ...released])] });
+		this.broadcast({ type: "threads.changed", threadIds: [delivered.threadId] });
 		return { threadId: delivered.threadId, duplicate: false, inbox: delivered.inbox };
 	}
 
@@ -1122,10 +1123,10 @@ export class Mailbox extends DurableObject<Env> {
 	/**
 	 * Remembers who this mailbox writes to (`sent`) and hears from, for recipient suggestions. Writing to someone also
 	 * trusts their mail, even if it was marked as spam before, and lets them in from the Screener; returns the threads
-	 * that moved. An undone send still counts: the address was typed on purpose. Sent mail imported from elsewhere
-	 * (`imported`) does so only for people not judged here yet: it's older than whatever this mailbox has said of them.
+	 * that moved. An undone send still counts: the address was typed on purpose. Imported sent mail only makes contacts
+	 * (`trust` false): its claimed recipients aren't proof this mailbox's people chose to write to them.
 	 */
-	private recordContacts(people: Address[], sent: boolean, at: number, imported = false): string[] {
+	private recordContacts(people: Address[], sent: boolean, at: number, trust = true): string[] {
 		const valid = people.filter((p) => isValidAddress(p.address));
 		for (const p of valid) {
 			this.sql.exec(
@@ -1140,15 +1141,9 @@ export class Mailbox extends DurableObject<Env> {
 				at,
 			);
 		}
-		if (!sent) return [];
+		if (!sent || !trust) return [];
 		const addresses = [...new Set(valid.map((p) => normalizeAddress(p.address)))];
-		const judging = imported
-			? this.sql
-					.exec<{ value: string }>(`SELECT value FROM json_each(?1) WHERE value NOT IN (SELECT address FROM senders)`, JSON.stringify(addresses))
-					.toArray()
-					.map((r) => r.value)
-			: addresses;
-		return this.judgeAddresses(judging, "trusted");
+		return this.judgeAddresses(addresses, "trusted");
 	}
 
 	private addAddress(messageId: string, address: string): void {
@@ -2835,6 +2830,8 @@ function toMessageDetail(m: MessageRow, attachments: AttachmentRow[], undelivere
 		auth: m.auth_json ? JSON.parse(m.auth_json) : null,
 		verdict: m.verdict_json ? JSON.parse(m.verdict_json) : null,
 		senderVerified: m.sender !== null,
+		imported: m.imported_source !== null || (m.raw_key?.endsWith("/original.eml") ?? false),
+		importSource: m.imported_source,
 		rules,
 		// Mail from before headers were kept has none to offer.
 		unsubscribe: m.direction === "in" && m.headers_json !== null && m.headers_json.includes('"list-unsubscribe"') && offersUnsubscribe(JSON.parse(m.headers_json)),

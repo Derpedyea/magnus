@@ -102,8 +102,8 @@ describe("importing from Proton on the server", () => {
 		const jobs = (await f.control.state()).jobs;
 		expect(jobs.map((j) => j.imported)).toEqual(
 			expect.arrayContaining([
-				{ labels: ["inbox", "work-clients"], paths: ["Work/Clients"], read: false, sent: false, addresses: ["alice@example.com"] },
-				{ labels: ["sent"], read: true, sent: true, addresses: ["alice@example.com"] },
+				{ source: "proton", labels: ["inbox", "work-clients"], paths: ["Work/Clients"], read: false, sent: false, addresses: ["alice@example.com"] },
+				{ source: "proton", labels: ["sent"], read: true, sent: true, addresses: ["alice@example.com"] },
 			]),
 		);
 		expect(jobs).toHaveLength(2);

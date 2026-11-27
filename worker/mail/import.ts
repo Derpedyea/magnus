@@ -1,4 +1,4 @@
-import { type Imported, type InboundJob, isValidAddress, r2Keys, stripSubaddress, ulid } from "#shared";
+import { type Imported, type ImportSource, type InboundJob, isValidAddress, r2Keys, stripSubaddress, ulid } from "#shared";
 import type { ImportPlacement } from "#shared/import";
 import PostalMime, { type Address as ParsedAddress } from "postal-mime";
 
@@ -17,7 +17,7 @@ const MAX_ULID_TIME = 2 ** 48 - 1;
  * can't be queued, the original stays for the browser to retry; one never retried is overwritten by the next import of
  * that file, or deleted with the mailbox. It isn't deleted here, since the same file can be queued from another upload.
  */
-export async function importMessage(env: Env, mailboxId: string, raw: Uint8Array, placement: ImportPlacement): Promise<{ id: string } | { refused: string }> {
+export async function importMessage(env: Env, mailboxId: string, raw: Uint8Array, placement: ImportPlacement, source: ImportSource = "upload"): Promise<{ id: string } | { refused: string }> {
 	const block = headerBlock(raw);
 	const headers = block ? await PostalMime.parse(block) : null;
 	if (!headers || !(headers.from || headers.messageId || headers.date)) return { refused: "This file isn't an email message" };
@@ -60,7 +60,7 @@ export async function importMessage(env: Env, mailboxId: string, raw: Uint8Array
 	const rawKey = r2Keys.imported(mailboxId, id);
 	// With nothing to say where it was, mail from one of our addresses goes to Sent.
 	const labels = sent && placement.sent === undefined ? [...new Set([...placement.labels, "sent"])] : placement.labels;
-	const imported: Imported = { labels, ...(placement.paths?.length ? { paths: placement.paths } : {}), read: placement.read, sent, addresses: filed };
+	const imported: Imported = { source, labels, ...(placement.paths?.length ? { paths: placement.paths } : {}), read: placement.read, sent, addresses: filed };
 
 	await env.MAIL.put(rawKey, raw, { httpMetadata: { contentType: "message/rfc822" }, customMetadata: { mailboxes: mailboxId } });
 	const job: InboundJob = {

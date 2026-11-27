@@ -187,6 +187,16 @@ describe("runImport", () => {
 		expect(h.progress).toHaveLength(4);
 	});
 
+	it("backs off and retries when the import rate limit answers 429, without spending the failure retries", async () => {
+		const h = harness({
+			"0.eml": [new ApiError("Too many", 429), new ApiError("Too many", 429), new ApiError("Busy", 503), null],
+		});
+		const outcome = await runImport(items(1), { ...h.options, concurrency: 1 });
+		expect(outcome).toMatchObject({ done: 1, failed: [], stopped: false, fatal: null });
+		expect(h.calls).toEqual(["0.eml", "0.eml", "0.eml", "0.eml"]);
+		expect(h.waits).toEqual([5000, 15_000, RETRY_DELAYS[0]]);
+	});
+
 	it.each([
 		[401, "You were signed out. Sign in and import the same export again to finish."],
 		[404, "You can't import into this mailbox anymore."],

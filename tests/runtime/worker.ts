@@ -149,7 +149,7 @@ const JobSchema = z.object({
 	checkFailures: z.number().optional(),
 	ruleFailures: z.number().optional(),
 	check: z.custom<MailCheck | null>().optional(),
-	imported: z.object({ labels: z.array(z.string()), paths: z.array(z.string()).optional(), read: z.boolean(), sent: z.boolean(), addresses: z.array(z.string()) }).optional(),
+	imported: z.object({ source: z.enum(["upload", "proton"]).optional(), labels: z.array(z.string()), paths: z.array(z.string()).optional(), read: z.boolean(), sent: z.boolean(), addresses: z.array(z.string()) }).optional(),
 }) satisfies z.ZodType<InboundJob>;
 
 // Real storage throughout. Only the provider, queue handoff, and explicit failure/race points are controlled.

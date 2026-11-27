@@ -10,6 +10,7 @@ interface __BaseEnv_Env {
 	AUTH_LIMIT_3_PER_10S: RateLimit;
 	AUTH_LIMIT_3_PER_60S: RateLimit;
 	AUTH_LIMIT_10_PER_60S: RateLimit;
+	IMPORT_LIMIT_60_PER_60S: RateLimit;
 	AI: Ai;
 	CF_VERSION_METADATA: WorkerVersionMetadata;
 	MAILBOX: DurableObjectNamespace<import("./worker/index").Mailbox>;

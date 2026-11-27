@@ -454,7 +454,7 @@ export class ProtonImport extends DurableObject<Env> {
 		// Checked again just before filing: Stop, or the person leaving the mailbox, while it was on its way here.
 		// What's already inside importMessage() lands (Known gaps).
 		if (!(await hasMember(this.env.DIRECTORY, job.mailbox_id, job.user_id)) || !this.#isCurrent(job.id)) return null;
-		const result = await importMessage(this.env, job.mailbox_id, raw, placement);
+		const result = await importMessage(this.env, job.mailbox_id, raw, placement, "proton");
 		return "refused" in result ? { outcome: "refused", error: result.refused } : { outcome: "imported", error: null };
 	}
 
