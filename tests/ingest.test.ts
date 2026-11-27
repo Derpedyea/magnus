@@ -35,6 +35,19 @@ describe("ingest", () => {
 		expect(await (await f.env.MAIL.get(r2Keys.attachment(ids.alice, input.ingestId, `${input.ingestId}-1`)))?.text()).toBe("%PDF");
 	});
 
+	it("stores only the first In-Reply-To id, and of 100 References the root and newest 63", async () => {
+		const refs = Array.from({ length: 100 }, (_, i) => `<r${i}@outside.test>`);
+		const raw = MIME
+			.replace("In-Reply-To: <parent@outside.test>", "In-Reply-To: <first@outside.test> <second@outside.test>")
+			.replace("References: <root@outside.test> <parent@outside.test>", `References: ${refs.join(" ")}`);
+		const input = await store(raw);
+		await f.control.parse(input);
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		expect(await db.exec("SELECT in_reply_to, refs FROM messages")).toEqual([
+			{ in_reply_to: '["<first@outside.test>"]', refs: JSON.stringify([refs[0], ...refs.slice(-63)]) },
+		]);
+	});
+
 	it("replays the same job without duplicate messages or orphaned objects, and isolates fan-out copies", async () => {
 		const input = await store();
 		await f.control.parse(input);
@@ -45,6 +58,52 @@ describe("ingest", () => {
 		expect(a).toMatchObject([{ messageCount: 1 }]);
 		expect(b).toMatchObject([{ messageCount: 1 }]);
 		expect((await f.env.MAIL.list()).objects).toHaveLength(7);
+	});
+
+	it("merges copies of one message delivered to two addresses even when transit headers differ", async () => {
+		const first = job(ids.alice, "copy-1");
+		const second = { ...job(ids.alice, "copy-2"), envelopeTo: "family@example.com" };
+		await f.env.MAIL.put(first.rawKey, MIME);
+		await f.env.MAIL.put(second.rawKey, MIME.replace("Subject:", "Delivered-To: family@example.com\r\nSubject:"));
+		await f.control.parse(first);
+		const checked = (await f.control.state()).modelCalls.length;
+		expect(checked).toBeGreaterThan(0);
+		await f.control.parse(second);
+		expect((await f.control.state()).modelCalls).toHaveLength(checked);
+		expect(await f.env.MAILBOX.getByName(ids.alice).getMessage(second.ingestId)).toBeNull();
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		expect(await db.exec("SELECT message_id, address FROM message_addresses ORDER BY address")).toEqual([
+			{ message_id: first.ingestId, address: "alice@example.com" },
+			{ message_id: first.ingestId, address: "family@example.com" },
+		]);
+		expect((await f.env.MAIL.list()).objects.map((o) => o.key).filter((key) => key.includes("copy-2") && !key.endsWith(".eml"))).toEqual([]);
+		expect((await f.env.MAIL.list()).objects).toHaveLength(5);
+		await f.control.setNow(NOW + 24 * 3600 * 1000);
+		await f.env.MAILBOX.getByName(ids.alice).drain();
+		expect((await f.env.MAIL.list()).objects.map((o) => o.key).filter((key) => key.includes("copy-2"))).toEqual([]);
+		expect((await f.env.MAIL.list()).objects).toHaveLength(4);
+	});
+
+	it("keeps different messages whose sender reused one Message-ID", async () => {
+		const first = job(ids.alice, "real-1");
+		const collision = job(ids.alice, "collision-1");
+		await f.env.MAIL.put(first.rawKey, MIME);
+		await f.env.MAIL.put(collision.rawKey, MIME.replaceAll("Your receipt", "Different content"));
+		await f.control.parse(first);
+		const checked = (await f.control.state()).modelCalls.length;
+		await f.control.parse(collision);
+		expect((await f.control.state()).modelCalls.length).toBeGreaterThan(checked);
+		expect((await f.env.MAILBOX.getByName(ids.alice).holding([first.ingestId, collision.ingestId])).toSorted()).toEqual([first.ingestId, collision.ingestId].toSorted());
+	});
+
+	it("keeps a copied body sent under the same Message-ID with another Reply-To", async () => {
+		const first = job(ids.alice, "real-2");
+		const collision = job(ids.alice, "collision-2");
+		await f.env.MAIL.put(first.rawKey, MIME);
+		await f.env.MAIL.put(collision.rawKey, MIME.replace(/^Reply-To:.*$/m, "Reply-To: attacker@outside.test"));
+		await f.control.parse(first);
+		await f.control.parse(collision);
+		expect((await f.env.MAILBOX.getByName(ids.alice).holding([first.ingestId, collision.ingestId])).toSorted()).toEqual([first.ingestId, collision.ingestId].toSorted());
 	});
 
 	it.each(["get", "put", "directory"] as const)("propagates %s failures and a replay completes from the retained original", async (operation) => {

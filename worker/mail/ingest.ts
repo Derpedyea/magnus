@@ -9,6 +9,7 @@ import {
 	type MailHeader,
 	matchConditions,
 	MAX_AI_RULES,
+	MAX_THREAD_REFERENCES,
 	normalizeAddress,
 	parseMessageIds,
 	r2Keys,
@@ -32,11 +33,45 @@ import { checkRules } from "./rules";
  */
 const CHECK_ATTEMPTS = 3;
 const MAX_CHECK_ERROR = 300;
+const MAX_ATTACHMENTS = 500;
+const MAX_MIME_PARTS = 1000;
+const MAX_MIME_NESTING_DEPTH = 32;
+const MAX_RFC822_NESTING_DEPTH = 2;
+const MAX_MIME_HEADERS_SIZE = 256 * 1024;
 /** Headers kept for rules (MailHeader), at most, and each one's length. */
 const MAX_HEADERS = 60;
 const MAX_HEADER_VALUE = 500;
 /** Headers every message has a pile of, which say how it travelled or was signed rather than anything a rule is about. */
 const TRACE_HEADERS = /^(?:received|dkim-signature|arc-.*|authentication-results)$/;
+
+const PARSE_LIMIT_CODES = new Set(["EMAXNESTINGDEPTH", "EMAXHEADERSIZE", "EMAXPARTCOUNT", "EMAXFORWARDEDADDRESSES"]);
+
+class PermanentParseError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "PermanentParseError";
+	}
+}
+
+export function isPermanentParseError(error: unknown): boolean {
+	return error instanceof PermanentParseError;
+}
+
+async function parseEmail(raw: ArrayBuffer): Promise<Email> {
+	try {
+		return await PostalMime.parse(raw, {
+			attachmentEncoding: "arraybuffer",
+			maxPartCount: MAX_MIME_PARTS,
+			maxNestingDepth: MAX_MIME_NESTING_DEPTH,
+			maxRfc822NestingDepth: MAX_RFC822_NESTING_DEPTH,
+			maxHeadersSize: MAX_MIME_HEADERS_SIZE,
+		});
+	} catch (error) {
+		const code = error instanceof Error && "code" in error ? error.code : null;
+		if (typeof code === "string" && PARSE_LIMIT_CODES.has(code)) throw new PermanentParseError(error instanceof Error ? error.message : String(error));
+		throw error;
+	}
+}
 
 /** Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. */
 export async function ingest(env: Env, job: InboundJob, models: Models = env.AI): Promise<void> {
@@ -51,7 +86,10 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		return;
 	}
 
-	const email = await PostalMime.parse(await raw.arrayBuffer(), { attachmentEncoding: "arraybuffer" });
+	const bytes = await raw.arrayBuffer();
+	const email = await parseEmail(bytes);
+	if (email.attachments.length > MAX_ATTACHMENTS) throw new PermanentParseError(`Too many attachments: ${email.attachments.length} exceeds ${MAX_ATTACHMENTS}`);
+	const bodyDigest = await digestBody(bytes, email);
 	const messageId = job.ingestId;
 	const mailbox = env.MAILBOX.getByName(job.mailboxId);
 
@@ -66,7 +104,7 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 	const subject = email.subject ?? "(no subject)";
 	const messageIdHeader = email.messageId ? (parseMessageIds(email.messageId)[0] ?? null) : null;
 	// A job queued again for its rules (rulesOrGiveUp()) carries what the checks said.
-	const needed = !imported && job.check === undefined && (await mailbox.needsCheck(sender, messageIdHeader, messageId));
+	const needed = !imported && job.check === undefined && (await mailbox.needsCheck(sender, messageIdHeader, messageId, bodyDigest));
 	// Read for the models only when they're asked: parsing a big body costs CPU that known senders' mail needn't.
 	const read = async (): Promise<MailFacts> => ({
 		to: job.envelopeTo,
@@ -91,7 +129,7 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 	const headers = keptHeaders(email);
 	const ruleFacts: RuleFacts = { from, to, cc, envelopeTo: job.envelopeTo, subject, text, headers, sender, attachments: email.attachments.map((a) => ({ inline: isInline(a) })) };
 	// Rules whose AI conditions the model reads, once the rest of each matches. Imported mail stays where it was filed.
-	const candidates = imported ? [] : (await mailbox.aiRules(sender, check, messageIdHeader, messageId)).filter((rule) => matchConditions(rule, ruleFacts)).slice(0, MAX_AI_RULES);
+	const candidates = imported ? [] : (await mailbox.aiRules(sender, check, messageIdHeader, messageId, bodyDigest)).filter((rule) => matchConditions(rule, ruleFacts)).slice(0, MAX_AI_RULES);
 	let ruleAnswers: Record<string, RuleAnswer> | undefined;
 	if (candidates.length > 0) {
 		const mail = facts ?? (await read());
@@ -135,8 +173,9 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		envelopeTo: job.envelopeTo,
 		receivedAt: job.receivedAt,
 		messageIdHeader,
-		inReplyTo: parseMessageIds(email.inReplyTo),
-		references: withoutOwnReference(email),
+		bodyDigest,
+		inReplyTo: parseMessageIds(email.inReplyTo).slice(0, 1),
+		references: boundReferences(withoutOwnReference(email)),
 		from,
 		to,
 		cc,
@@ -173,6 +212,38 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 			console.error(JSON.stringify({ msg: "push failed", ingestId: job.ingestId, mailboxId: job.mailboxId, error: String(error) })),
 		);
 	}
+}
+
+/** The root and the newest of a long References: the root still joins an import to its thread, the newest a live reply. */
+function boundReferences(refs: string[]): string[] {
+	return refs.length <= MAX_THREAD_REFERENCES ? refs : [refs[0]!, ...refs.slice(1 - MAX_THREAD_REFERENCES)];
+}
+
+/**
+ * SHA-256 of who the message says it's from, its subject and date, and the body after the header block. Transit headers
+ * (Received, Delivered-To) differ between copies of one message; these don't, so a sender-controlled Message-ID reused
+ * with another body, or with the same body under another From or Reply-To, is a different message.
+ */
+async function digestBody(raw: ArrayBuffer, email: Email): Promise<string> {
+	const bytes = new Uint8Array(raw);
+	let body = bytes.subarray(bytes.length);
+	for (let i = 0; i < bytes.length - 1; i++) {
+		if (bytes[i] !== 10) continue;
+		if (bytes[i + 1] === 10) {
+			body = bytes.subarray(i + 2);
+			break;
+		}
+		if (bytes[i + 1] === 13 && bytes[i + 2] === 10) {
+			body = bytes.subarray(i + 3);
+			break;
+		}
+	}
+	const said = new TextEncoder().encode(`${JSON.stringify([email.from ?? null, email.sender ?? null, email.replyTo ?? null, email.subject ?? null, email.date ?? null])}\n`);
+	const whole = new Uint8Array(said.length + body.length);
+	whole.set(said);
+	whole.set(body, said.length);
+	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", whole));
+	return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /**

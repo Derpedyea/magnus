@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { asQueued, fixture, type Fixture, type Mailboxes, NOW, sendInput } from "./runtime/fixture";
+import { asQueued, fixture, type Fixture, inbound, type Mailboxes, NOW, sendInput } from "./runtime/fixture";
 import { r2Keys, type SendAttachmentRef } from "#shared";
 
 describe("send alarm", () => {
@@ -100,6 +100,15 @@ describe("send alarm", () => {
 			attachments: [{ filename: "receiptname.pdf", type: "application/pdfX-Evil: yes" }],
 		});
 		expect(sent?.text).toContain("Hello\tworld");
+	});
+
+	it("omits reply headers when the parent's id cannot fit in one", async () => {
+		const parent = inbound(ids.alice, "parent");
+		parent.messageIdHeader = `<${"x".repeat(3000)}@outside.test>`;
+		await mailbox().ingest(parent);
+		await mailbox().enqueueSend(sendInput(ids.alice, { parentMessageId: parent.id }));
+		await mailbox().drain();
+		expect((await f.control.state()).sends[0]?.headers).toBeUndefined();
 	});
 
 	it.each(["E_RATE_LIMIT_EXCEEDED", "E_DAILY_LIMIT_EXCEEDED", "E_INTERNAL_SERVER_ERROR", "E_DELIVERY_FAILED"])("backs off %s and stops after eight attempts", async (code) => {
