@@ -34,6 +34,7 @@ import { findQuote, isForward, splitQuote } from "../quotes";
 import { type Branch, replyTree } from "../replies";
 import { useDraftEntries } from "../drafts";
 import { useLabels } from "../labels";
+import { forwardKey } from "../mail-frame";
 import { currentSession } from "../session";
 import { appearance } from "../theme";
 import { BlockSender, useCanBlock } from "./BlockSender";
@@ -903,9 +904,7 @@ function HtmlBody({
 	useEffect(() => {
 		const frame = ref.current;
 		if (!doc || !frame) return;
-		const forward = (e: KeyboardEvent) => {
-			if (!frame.dispatchEvent(new KeyboardEvent(e.type, e))) e.preventDefault();
-		};
+		const forward = (e: KeyboardEvent) => forwardKey(frame, e);
 		doc.addEventListener("keydown", forward);
 		doc.addEventListener("keyup", forward);
 		return () => {
