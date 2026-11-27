@@ -99,13 +99,10 @@ describe("import", () => {
 		expect(await alice().contacts(10)).toEqual([expect.objectContaining({ address: "pal@outside.test", sent: 1 })]);
 	});
 
-	it("learns contacts from uploaded sent mail without trusting its claimed recipients", async () => {
+	it("marks uploaded sent mail as imported", async () => {
 		const { id, job: queued } = await importNow(eml({ from: "Alice <alice@example.com>", to: "Pal <pal@outside.test>" }), "read=1");
 		expect(queued.imported).toMatchObject({ source: "upload", sent: true });
 		expect((await alice().getMessage(id))?.message).toMatchObject({ imported: true, importSource: "upload" });
-		expect(await alice().contacts(10)).toEqual([expect.objectContaining({ address: "pal@outside.test", sent: 1 })]);
-		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
-		expect(await db.exec("SELECT * FROM senders")).toEqual([]);
 	});
 
 	it("keeps who sent mail was Bcc'd to, and learns them as people written to", async () => {

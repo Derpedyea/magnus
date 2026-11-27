@@ -771,7 +771,8 @@ export class Mailbox extends DurableObject<Env> {
 		}
 
 		const snippet = makeSnippet(input.text);
-		// Contacts imported sent mail names, without trusting their mail just because a file claims they were written to.
+		// Threads of held mail that imported sent mail lets in, writing to its senders (recordContacts()).
+		let released: string[] = [];
 		const delivered = this.ctx.storage.transactionSync(() => {
 			const threadId =
 				this.findThread(input) ?? this.createThread(input.subject, input.date);
@@ -843,7 +844,7 @@ export class Mailbox extends DurableObject<Env> {
 					input.date,
 				);
 			}
-			if (input.imported?.sent) this.recordContacts([...input.to, ...input.cc, ...bcc], true, input.date, false);
+			if (input.imported?.sent) released = this.recordContacts([...input.to, ...input.cc, ...bcc], true, input.date, true);
 			else if (!labels.includes("spam")) this.recordContacts([input.from], false, input.date);
 			// Delivered by a retry.
 			this.sql.exec(`DELETE FROM failed WHERE id = ?1`, input.id);
@@ -859,7 +860,7 @@ export class Mailbox extends DurableObject<Env> {
 			return { threadId, inbox: !input.imported && placed[0] === "inbox" && (!ruled || waiting()) };
 		});
 
-		this.broadcast({ type: "threads.changed", threadIds: [delivered.threadId] });
+		this.broadcast({ type: "threads.changed", threadIds: [...new Set([delivered.threadId, ...released])] });
 		return { threadId: delivered.threadId, duplicate: false, inbox: delivered.inbox };
 	}
 
@@ -1123,10 +1124,12 @@ export class Mailbox extends DurableObject<Env> {
 	/**
 	 * Remembers who this mailbox writes to (`sent`) and hears from, for recipient suggestions. Writing to someone also
 	 * trusts their mail, even if it was marked as spam before, and lets them in from the Screener; returns the threads
-	 * that moved. An undone send still counts: the address was typed on purpose. Imported sent mail only makes contacts
-	 * (`trust` false): its claimed recipients aren't proof this mailbox's people chose to write to them.
+	 * that moved. An undone send still counts: the address was typed on purpose. Sent mail imported from elsewhere
+	 * (`imported`) does so only for people not judged here yet: it's older than whatever this mailbox has said of them.
+	 * A member could trust anyone just as well by writing to them, so an import isn't a way around anything; it's marked
+	 * as imported where it's shown.
 	 */
-	private recordContacts(people: Address[], sent: boolean, at: number, trust = true): string[] {
+	private recordContacts(people: Address[], sent: boolean, at: number, imported = false): string[] {
 		const valid = people.filter((p) => isValidAddress(p.address));
 		for (const p of valid) {
 			this.sql.exec(
@@ -1141,9 +1144,15 @@ export class Mailbox extends DurableObject<Env> {
 				at,
 			);
 		}
-		if (!sent || !trust) return [];
+		if (!sent) return [];
 		const addresses = [...new Set(valid.map((p) => normalizeAddress(p.address)))];
-		return this.judgeAddresses(addresses, "trusted");
+		const judging = imported
+			? this.sql
+					.exec<{ value: string }>(`SELECT value FROM json_each(?1) WHERE value NOT IN (SELECT address FROM senders)`, JSON.stringify(addresses))
+					.toArray()
+					.map((r) => r.value)
+			: addresses;
+		return this.judgeAddresses(judging, "trusted");
 	}
 
 	private addAddress(messageId: string, address: string): void {
