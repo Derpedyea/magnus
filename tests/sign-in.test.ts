@@ -49,6 +49,53 @@ describe("sign-in", () => {
 
 	const signsIn = (response: Reply) => response.headers.getSetCookie().some((cookie) => cookie.includes("session_token"));
 
+	async function googleSignIn(claims: Record<string, unknown>) {
+		const token = await f.control.signGoogleToken(claims);
+		return call("/auth/sign-in/social", "", { provider: "google", idToken: { token } });
+	}
+
+	it("won't link a Google account for a third-party address Google doesn't vouch for", async () => {
+		const response = await googleSignIn({ email: "alice@login.test", email_verified: true });
+		expect(response.status).toBe(401);
+		expect(signsIn(response)).toBe(false);
+		expect(await f.env.DIRECTORY.prepare("SELECT 1 FROM auth_accounts WHERE userId = 'alice'").first()).toBeNull();
+	});
+
+	it.each([
+		["a Gmail address", "alice@gmail.com", {}],
+		["a Workspace account", "alice@login.test", { hd: "workspace.test" }],
+	])("still joins the existing person with %s", async (_, email, claims) => {
+		await f.env.DIRECTORY.prepare("UPDATE auth_users SET email = ?1 WHERE id = 'alice'").bind(email).run();
+		const response = await googleSignIn({ email, email_verified: true, ...claims });
+		expect(response.status).toBe(200);
+		expect(signsIn(response)).toBe(true);
+		expect(await (await call("/me", jar("", response))).json()).toMatchObject({ user: { id: "alice" } });
+		expect(await f.env.DIRECTORY.prepare("SELECT providerId, userId FROM auth_accounts").first()).toEqual({ providerId: "google", userId: "alice" });
+	});
+
+	it("throttles sign-in codes per email, the same whether or not the person exists", async () => {
+		const send = (email: string) => call("/auth/email-otp/send-verification-otp", "", { email, type: "sign-in" });
+		for (const email of ["alice@login.test", "nobody@login.test"]) {
+			for (let i = 0; i < 5; i++) expect((await send(email)).status).toBe(200);
+			const throttled = await send(email);
+			expect(throttled.status).toBe(429);
+			expect(await throttled.json()).toMatchObject({ message: "Too many sign-in attempts for this address. Try again later." });
+		}
+	});
+
+	it("throttles sign-in code checks per email before a fresh code can be guessed", async () => {
+		const email = "alice@login.test";
+		let code = await f.control.code(email);
+		const wrong = code === "000000" ? "000001" : "000000";
+		for (let i = 0; i < 10; i++) {
+			expect((await call("/auth/sign-in/email-otp", "", { email, otp: wrong })).status).not.toBe(429);
+		}
+		code = await f.control.code(email);
+		const correct = await call("/auth/sign-in/email-otp", "", { email, otp: code });
+		expect(correct.status).toBe(429);
+		expect(signsIn(correct)).toBe(false);
+	});
+
 	it("adds a passkey on a fresh session, then signs in with it alone", async () => {
 		const key = await authenticator();
 		await register(await f.login("alice"), key);

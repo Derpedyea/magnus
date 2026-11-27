@@ -19,7 +19,7 @@ export async function fixture() {
 		durable_objects: { bindings: [{ name: "MAILBOX", class_name: "Mailbox" }, { name: "VAULT", class_name: "Vault" }, { name: "PROTON_IMPORT", class_name: "ProtonImport" }] },
 		migrations: [{ tag: "v1", new_sqlite_classes: ["Mailbox", "Vault", "ProtonImport"] }],
 		version_metadata: { binding: "CF_VERSION_METADATA" },
-		vars: { GOOGLE_CLIENT_ID: "", GOOGLE_CLIENT_SECRET: "", DEV_USER_EMAIL: "" },
+		vars: { GOOGLE_CLIENT_ID: "test-google-client", GOOGLE_CLIENT_SECRET: "test-google-secret", DEV_USER_EMAIL: "" },
 	} }] });
 	const worker = server.getWorker<TestEnv, typeof WorkerModule>();
 	async function open() {
@@ -46,7 +46,7 @@ export async function fixture() {
 
 	async function seed() {
 		await control.reset();
-		await env.DIRECTORY.batch(["domains", "mailboxes", "auth_users", "settings", "sender_blocks", "mailbox_deletions", "held_mail"].map((table) => env.DIRECTORY.prepare(`DELETE FROM ${table}`)));
+		await env.DIRECTORY.batch(["domains", "mailboxes", "auth_users", "settings", "sender_blocks", "mailbox_deletions", "held_mail", "auth_email_throttles"].map((table) => env.DIRECTORY.prepare(`DELETE FROM ${table}`)));
 		const files = await env.MAIL.list();
 		if (files.objects.length) await env.MAIL.delete(files.objects.map((o) => o.key));
 		const ids = { alice: `alice-${++serial}`, bob: `bob-${serial}`, shared: `shared-${serial}` };

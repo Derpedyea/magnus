@@ -39,6 +39,8 @@ export async function setupFixture({ root = process.cwd(), port = 0 } = {}) {
 		queueProducers: { INBOUND: "fresh-inbound" },
 		queueConsumers: { "fresh-inbound": {}, "fresh-events": {} },
 		versionMetadata: "CF_VERSION_METADATA",
+		ratelimits: Object.fromEntries(["AUTH_LIMIT_100_PER_10S", "AUTH_LIMIT_3_PER_10S", "AUTH_LIMIT_3_PER_60S", "AUTH_LIMIT_10_PER_60S"]
+			.map((name, i) => [name, { namespace_id: String(i + 1), simple: { limit: 1000, period: 60 } }])),
 		email: { send_email: [{ name: "EMAIL" }] },
 		assets: {
 			directory: resolve(root, "dist/client"),
@@ -52,8 +54,11 @@ export async function setupFixture({ root = process.cwd(), port = 0 } = {}) {
 			calls.push({ method: request.method, path });
 			const ok = (result) => Response.json({ success: true, errors: [], result });
 			const failure = (status, message) => Response.json({ success: false, errors: [{ code: 9999, message }], result: null }, { status });
-			if (request.headers.get("Authorization") !== "Bearer fixture-token") return failure(401, "Invalid token");
+			const authorization = request.headers.get("Authorization");
+			if (!["Bearer fixture-token", "Bearer readonly-token"].includes(authorization)) return failure(401, "Invalid token");
+			if (authorization === "Bearer readonly-token" && request.method !== "GET") return failure(403, "Token does not have write permission");
 			if (path === state.failPath) return failure(503, "Injected API outage");
+			if (path === `/zones/zone/dns_records/${"0".repeat(32)}` && request.method === "DELETE") return failure(404, "Record does not exist.");
 			if (path === "/accounts") return ok([{ id: "account", name: "Setup test" }]);
 			if (path === "/accounts/account/workers/scripts") return ok([{ id: "magnus-fixture" }]);
 			if (path.startsWith("/accounts/account/workers/scripts/magnus-fixture/versions/")) return ok({});

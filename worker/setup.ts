@@ -1,15 +1,18 @@
 import { zValidator } from "@hono/zod-validator";
-import { normalizeAddress, STEP_IDS } from "#shared";
+import { normalizeAddress, PERMISSIONS, STEP_IDS } from "#shared";
 import { Hono } from "hono";
 import { z } from "zod";
 import { signInWithoutCode } from "./auth";
-import { cloudflare, findInstall, getZone, listZones } from "./cloudflare";
+import { cloudflare, type Cloudflare, findInstall, getZone, listZones } from "./cloudflare";
 import { domainStatus } from "./connect";
 import { addAddress, codesWouldLandHere, createMailbox } from "./directory";
 import { cloudflareTokenStatement, getInstall, type Install, saveCloudflareToken } from "./settings";
 
 export const NOT_THIS_INSTALL =
-	"That token can't see this Magnus install. Create it in the Cloudflare account Magnus is deployed to, with Workers Scripts · Read.";
+	"That token can't see this Magnus install. Create it in the Cloudflare account Magnus is deployed to, with the permissions Magnus asks for.";
+
+const NEEDS_DNS_WRITE = `That token can see this Magnus install, but setup also needs ${PERMISSIONS.dns.label} for the domain.`;
+const WRONG_BROWSER = "This browser didn't start setting Magnus up. Open the Worker in that browser to resume.";
 
 export const TokenSchema = z.object({ token: z.string().trim().min(1, "Paste your Cloudflare API token.") });
 
@@ -30,10 +33,11 @@ const CompleteSchema = TokenSchema.extend({
 });
 
 /**
- * First run, before anyone can sign in: /setup proves the visitor owns this install with a Cloudflare token
- * (see findInstall), then creates them as the first admin with their own mailbox and address, and signs them in.
- * Account, directory, encrypted token, and resumable setup state commit in one transaction. There is no
- * in-progress lock to strand after a crash. Pasting the ownership token again resumes activation and sign-in.
+ * First run, before anyone can sign in: /setup proves the visitor controls this install with a Cloudflare token
+ * that can see this Worker version and write the setup domain's DNS, then creates them as the first admin with
+ * their own mailbox and address, and signs them in. Account, directory, encrypted token, and resumable setup
+ * state commit in one transaction. There is no in-progress lock to strand after a crash. Only the browser that
+ * started setup can paste the token again to resume it: /complete stores a hash of its setup cookie.
  */
 export const setup = new Hono<{ Bindings: Env }>()
 	.use("*", async (c, next) => {
@@ -44,13 +48,18 @@ export const setup = new Hono<{ Bindings: Env }>()
 	})
 
 	.post("/verify", zValidator("json", TokenSchema), async (c) => {
+		const stored = await getInstall(c.env.DIRECTORY);
+		if (stored?.setup && !(await resumesSetup(c.req.raw, stored.setup))) return c.json({ error: WRONG_BROWSER }, 403);
 		const cf = cloudflare(c.req.valid("json").token);
 		const install = await findInstall(cf, c.env.CF_VERSION_METADATA.id);
 		if (!install) return c.json({ error: NOT_THIS_INSTALL }, 403);
-		const stored = await getInstall(c.env.DIRECTORY);
 		if (stored && (stored.accountId !== install.accountId || stored.workerName !== install.workerName))
 			return c.json({ error: NOT_THIS_INSTALL }, 403);
 		const zones = await listZones(cf, install.accountId);
+		const candidates = stored?.setup ? [stored.setup.zoneId] : zones.map((zone) => zone.id);
+		const writes = await Promise.all(candidates.map((zoneId) => canWriteDns(cf, zoneId)));
+		if (!writes.some(Boolean)) return c.json({ error: NEEDS_DNS_WRITE }, 403);
+		c.header("Set-Cookie", setupCookie(setupSecret(c.req.raw) ?? newSetupSecret()), { append: true });
 		if (stored?.setup) {
 			await saveCloudflareToken(c.env, c.req.valid("json").token);
 			for (const cookie of await signInWithoutCode(c.req.raw, stored.setup.email)) c.header("Set-Cookie", cookie, { append: true });
@@ -61,15 +70,27 @@ export const setup = new Hono<{ Bindings: Env }>()
 	.post("/complete", zValidator("json", CompleteSchema), async (c) => {
 		const body = c.req.valid("json");
 		const db = c.env.DIRECTORY;
+		const existing = await getInstall(db);
+		if (existing?.setup && !(await resumesSetup(c.req.raw, existing.setup))) return c.json({ error: WRONG_BROWSER }, 403);
+		const secret = setupSecret(c.req.raw) ?? newSetupSecret();
+		c.header("Set-Cookie", setupCookie(secret), { append: true });
 		const cf = cloudflare(body.token);
 		const install = await findInstall(cf, c.env.CF_VERSION_METADATA.id);
 		if (!install) return c.json({ error: NOT_THIS_INSTALL }, 403);
 		const zone = await getZone(cf, install.accountId, body.zoneId);
 		if (!zone) return c.json({ error: "That domain isn't in this Cloudflare account." }, 404);
+		if (!(await canWriteDns(cf, zone.id))) return c.json({ error: NEEDS_DNS_WRITE }, 403);
 		if (body.email.endsWith(`@${zone.name}`)) {
 			return c.json({ error: codesWouldLandHere(zone.name) }, 400);
 		}
-		const target = { domain: zone.name, zoneId: zone.id, email: body.email, address: `${body.localPart}@${zone.name}`, moveMail: body.moveMail };
+		const target = {
+			domain: zone.name,
+			zoneId: zone.id,
+			email: body.email,
+			address: `${body.localPart}@${zone.name}`,
+			moveMail: body.moveMail,
+			resumeHash: await hashSetupSecret(secret),
+		};
 		const userId = crypto.randomUUID();
 		const mailbox = createMailbox(db, userId, body.name);
 		const token = await cloudflareTokenStatement(c.env, body.token);
@@ -101,6 +122,7 @@ export const setup = new Hono<{ Bindings: Env }>()
 			) {
 				return c.json({ error: "Someone else started setting up Magnus. Connect again to resume." }, 409);
 			}
+			if (!(await resumesSetup(c.req.raw, stored.setup))) return c.json({ error: WRONG_BROWSER }, 403);
 		}
 		// Session failure leaves the committed setup intact. /verify can sign its owner in and resume.
 		for (const cookie of await signInWithoutCode(c.req.raw, body.email)) c.header("Set-Cookie", cookie, { append: true });
@@ -115,7 +137,9 @@ export const setup = new Hono<{ Bindings: Env }>()
 		if (!found || !install || found.accountId !== install.accountId || found.workerName !== install.workerName)
 			return c.json({ error: NOT_THIS_INSTALL }, 403);
 		if (!install.setup) return c.body(null, 204);
+		if (!(await resumesSetup(c.req.raw, install.setup))) return c.json({ error: WRONG_BROWSER }, 403);
 		const { domain, zoneId } = install.setup;
+		if (!(await canWriteDns(cf, zoneId))) return c.json({ error: NEEDS_DNS_WRITE }, 403);
 		const statuses = await domainStatus({ cf, db: c.env.DIRECTORY, install, domain, zoneId });
 		if (!STEP_IDS.every((id) => statuses[id].state === "done"))
 			return c.json({ error: "The domain isn't ready yet. Check again to finish setup." }, 409);
@@ -125,9 +149,42 @@ export const setup = new Hono<{ Bindings: Env }>()
 			.run();
 		const stored = await getInstall(c.env.DIRECTORY);
 		if (!stored || stored.setup) throw new Error("setup completion wasn't saved");
+		c.header("Set-Cookie", `${SETUP_COOKIE}=; Path=/api/setup; HttpOnly; Secure; SameSite=Strict; Max-Age=0`, { append: true });
 		return c.body(null, 204);
 	});
 
 function claimed(setup: NonNullable<Install["setup"]>) {
 	return { domain: setup.domain, address: setup.address, moveMail: setup.moveMail };
+}
+
+/** The certainly missing DNS record whose DELETE is setup's harmless DNS · Edit probe. */
+const PROBE_DNS_RECORD = "0".repeat(32);
+const canWriteDns = (cf: Cloudflare, zoneId: string) => cf.probeDelete("dns", `/zones/${zoneId}/dns_records/${PROBE_DNS_RECORD}`);
+
+const SETUP_COOKIE = "magnus_setup";
+const SETUP_COOKIE_DAYS = 30;
+
+function newSetupSecret(): string {
+	return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+/** The setup cookie's value, or null when missing or mangled. */
+function setupSecret(request: Request): string | null {
+	const value = new RegExp(`(?:^|;\\s*)${SETUP_COOKIE}=([^;]*)`).exec(request.headers.get("Cookie") ?? "")?.[1];
+	return value && /^[A-Za-z0-9_-]{43}$/.test(value) ? value : null;
+}
+
+function setupCookie(secret: string): string {
+	return `${SETUP_COOKIE}=${secret}; Path=/api/setup; HttpOnly; Secure; SameSite=Strict; Max-Age=${SETUP_COOKIE_DAYS * 24 * 60 * 60}`;
+}
+
+async function hashSetupSecret(secret: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Whether this browser holds the setup secret whose hash committed with the account. */
+async function resumesSetup(request: Request, setup: NonNullable<Install["setup"]>): Promise<boolean> {
+	const secret = setupSecret(request);
+	return Boolean(secret && setup.resumeHash && (await hashSetupSecret(secret)) === setup.resumeHash);
 }

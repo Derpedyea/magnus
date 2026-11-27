@@ -4,18 +4,24 @@ import { setupFixture } from "./setup-fixture.mjs";
 
 const account = { token: "fixture-token", zoneId: "zone", name: "Setup test", localPart: "me", email: "owner@example.net", moveMail: false };
 
-async function client(fixture) {
-	let cookies = "";
-	return async (path, body) => {
+async function client(fixture, initialCookies = "") {
+	const cookies = new Map(initialCookies.split("; ").filter(Boolean).map((pair) => [pair.slice(0, pair.indexOf("=")), pair]));
+	const request = async (path, body) => {
 		const res = await fixture.mf.dispatchFetch(`http://localhost/api${path}`, {
 			method: body === undefined ? "GET" : "POST",
-			headers: { ...(body === undefined ? {} : { "Content-Type": "application/json" }), Cookie: cookies },
+			headers: { ...(body === undefined ? {} : { "Content-Type": "application/json" }), Cookie: [...cookies.values()].join("; ") },
 			body: body === undefined ? undefined : JSON.stringify(body),
 		});
-		const set = res.headers.getSetCookie();
-		if (set.length) cookies = set.map((cookie) => cookie.split(";")[0]).join("; ");
+		for (const set of res.headers.getSetCookie()) {
+			const pair = set.split(";")[0] ?? "";
+			const name = pair.slice(0, pair.indexOf("="));
+			if (/(?:^|;\s*)Max-Age=0(?:;|$)/i.test(set)) cookies.delete(name);
+			else cookies.set(name, pair);
+		}
 		return res;
 	};
+	request.cookie = (name) => cookies.get(name);
+	return request;
 }
 
 test("fresh install: ownership, atomic account, pending DNS, lost response, resume, MTA-STS and finish", async (t) => {
@@ -24,6 +30,7 @@ test("fresh install: ownership, atomic account, pending DNS, lost response, resu
 	const request = await client(fixture);
 	assert.equal((await (await request("/config")).json()).setupRequired, true);
 	assert.equal((await request("/setup/verify", { token: "wrong-token" })).status, 400);
+	assert.equal((await request("/setup/verify", { token: "readonly-token" })).status, 403);
 	assert.equal((await request("/setup/verify", { token: account.token })).status, 200);
 	assert.equal((await request("/setup/complete", { ...account, email: "me@setup.example" })).status, 400);
 	const created = await request("/setup/complete", account);
@@ -38,8 +45,12 @@ test("fresh install: ownership, atomic account, pending DNS, lost response, resu
 	assert.equal((await request("/admin/domains/setup.example/steps/sending", {})).status, 200);
 	assert.equal(fixture.state.sendingCreates, 1);
 	await fixture.restart();
-	// A new browser has no session cookie; the ownership token recovers the original committed account.
-	const resumed = await client(fixture);
+	// Another browser has no session or setup cookie: even the ownership token can't resume there.
+	const stranger = await client(fixture);
+	assert.equal((await stranger("/setup/verify", { token: account.token })).status, 403);
+	assert.equal((await stranger("/me")).status, 401);
+	// The browser that started setup can, though it lost its session with the restart.
+	const resumed = await client(fixture, request.cookie("magnus_setup"));
 	const verified = await resumed("/setup/verify", { token: account.token });
 	assert.equal(verified.status, 200, await verified.clone().text());
 	assert.deepEqual((await verified.json()).claimed, { domain: "setup.example", address: "me@setup.example", moveMail: false });
@@ -72,7 +83,7 @@ test("session creation failure preserves setup and ownership can resume after a 
 	const fixture = await setupFixture();
 	t.after(() => fixture.close());
 	const request = await client(fixture);
-	await request("/config");
+	assert.equal((await request("/setup/verify", { token: account.token })).status, 200);
 	const db = await fixture.mf.getD1Database("DIRECTORY");
 	await db.exec(`CREATE TRIGGER fail_session BEFORE INSERT ON auth_sessions BEGIN SELECT RAISE(ABORT, 'injected session failure'); END`);
 	assert.equal((await request("/setup/complete", account)).status, 500);
@@ -80,7 +91,7 @@ test("session creation failure preserves setup and ownership can resume after a 
 	assert.equal((await (await request("/config")).json()).setupRequired, true);
 	await db.exec("DROP TRIGGER fail_session");
 	await fixture.restart();
-	const resumed = await client(fixture);
+	const resumed = await client(fixture, request.cookie("magnus_setup"));
 	assert.equal((await resumed("/setup/verify", { token: account.token })).status, 200);
 	assert.equal((await resumed("/me")).status, 200);
 });
@@ -90,13 +101,20 @@ test("concurrent account creation leaves one complete directory; unconfirmed rou
 	t.after(() => fixture.close());
 	const first = await client(fixture);
 	const second = await client(fixture);
+	assert.equal((await first("/setup/verify", { token: account.token })).status, 200);
+	assert.equal((await second("/setup/verify", { token: account.token })).status, 200);
 	const results = await Promise.all([
 		first("/setup/complete", account),
 		second("/setup/complete", { ...account, email: "other@example.net", localPart: "other" }),
 	]);
 	assert.deepEqual(results.map((res) => res.status).sort(), [200, 409]);
-	const request = await client(fixture);
-	assert.equal((await request("/setup/verify", { token: account.token })).status, 200);
+	const stranger = await client(fixture);
+	assert.equal((await stranger("/setup/verify", { token: account.token })).status, 403);
+	let request = null;
+	for (const candidate of [first, second]) {
+		if ((await candidate("/setup/verify", { token: account.token })).status === 200) request = candidate;
+	}
+	assert.notEqual(request, null);
 	const directory = await (await request("/admin/directory")).json();
 	assert.equal(directory.people.length, 1);
 	assert.equal(directory.mailboxes.length, 1);

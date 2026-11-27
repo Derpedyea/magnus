@@ -55,6 +55,16 @@ export function cloudflare(token: string) {
 		post: <T>(schema: z.ZodType<T>, need: Permission, path: string, json: unknown) => call(schema, need, "POST", path, json),
 		put: <T>(schema: z.ZodType<T>, need: Permission, path: string, json: unknown) => call(schema, need, "PUT", path, json),
 		delete: (need: Permission, path: string) => call(z.unknown(), need, "DELETE", path),
+		/**
+		 * A DELETE of something that isn't there: true when the token is allowed to write it (Cloudflare answers
+		 * 404 after its permission check), false when it isn't (401/403). Lets setup prove write access without changing anything.
+		 */
+		probeDelete: async (need: Permission, path: string): Promise<boolean> => {
+			const res = await request("DELETE", path);
+			if (res.status === 401 || res.status === 403) return false;
+			if (res.status === 404 || res.body?.errors?.some((error) => error.code === 81044) || (res.ok && res.body?.success)) return true;
+			throw failure(res.status, res.body?.errors ?? [], need);
+		},
 		/** A GET where any client error other than auth means "no". */
 		exists: async (need: Permission, path: string): Promise<boolean> => {
 			const res = await request("GET", path);
@@ -68,8 +78,8 @@ export function cloudflare(token: string) {
 const Named = z.object({ id: z.string(), name: z.string() });
 
 /**
- * Finds this Worker in the token's accounts by the version that's running right now. Only an account that
- * deployed this exact version can see it, so a match proves whoever pasted the token owns this install.
+ * Finds this Worker in the token's accounts by the version that's running right now. This is only the install's
+ * identity: seeing the version doesn't prove control, so setup also makes a write probe (canWriteDns there).
  * Most people keep the default name, but a renamed Worker is found too.
  */
 export async function findInstall(cf: Cloudflare, versionId: string): Promise<(Install & { accountName: string }) | null> {

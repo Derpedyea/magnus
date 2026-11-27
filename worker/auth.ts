@@ -8,13 +8,16 @@ import { emailOTP } from "better-auth/plugins/email-otp";
 import { haveIBeenPwned } from "better-auth/plugins/haveibeenpwned";
 import { env, waitUntil } from "cloudflare:workers";
 import { z } from "zod";
-import { FRESH_SIGN_IN_MINUTES, MIN_PASSWORD_LENGTH, type User } from "#shared";
+import { FRESH_SIGN_IN_MINUTES, MIN_PASSWORD_LENGTH, normalizeAddress, type User } from "#shared";
 import { findUserByEmail, loginCodeSender } from "./directory";
 import { optional } from "./optional";
 import { isRemoved } from "./removals";
 import { authSecret } from "./settings";
 
 const CODE_MINUTES = 10;
+/** Per email, wherever the request comes from. Cloudflare's minute bucket slows bursts; D1 keeps the hour exact. */
+const OTP_SENDS_PER_HOUR = 5;
+const OTP_VERIFIES_PER_HOUR = 10;
 /** Both steps of adding a passkey. */
 const REGISTER_PATHS = new Set(["/passkey/generate-register-options", "/passkey/verify-registration"]);
 /** Setting or replacing your password (savePassword below). */
@@ -83,8 +86,9 @@ function createAuth(baseURL: string, secret: string) {
 		secret,
 		database: env.DIRECTORY,
 		user: { modelName: "auth_users" },
-		// People are added before they first sign in, so Google has to join an existing account by email.
-		account: { modelName: "auth_accounts", accountLinking: { trustedProviders: ["google"] } },
+		// People are added before they first sign in, so a Google account can join an existing one by email only
+		// when Google vouches for that address (mapProfileToUser below).
+		account: { modelName: "auth_accounts" },
 		verification: { modelName: "auth_verifications" },
 		session: {
 			modelName: "auth_sessions",
@@ -99,7 +103,20 @@ function createAuth(baseURL: string, secret: string) {
 			// passkey that outlives the session.
 			freshAge: FRESH_SIGN_IN_MINUTES * 60,
 		},
-		socialProviders: googleConfig ? { google: { ...googleConfig, prompt: "select_account", disableSignUp: true } } : {},
+		socialProviders: googleConfig
+			? {
+				google: {
+					...googleConfig,
+					prompt: "select_account",
+					disableSignUp: true,
+					// A verified third-party address may have changed owners since Google verified it. Google vouches
+					// only for Gmail addresses now, and for Workspace ones (hd) while the workspace keeps them.
+					mapProfileToUser: (profile) => ({
+						emailVerified: profile.email_verified === true && (profile.email.toLowerCase().endsWith("@gmail.com") || Boolean(profile.hd)),
+					}),
+				},
+			}
+			: {},
 		// Only signing in: a password is set in Settings (savePassword), and a forgotten one is replaced the same way after
 		// signing in with a code. Better Auth's own ways to change or reset one are off (disabledPaths).
 		emailAndPassword: { enabled: true, disableSignUp: true, minPasswordLength: MIN_PASSWORD_LENGTH },
@@ -145,6 +162,7 @@ function createAuth(baseURL: string, secret: string) {
 		},
 		hooks: {
 			before: createAuthMiddleware(async (ctx) => {
+				await throttleSignInOTP(ctx);
 				// A call with no HTTP request is Magnus's own (auth.api.*), made behind its own checks.
 				if (!ctx.request || SESSIONLESS.has(ctx.path) || ctx.path.startsWith("/callback/")) return;
 				// Asks D1 rather than the cookie cache, which vouches for a session after it's ended (suspended, removed, signed
@@ -223,6 +241,49 @@ const rateLimiters: Record<string, RateLimit> = {
 	"3/60": env.AUTH_LIMIT_3_PER_60S,
 	"10/60": env.AUTH_LIMIT_10_PER_60S,
 };
+
+/** The sign-in OTP endpoint's per-email throttle, for both known and unknown addresses. */
+async function throttleSignInOTP(ctx: { path: string; body?: unknown }): Promise<void> {
+	const action = ctx.path === "/email-otp/send-verification-otp" && z.object({ type: z.literal("sign-in") }).safeParse(ctx.body).success
+		? "send"
+		: ctx.path === "/sign-in/email-otp"
+			? "verify"
+			: null;
+	if (!action) return;
+	const parsed = z.object({ email: z.string() }).safeParse(ctx.body);
+	if (!parsed.success) return;
+	const email = normalizeAddress(parsed.data.email);
+	if (!email) return;
+	if (await signInOTPAllowed(action, email)) return;
+	throw new APIError("TOO_MANY_REQUESTS", { message: "Too many sign-in attempts for this address. Try again later." });
+}
+
+/**
+ * Counts one send or verification for an email. The Cloudflare limiter (3/minute, keyed by the email's digest) slows
+ * a burst but is approximate per location; the D1 upsert is the global exact budget: 5 sends or 10 verifications an hour.
+ */
+async function signInOTPAllowed(action: "send" | "verify", email: string): Promise<boolean> {
+	const limiter = rateLimiters["3/60"];
+	if (!limiter) throw new Error("No rate limiter for per-email sign-in throttles; add AUTH_LIMIT_3_PER_60S to wrangler.jsonc");
+	const digest = await sha256Hex(`${action}:${email}`);
+	const { success } = await limiter.limit({ key: `otp-${action}-${digest}` });
+	if (!success) return false;
+	const limit = action === "send" ? OTP_SENDS_PER_HOUR : OTP_VERIFIES_PER_HOUR;
+	const bucket = Math.floor(Date.now() / 3_600_000);
+	const row = await env.DIRECTORY.prepare(
+		`INSERT INTO auth_email_throttles (key, bucket, count) VALUES (?1, ?2, 1)
+		 ON CONFLICT(key) DO UPDATE SET
+			bucket = excluded.bucket,
+			count = CASE WHEN auth_email_throttles.bucket = excluded.bucket THEN auth_email_throttles.count + 1 ELSE 1 END
+		 RETURNING count AS n`,
+	).bind(`otp-${action}-${digest}`, bucket).first<{ n: number }>();
+	return (row?.n ?? limit + 1) <= limit;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 /** Better Auth's rate-limit step: its key is the client's IP and the endpoint. */
 async function consumeRateLimit(key: string, { window, max }: { window: number; max: number }) {
