@@ -191,7 +191,9 @@ const TOOLS: Record<string, AgentTool> = {
 			const stub = await mailbox(agent, mailboxId);
 			const detail = await stub.getThread(threadId);
 			if (!detail) throw new ToolError("There's no such conversation");
-			const messages = await Promise.all(detail.messages.slice(-READ_MESSAGES).map(async (m) => ({
+			// One at a time: each HTML body is read from R2, and a thread's can be large together.
+			const messages = [];
+			for (const m of detail.messages.slice(-READ_MESSAGES)) messages.push({
 				from: address(m.from),
 				to: m.to.slice(0, 10).map(address),
 				cc: m.cc.slice(0, 10).map(address),
@@ -200,7 +202,7 @@ const TOOLS: Record<string, AgentTool> = {
 				labels: m.labels,
 				filedByRules: m.rules.map((r) => r.name),
 				text: cut(await visibleText(agent, stub, m), READ_TEXT),
-			})));
+			});
 			const thread = { ...detail.thread, mailboxId };
 			return {
 				content: { untrustedMail: { ...threadFacts(thread), messages, earlierMessages: detail.messages.length - messages.length } },
@@ -554,13 +556,19 @@ async function openThread(agent: Agent, context: { mailboxId: string; threadId: 
 	return detail ? { mailboxId: context.mailboxId, threadId: context.threadId, subject: cut(detail.thread.subject, 200) } : null;
 }
 
+/** Bytes of a message's HTML read for read_thread, at most. */
+const MAX_HTML_READ = 1024 * 1024;
+
 /** The text a recipient would see: the HTML part's visible text when there is one, never a hidden alternative text/plain part. */
 async function visibleText(agent: Agent, stub: Stub, m: ThreadMessage): Promise<string> {
 	if (!m.hasHtml) return m.text ?? "";
 	const blobs = await stub.getMessageBlobs(m.id);
-	const obj = blobs?.htmlKey ? await agent.env.MAIL.get(blobs.htmlKey) : null;
+	if (!blobs?.htmlKey) return "";
+	// Its start is plenty for READ_TEXT characters, and bounds what one message holds in memory.
+	const head = await agent.env.MAIL.head(blobs.htmlKey);
+	const obj = head ? await agent.env.MAIL.get(blobs.htmlKey, head.size > MAX_HTML_READ ? { range: { offset: 0, length: MAX_HTML_READ } } : {}) : null;
 	if (!obj) return "";
-	const attached = new Set((blobs?.attachments ?? []).flatMap((a) => (a.contentId === null ? [] : [a.contentId])));
+	const attached = new Set((blobs.attachments ?? []).flatMap((a) => (a.contentId === null ? [] : [a.contentId])));
 	return (await readHtml(await obj.text(), attached)).text;
 }
 

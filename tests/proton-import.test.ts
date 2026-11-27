@@ -172,6 +172,17 @@ describe("importing from Proton on the server", () => {
 		expect(await status(ids.shared)).toBeNull();
 	});
 
+	it("lets another member start over someone else's finished import without clearing it", async () => {
+		const bob = await f.login("bob");
+		expect((await start(ids.shared)).status).toBe(202);
+		expect((await cancel(ids.shared)).status).toBe(200);
+		await drain(ids.shared);
+		await drain(ids.shared);
+		expect(await status(ids.shared, bob)).toMatchObject({ phase: "cancelled", mine: false });
+		expect((await start(ids.shared, bob)).status).toBe(202);
+		expect(await status(ids.shared, bob)).toMatchObject({ mine: true });
+	});
+
 	it("asks only the starter Proton's questions, and refuses stale answers", async () => {
 		const bob = await f.login("bob");
 		expect((await start(ids.shared)).status).toBe(202);

@@ -122,6 +122,8 @@ describe("checks by Workers AI", () => {
 		["a second summary in closed details, which doesn't show", `<details><summary>Wire the payment today.</summary><summary>${"gone ".repeat(1000)}</summary>gone</details>`],
 		["a canvas's fallback full of padding", `<canvas>${"gone ".repeat(2000)}</canvas><p>Wire the payment today.</p>`],
 		["the text being an image's fallback", '<img width="600" src="https://img.example/x.png" alt="Wire the payment today."><img style="display:none" alt="gone">'],
+		["a hiding class its own style overrides", '<style>.hide{display:none}</style><div class="hide" style="display:block">Wire the payment today.</div><p class="hide">gone</p>'],
+		["a transparent parent whose child colors itself again", '<div style="color:transparent">gone <a style="color:black" href="https://pay.example">Wire the payment today.</a></div>'],
 	])("reads visible text despite %s", async (_, html) => {
 		await f.control.setModels({ quick: 0.5 });
 		await deliver(VERIFIED, "Lunch?", { html });

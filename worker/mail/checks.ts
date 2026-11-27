@@ -172,6 +172,8 @@ const TEXT_SLICE = 65_536;
 interface Inherited {
 	invisible: boolean;
 	tiny: boolean;
+	/** Text colored transparent, which a descendant can color again. */
+	clear: boolean;
 	/** Inside a closed <details>, where only its <summary> shows. */
 	folded: boolean;
 	/** Set on a closed <details>: whether what's around it was folded, which its first <summary> takes. */
@@ -190,15 +192,15 @@ interface Inherited {
  * past the checks into the inbox, where all of it went before there were checks.
  */
 export async function readHtml(html: string, attached: ReadonlySet<string>): Promise<Page> {
-	const hiddenByClass = hiddenClasses(html);
+	const byClass = classRules(html);
 	// Depth inside subtrees nothing in can show: display: none, `hidden`, opacity 0, elements the sanitizer removes.
 	// onEndTag fires on implicit closes too, so an unclosed one ends where the browser ends it.
 	let closed = 0;
 	// visibility and font-size, which descendants inherit but can set again.
-	const inherited: Inherited[] = [{ invisible: false, tiny: false, folded: false }];
+	const inherited: Inherited[] = [{ invisible: false, tiny: false, clear: false, folded: false }];
 	const shown = () => {
 		const top = inherited.at(-1);
-		return closed === 0 && !top?.invisible && !top?.tiny && !top?.folded;
+		return closed === 0 && !top?.invisible && !top?.tiny && !top?.clear && !top?.folded;
 	};
 	let areas = 0;
 	const text = new Collector();
@@ -212,8 +214,9 @@ export async function readHtml(html: string, attached: ReadonlySet<string>): Pro
 		.on("*", {
 			element(el) {
 				const tag = el.tagName;
-				const d = declarations(el.getAttribute("style"));
-				const parent = inherited.at(-1) ?? { invisible: false, tiny: false, folded: false };
+				const d = styleOf(byClass, el.getAttribute("class"), el.getAttribute("style"));
+				const parent = inherited.at(-1) ?? { invisible: false, tiny: false, clear: false, folded: false };
+				const color = d.get("color");
 				const visibility = d.get("visibility");
 				const size = d.get("font-size");
 				// A closed <details> shows its first <summary>, and only that.
@@ -223,18 +226,17 @@ export async function readHtml(html: string, attached: ReadonlySet<string>): Pro
 					invisible: visibility === undefined ? parent.invisible : visibility === "hidden" || visibility === "collapse",
 					// A relative size of nothing is still nothing.
 					tiny: size === undefined ? parent.tiny : isZero(size) || (parent.tiny && /(?:em|ex|ch|%)$/.test(size)),
+					clear: color === undefined || color === "inherit" ? parent.clear : color === "transparent",
 					folded: summary && parent.outer !== undefined ? parent.outer : parent.folded || (tag === "details" && !el.hasAttribute("open")),
 					...(tag === "details" && !el.hasAttribute("open") ? { outer: parent.folded } : {}),
 				};
 				const display = d.get("display");
-				const classes = (el.getAttribute("class") ?? "").split(/\s+/);
 				const closes =
 					UNSHOWN.has(tag) ||
 					hidesElement(d) ||
-					classes.some((c) => hiddenByClass.has(c)) ||
 					(el.hasAttribute("hidden") && (display === undefined || display === "none")) ||
 					(tag === "dialog" && !el.hasAttribute("open"));
-				const visible = closed === 0 && !closes && !own.invisible && !own.tiny && !own.folded;
+				const visible = closed === 0 && !closes && !own.invisible && !own.tiny && !own.clear && !own.folded;
 				// Any anchor not removed: what's in it can show even if it can't (visibility set again), and its host counts then.
 				const href = closed === 0 && !closes && tag === "a" ? el.getAttribute("href") : null;
 				const host = href === null ? null : linkHost(decodeEntities(href));
@@ -343,8 +345,8 @@ function linkHost(href: string): string | null {
 	}
 }
 
-/** Class selectors simple stylesheet rules hide (`.x { … }` only; anything harder is beyond this reading). */
-function hiddenClasses(html: string): ReadonlySet<string> {
+/** Declarations simple stylesheet rules (`.x { … }` only; anything harder is beyond this reading) give each class. */
+function classRules(html: string): ReadonlyMap<string, ReadonlyMap<string, string>> {
 	const rules = new Map<string, Map<string, string>>();
 	const lower = html.toLowerCase();
 	const open = /<style\b[^>]*>/gi;
@@ -365,17 +367,22 @@ function hiddenClasses(html: string): ReadonlySet<string> {
 		if (close < 0) break;
 		open.lastIndex = close + 8;
 	}
-	const hidden = new Set<string>();
-	for (const [name, d] of rules) {
-		const visibility = d.get("visibility");
-		if (hidesElement(d) || visibility === "hidden" || visibility === "collapse" || isZero(d.get("font-size"))) hidden.add(name);
-	}
-	return hidden;
+	return rules;
+}
+
+/** An element's declarations: its classes' rules, then its own style attribute, which overrides them as a browser's does. */
+function styleOf(byClass: ReadonlyMap<string, ReadonlyMap<string, string>>, classes: string | null, style: string | null): Map<string, string> {
+	const own = declarations(style);
+	if (byClass.size === 0 || !classes) return own;
+	const d = new Map<string, string>();
+	for (const name of classes.split(/\s+/)) for (const [k, v] of byClass.get(name) ?? []) d.set(k, v);
+	for (const [k, v] of own) d.set(k, v);
+	return d;
 }
 
 /** What hides a whole subtree without a descendant being able to show again, as far as inline/simple CSS says. */
 function hidesElement(d: Map<string, string>): boolean {
-	if (d.get("display") === "none" || isZero(d.get("opacity")) || d.get("color") === "transparent") return true;
+	if (d.get("display") === "none" || isZero(d.get("opacity"))) return true;
 	if ((d.get("position") === "absolute" || d.get("position") === "fixed") && ["left", "right", "top", "bottom"].some((side) => largeNegativeOffset(d.get(side)))) return true;
 	if (zeroClip(d.get("clip")) || zeroClipPath(d.get("clip-path"))) return true;
 	const transform = d.get("transform") ?? "";
