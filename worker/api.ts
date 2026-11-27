@@ -579,7 +579,7 @@ const mb = new Hono<AppEnv>()
 
 	/** Clears a finished import from the page. */
 	.delete("/proton-import", zValidator("query", ProtonJobRefSchema), async (c) => {
-		const result = await protonImport(c).dismiss(c.req.valid("query").job);
+		const result = await protonImport(c).dismiss(c.var.user.id, c.req.valid("query").job);
 		return "error" in result ? c.json({ error: result.error }, result.status) : c.json(result);
 	})
 

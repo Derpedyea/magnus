@@ -256,11 +256,12 @@ export class ProtonImport extends DurableObject<Env> {
 	}
 
 	/** Clears finished import `jobId` from the page, so another can start. */
-	dismiss(jobId: string): ActionResult {
+	dismiss(userId: string, jobId: string): ActionResult {
 		const job = this.#job();
 		// Cleared already, say by another tab.
 		if (!job) return { job: null };
 		if (job.id !== jobId) return { error: "That import has ended.", status: 409 };
+		if (job.user_id !== userId) return { error: "Only the person who started this import can clear it.", status: 403 };
 		if (!FINAL.has(job.phase) || job.container) return { error: "The import is still running.", status: 409 };
 		this.ctx.storage.transactionSync(() => {
 			this.#sql(`DELETE FROM job`);

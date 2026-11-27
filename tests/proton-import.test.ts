@@ -148,6 +148,20 @@ describe("importing from Proton on the server", () => {
 		expect((await start()).status).toBe(202);
 	});
 
+	it("lets only the starter clear a finished import, even in a shared mailbox", async () => {
+		const bob = await f.login("bob");
+		expect((await start(ids.shared)).status).toBe(202);
+		expect((await cancel(ids.shared)).status).toBe(200);
+		await drain(ids.shared);
+		await drain(ids.shared);
+		expect(await status(ids.shared)).toMatchObject({ phase: "cancelled" });
+
+		expect((await clear(ids.shared, bob)).status).toBe(403);
+		expect(await status(ids.shared, bob)).toMatchObject({ phase: "cancelled" });
+		expect((await clear(ids.shared)).status).toBe(200);
+		expect(await status(ids.shared)).toBeNull();
+	});
+
 	it("asks only the starter Proton's questions, and refuses stale answers", async () => {
 		const bob = await f.login("bob");
 		expect((await start(ids.shared)).status).toBe(202);
