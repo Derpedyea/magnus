@@ -2,7 +2,7 @@ import { zValidator } from "@hono/zod-validator";
 import { normalizeAddress, PERMISSIONS, STEP_IDS } from "#shared";
 import { Hono } from "hono";
 import { z } from "zod";
-import { signInWithoutCode } from "./auth";
+import { currentUser, signInWithoutCode } from "./auth";
 import { cloudflare, type Cloudflare, findInstall, getZone, listZones } from "./cloudflare";
 import { domainStatus } from "./connect";
 import { addAddress, codesWouldLandHere, createMailbox } from "./directory";
@@ -183,8 +183,14 @@ async function hashSetupSecret(secret: string): Promise<string> {
 	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/** Whether this browser holds the setup secret whose hash committed with the account. */
+/**
+ * Whether this browser may resume. New setups need the cookie whose hash committed with the account. One started
+ * before that hash existed can't know its browser retroactively; there, the owner has to be signed in as its admin.
+ */
 async function resumesSetup(request: Request, setup: NonNullable<Install["setup"]>): Promise<boolean> {
 	const secret = setupSecret(request);
-	return Boolean(secret && setup.resumeHash && (await hashSetupSecret(secret)) === setup.resumeHash);
+	if (secret && setup.resumeHash && (await hashSetupSecret(secret)) === setup.resumeHash) return true;
+	if (setup.resumeHash) return false;
+	const signedIn = await currentUser(request);
+	return signedIn?.user.isAdmin === true && signedIn.user.email === setup.email;
 }
