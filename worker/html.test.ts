@@ -51,9 +51,9 @@ describe("email HTML sanitizing", () => {
 	it("removes form controls, including one with an encoded formaction", async () => {
 		const html = await render(`
 			<input value="x"><textarea>x</textarea><select><option>x</option></select>
-			<button formaction="jav&#x61;script:alert(1)">x</button><p>keep</p>`);
-		expect(html).not.toMatch(/<(input|textarea|select|button)\b/);
-		expect(html).toContain("<p>keep</p>");
+			<button formaction="jav&#x61;script:alert(1)">Pay now</button><p>keep</p>`);
+		expect(html).not.toMatch(/<(input|textarea|select|button)\b|formaction/);
+		expect(html).toContain("Pay now<p>keep</p>");
 	});
 });
 

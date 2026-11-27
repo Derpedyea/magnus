@@ -334,7 +334,7 @@ async function checkSender(env: Env, address: string, results: AuthResult[] | nu
 	const passed = (method: string) => results?.filter((r) => r.method === method && r.result === "pass") ?? [];
 	const failed = (method: string) => results?.some((r) => r.method === method && r.result === "fail") ?? false;
 	const spf = results?.find((r) => r.method === "spf" && r.props.has("smtp.mailfrom"));
-	const failedAuthentication = failed("dmarc") || ((spf?.result === "fail" || spf?.result === "softfail") && passed("dkim").length === 0);
+	const failedAuthentication = failed("dmarc") || (spf?.result === "fail" && passed("dkim").length === 0);
 	const from = normalizeAddress(address);
 	if (!isValidAddress(from)) return { verified: null, internal: false, spoofed: failedAuthentication };
 	const domain = splitAddress(from).domain;

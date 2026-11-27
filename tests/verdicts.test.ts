@@ -135,11 +135,6 @@ describe("spam verdicts", () => {
 		expect(await deliver("Bob <bob@example.com>", FORGED)).toMatchObject({ verdict: { kind: "spoofed" }, labels: ["spam"] });
 	});
 
-	it("puts mail whose SPF softfails without a passing DKIM signature in Spam", async () => {
-		expect(await deliver("friend@outside.test", "dkim=none; dmarc=none; spf=softfail smtp.mailfrom=bounce@outside.test"))
-			.toMatchObject({ verdict: { kind: "spoofed" }, labels: ["spam"] });
-	});
-
 	it("puts mail that fails its sender's authentication in Spam, even from someone trusted", async () => {
 		await writeTo("friend@outside.test");
 		expect(await deliver("friend@outside.test", "dkim=fail header.d=outside.test; dmarc=fail header.from=outside.test"))

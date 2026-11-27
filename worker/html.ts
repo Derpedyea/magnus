@@ -2,7 +2,7 @@ import { preview, type StoredAttachment } from "#shared";
 import { isInvisibleImage, isTrackerUrl } from "./trackers";
 
 /** Elements removed with their content before mail is shown (and so not read by the spam checks either). */
-export const REMOVED_ELEMENTS = ["script", "noscript", "iframe", "frame", "frameset", "object", "embed", "applet", "form", "input", "textarea", "select", "button", "base", "link"];
+export const REMOVED_ELEMENTS = ["script", "noscript", "iframe", "frame", "frameset", "object", "embed", "applet", "form", "input", "textarea", "select", "base", "link"];
 
 /** What a blocked image shows instead: a transparent pixel, so the layout around it holds. */
 const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
@@ -90,6 +90,12 @@ export function renderEmailHtml(
 		.on(`${REMOVED_ELEMENTS.join(", ")}, meta[http-equiv]`, {
 			element(el) {
 				el.remove();
+			},
+		})
+		// A button does nothing in mail but take focus, though its label can be the call to action: that stays.
+		.on("button", {
+			element(el) {
+				el.removeAndKeepContent();
 			},
 		})
 		.on("*", {
