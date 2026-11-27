@@ -96,6 +96,11 @@ describe("sign-in", () => {
 		expect(signsIn(correct)).toBe(false);
 	});
 
+	it("still lets setup sign its admin in once outside requests used up the checks", async () => {
+		for (let i = 0; i < 11; i++) await call("/auth/sign-in/email-otp", "", { email: "alice@login.test", otp: "000000" });
+		expect(await f.login("alice")).toBeTruthy();
+	});
+
 	it("adds a passkey on a fresh session, then signs in with it alone", async () => {
 		const key = await authenticator();
 		await register(await f.login("alice"), key);

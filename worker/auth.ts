@@ -162,7 +162,8 @@ function createAuth(baseURL: string, secret: string) {
 		},
 		hooks: {
 			before: createAuthMiddleware(async (ctx) => {
-				await throttleSignInOTP(ctx);
+				// Only requests from outside: signInWithoutCode() makes and uses its code without it ever leaving the Worker.
+				if (ctx.request) await throttleSignInOTP(ctx);
 				// A call with no HTTP request is Magnus's own (auth.api.*), made behind its own checks.
 				if (!ctx.request || SESSIONLESS.has(ctx.path) || ctx.path.startsWith("/callback/")) return;
 				// Asks D1 rather than the cookie cache, which vouches for a session after it's ended (suspended, removed, signed
