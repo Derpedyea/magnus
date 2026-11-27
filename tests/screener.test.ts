@@ -93,6 +93,29 @@ describe("Screener", () => {
 		expect((await deliver("erin@outside.test")).labels).toEqual(["screener"]);
 	});
 
+	it("doesn't let an unverified sender join a conversation by subject alone", async () => {
+		const check = { kind: "checked", category: "personal", spam: 0, model: QUICK_MODEL } as const;
+		const from = { address: "pal@outside.test" };
+		const first = await box().ingest({
+			...inbound(ids.alice, "subject-first"), from, subject: "Quarterly plans",
+			sender: { verified: "pal@outside.test", internal: true, spoofed: false }, check: null,
+		});
+		const verified = await box().ingest({
+			...inbound(ids.alice, "subject-verified"), from, subject: "Re: Quarterly plans", references: ["<missing@outside.test>"],
+			sender: { verified: "pal@outside.test", internal: false, spoofed: false }, check,
+		});
+		if (!("threadId" in first) || !("threadId" in verified)) throw new Error("Not delivered");
+		expect(verified.threadId).toBe(first.threadId);
+
+		const spoofed = await box().ingest({
+			...inbound(ids.alice, "subject-spoof"), from, subject: "Re: Quarterly plans", references: ["<missing@outside.test>"],
+			sender: { verified: null, internal: false, spoofed: false }, check,
+		});
+		if (!("threadId" in spoofed)) throw new Error("Not delivered");
+		expect(spoofed.threadId).not.toBe(first.threadId);
+		expect((await box().getMessage("subject-spoof"))?.message.labels).toEqual(["screener"]);
+	});
+
 	it("says a reply it let into the inbox reached the inbox, so it's notified", async () => {
 		const check = { kind: "checked", category: "personal", spam: 0, model: QUICK_MODEL } as const;
 		const known = { verified: null, internal: true, spoofed: false };

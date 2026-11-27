@@ -47,6 +47,42 @@ describe("ingest", () => {
 		expect((await f.env.MAIL.list()).objects).toHaveLength(7);
 	});
 
+	it("merges copies of one message delivered to two addresses even when transit headers differ", async () => {
+		const first = job(ids.alice, "copy-1");
+		const second = { ...job(ids.alice, "copy-2"), envelopeTo: "family@example.com" };
+		await f.env.MAIL.put(first.rawKey, MIME);
+		await f.env.MAIL.put(second.rawKey, MIME.replace("Subject:", "Delivered-To: family@example.com\r\nSubject:"));
+		await f.control.parse(first);
+		const checked = (await f.control.state()).modelCalls.length;
+		expect(checked).toBeGreaterThan(0);
+		await f.control.parse(second);
+		expect((await f.control.state()).modelCalls).toHaveLength(checked);
+		expect(await f.env.MAILBOX.getByName(ids.alice).getMessage(second.ingestId)).toBeNull();
+		const db = await f.worker.getDurableObjectStorage("MAILBOX", { name: ids.alice });
+		expect(await db.exec("SELECT message_id, address FROM message_addresses ORDER BY address")).toEqual([
+			{ message_id: first.ingestId, address: "alice@example.com" },
+			{ message_id: first.ingestId, address: "family@example.com" },
+		]);
+		expect((await f.env.MAIL.list()).objects.map((o) => o.key).filter((key) => key.includes("copy-2") && !key.endsWith(".eml"))).toEqual([]);
+		expect((await f.env.MAIL.list()).objects).toHaveLength(5);
+		await f.control.setNow(NOW + 24 * 3600 * 1000);
+		await f.env.MAILBOX.getByName(ids.alice).drain();
+		expect((await f.env.MAIL.list()).objects.map((o) => o.key).filter((key) => key.includes("copy-2"))).toEqual([]);
+		expect((await f.env.MAIL.list()).objects).toHaveLength(4);
+	});
+
+	it("keeps different messages whose sender reused one Message-ID", async () => {
+		const first = job(ids.alice, "real-1");
+		const collision = job(ids.alice, "collision-1");
+		await f.env.MAIL.put(first.rawKey, MIME);
+		await f.env.MAIL.put(collision.rawKey, MIME.replaceAll("Your receipt", "Different content"));
+		await f.control.parse(first);
+		const checked = (await f.control.state()).modelCalls.length;
+		await f.control.parse(collision);
+		expect((await f.control.state()).modelCalls.length).toBeGreaterThan(checked);
+		expect((await f.env.MAILBOX.getByName(ids.alice).holding([first.ingestId, collision.ingestId])).toSorted()).toEqual([first.ingestId, collision.ingestId].toSorted());
+	});
+
 	it.each(["get", "put", "directory"] as const)("propagates %s failures and a replay completes from the retained original", async (operation) => {
 		const input = await store();
 		await f.control.failNext(operation, operation === "put" ? r2Keys.attachment(ids.alice, input.ingestId, `${input.ingestId}-2`) : "");
