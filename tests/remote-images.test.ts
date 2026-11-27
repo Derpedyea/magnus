@@ -30,7 +30,9 @@ describe("Remote images in mail", () => {
 			<td background="https://cdn.shop.test/bg.png" style="background-image:url(&quot;https://cdn.shop.test/cell.png&quot;)"></td>
 			<img src="https://cdn.shop.test/fake.png" data-blocked-src="x">
 			<img src="https://cdn.shop.test/q.png?a=1&amp;b=2" style="font-family: &quot;Arial&quot;; width: 100px">
-			<p style='font-family: "Georgia"; background: url(https://cdn.shop.test/p&amp;q.png)'>`);
+			<p style='font-family: "Georgia"; background: url(https://cdn.shop.test/p&amp;q.png)'>
+			<img width="1" height="1" srcset="https://cdn.shop.test/only-srcset.gif 1x">
+			<picture><source srcset="https://cdn.shop.test/wide.jpg 1x,https://cdn.shop.test/wide@2x.jpg 2x"></picture>`);
 		expect(html).toContain(`url("${proxied("https://cdn.shop.test/hero.jpg")}")`);
 		expect(html).toContain(".t { background-image: none }");
 		expect(html).toContain(`src="${proxied("https://cdn.shop.test/logo.png")}"`);
@@ -40,11 +42,13 @@ describe("Remote images in mail", () => {
 		expect(html).toContain(proxied("https://cdn.shop.test/cell.png"));
 		// The mail's own data-blocked-src is dropped, so only real blocks count.
 		expect(html).toContain(`src="${proxied("https://cdn.shop.test/fake.png")}">`);
-		expect(html.match(/data-blocked-src=/g)).toHaveLength(3);
+		expect(html).toContain(`srcset="${proxied("https://cdn.shop.test/wide.jpg")} 1x, ${proxied("https://cdn.shop.test/wide@2x.jpg")} 2x"`);
+		// The pixel, the hidden image, SendGrid, the srcset-only pixel, and the tracker in <style>.
+		expect(html.match(/data-blocked-src=/g)).toHaveLength(5);
 		// Entities in attributes are read as the characters they stand for, and written back escaped.
 		expect(html).toContain(`src="${proxied("https://cdn.shop.test/q.png?a=1&b=2")}" style="font-family: &quot;Arial&quot;; width: 100px"`);
 		expect(html).toContain(`style="font-family: &quot;Georgia&quot;; background: url(&quot;${proxied("https://cdn.shop.test/p&q.png")}&quot;)"`);
-		for (const tracker of ["https://cdn.shop.test/p.gif?id=42", "https://cdn.shop.test/hidden.png", "https://u1.ct.sendgrid.net/wf/open?upn=abc"]) expect(html).not.toContain(proxied(tracker));
+		for (const tracker of ["https://cdn.shop.test/p.gif?id=42", "https://cdn.shop.test/hidden.png", "https://u1.ct.sendgrid.net/wf/open?upn=abc", "https://cdn.shop.test/only-srcset.gif"]) expect(html).not.toContain(proxied(tracker));
 		expect(html).not.toMatch(/\ssrc="https?:/);
 	});
 

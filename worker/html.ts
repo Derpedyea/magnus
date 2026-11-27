@@ -25,6 +25,23 @@ const isRemote = (url: string) => /^\s*(https?:)?\/\//i.test(url);
 /** A remote address made absolute: `//host/x` is taken as https. */
 const absolute = (url: string) => url.trim().replace(/^\/\//, "https://");
 
+/** srcset candidates as the HTML spec parses them: a URL runs to whitespace (a comma ending it closes it), descriptors to a comma. */
+function srcsetCandidates(srcset: string): { url: string; descriptor: string }[] {
+	const out: { url: string; descriptor: string }[] = [];
+	const url = /[\s,]*(\S+)/y;
+	const descriptor = /[^,]*/y;
+	for (let m = url.exec(srcset); m; m = url.exec(srcset)) {
+		if (m[1]!.endsWith(",")) {
+			out.push({ url: m[1]!.replace(/,+$/, ""), descriptor: "" });
+			continue;
+		}
+		descriptor.lastIndex = url.lastIndex;
+		out.push({ url: m[1]!, descriptor: descriptor.exec(srcset)![0].trim() });
+		url.lastIndex = descriptor.lastIndex;
+	}
+	return out;
+}
+
 /**
  * Serve an email's HTML body as its own document, loaded by the client in
  * <iframe sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox">.
@@ -42,13 +59,17 @@ export function renderEmailHtml(
 		const target = absolute(url);
 		return opts.blockTrackers && (invisible || isTrackerUrl(target)) ? null : opts.remoteUrl(target);
 	};
+	/** Trackers blocked in CSS, which has no element to mark; each gets a hidden marker at the end so the client counts it. */
+	const cssBlocked: string[] = [];
 	/** Remote images in CSS (`background: url(...)`) go through the proxy too; trackers become `none`. */
 	const rewriteCss = (css: string) =>
 		css.replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, (match, _quote, url: string) => {
 			if (!isRemote(url)) return match;
 			const to = remote(url);
+			if (!to) cssBlocked.push(url);
 			return to ? `url("${to}")` : "none";
 		});
+	const invisible = (el: Element) => isInvisibleImage((name) => decodeEntities(el.getAttribute(name) ?? "") || null);
 	let css = "";
 
 	const rewriter = new HTMLRewriter()
@@ -101,7 +122,7 @@ export function renderEmailHtml(
 					if (url) el.setAttribute("src", url);
 					else el.removeAttribute("src");
 				} else if (isRemote(src)) {
-					const to = remote(src, isInvisibleImage((name) => decodeEntities(el.getAttribute(name) ?? "") || null));
+					const to = remote(src, invisible(el));
 					if (to) el.setAttribute("src", to);
 					else {
 						el.setAttribute("data-blocked-src", encodeAttribute(src));
@@ -114,19 +135,27 @@ export function renderEmailHtml(
 		// Every candidate is proxied or dropped; a srcset left with none goes, and the <img>'s src shows instead.
 		.on("img[srcset], source[srcset]", {
 			element(el) {
-				const candidates = decodeEntities(el.getAttribute("srcset") ?? "").split(/,\s+/).flatMap((candidate) => {
-					const [url = "", ...descriptor] = candidate.trim().split(/\s+/);
-					const to = isRemote(url) ? remote(url) : url.startsWith("data:") ? url : null;
-					return to ? [[to, ...descriptor].join(" ")] : [];
+				const hidden = el.tagName === "img" && invisible(el);
+				let blocked: string | null = null;
+				const candidates = srcsetCandidates(decodeEntities(el.getAttribute("srcset") ?? "")).flatMap(({ url, descriptor }) => {
+					const to = isRemote(url) ? remote(url, hidden) : url.startsWith("data:") ? url : null;
+					if (!to && isRemote(url)) blocked ??= url;
+					return to ? [descriptor ? `${to} ${descriptor}` : to] : [];
 				});
 				if (candidates.length > 0) el.setAttribute("srcset", encodeAttribute(candidates.join(", ")));
 				else el.removeAttribute("srcset");
+				if (blocked && !el.hasAttribute("data-blocked-src")) el.setAttribute("data-blocked-src", encodeAttribute(blocked));
 			},
 		})
 		.on("a[href]", {
 			element(el) {
 				el.setAttribute("target", "_blank");
 				el.setAttribute("rel", "noopener noreferrer");
+			},
+		})
+		.onDocument({
+			end(end) {
+				for (const url of cssBlocked) end.append(`<span hidden data-blocked-src="${encodeAttribute(url).replaceAll("<", "&lt;")}"></span>`, { html: true });
 			},
 		});
 
@@ -208,7 +237,16 @@ export async function proxyImage(raw: string | undefined): Promise<Response> {
 		await upstream?.body?.cancel();
 		return new Response(null, { status: 502 });
 	}
-	return new Response(upstream.body, {
+	// Content-Length is optional (chunked responses lack it), so the limit holds on the bytes that actually arrive.
+	let read = 0;
+	const capped = new TransformStream<Uint8Array, Uint8Array>({
+		transform(chunk, stream) {
+			read += chunk.byteLength;
+			if (read > PROXY_MAX_BYTES) stream.error(new Error("Image too large"));
+			else stream.enqueue(chunk);
+		},
+	});
+	return new Response(upstream.body?.pipeThrough(capped) ?? null, {
 		headers: { "Content-Type": type, "Content-Security-Policy": FILE_CSP, "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" },
 	});
 }
