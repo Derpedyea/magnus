@@ -126,7 +126,7 @@ test("concurrent account creation leaves one complete directory; unconfirmed rou
 	assert.equal((await request("/setup/finish", { token: account.token })).status, 409);
 });
 
-test("setup started before browser binding can resume only for its signed-in owner", async (t) => {
+test("setup started before browser binding resumes from any browser, with a token that can write DNS", async (t) => {
 	const fixture = await setupFixture();
 	t.after(() => fixture.close());
 	const request = await client(fixture);
@@ -137,8 +137,8 @@ test("setup started before browser binding can resume only for its signed-in own
 	const install = JSON.parse(row.value);
 	delete install.setup.resumeHash;
 	await db.prepare("UPDATE settings SET value = ?1 WHERE key = 'install'").bind(JSON.stringify(install)).run();
-	assert.equal((await (await client(fixture))("/setup/verify", { token: account.token })).status, 403);
-	assert.equal((await request("/setup/verify", { token: account.token })).status, 200);
+	assert.equal((await (await client(fixture))("/setup/verify", { token: "readonly-token" })).status, 403);
+	assert.equal((await (await client(fixture))("/setup/verify", { token: account.token })).status, 200);
 });
 
 test("failed bootstrap rolls back all rows and can retry; foreign MX requires consent", async (t) => {

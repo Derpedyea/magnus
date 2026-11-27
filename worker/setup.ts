@@ -185,11 +185,14 @@ async function hashSetupSecret(secret: string): Promise<string> {
 
 /**
  * Whether this browser may resume: it holds the cookie whose hash committed with the account, or it's signed in as the
- * first admin (/complete signs them in, so that covers a lost setup cookie, and setups from before the hash existed).
+ * first admin (/complete signs them in, so that covers a lost setup cookie).
  */
 async function resumesSetup(request: Request, setup: NonNullable<Install["setup"]>): Promise<boolean> {
+	// Started before the hash existed: no browser to bind it to, so the token's DNS · Edit proof, checked wherever this
+	// is, stands alone rather than leave the install stranded.
+	if (!setup.resumeHash) return true;
 	const secret = setupSecret(request);
-	if (secret && setup.resumeHash && (await hashSetupSecret(secret)) === setup.resumeHash) return true;
+	if (secret && (await hashSetupSecret(secret)) === setup.resumeHash) return true;
 	const signedIn = await currentUser(request);
 	return signedIn?.user.isAdmin === true && signedIn.user.email === setup.email;
 }
