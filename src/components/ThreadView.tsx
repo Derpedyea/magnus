@@ -13,7 +13,7 @@ import {
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi, Link, useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { ArchiveIcon, ArrowLeftIcon, BanIcon, CheckIcon, CircleAlertIcon, ClockIcon, DownloadIcon, EllipsisIcon, ForwardIcon, ImageOffIcon, InboxIcon, Link2OffIcon, LinkIcon, ListFilterIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, SparklesIcon, ShieldXIcon, StarIcon, StarOffIcon, TagIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, BanIcon, CheckIcon, CircleAlertIcon, ClockIcon, DownloadIcon, EllipsisIcon, ForwardIcon, InboxIcon, Link2OffIcon, LinkIcon, ListFilterIcon, MailIcon, MinusIcon, OctagonAlertIcon, PaperclipIcon, ReplyAllIcon, ReplyIcon, RotateCwIcon, ShieldCheckIcon, SparklesIcon, ShieldXIcon, StarIcon, StarOffIcon, TagIcon, Trash2Icon, TriangleAlertIcon, UserRoundCheckIcon, XIcon, type LucideIcon } from "lucide-react";
 import { type AppHotkey, useAppHotkeys, useHotkey } from "@tanstack/react-hotkeys";
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -859,7 +859,8 @@ function Undelivered(props: { mailboxId: string; message: MessageDetail }) {
 
 /**
  * Email HTML renders in a sandboxed iframe: no scripts (sandbox + CSP), same-origin only so we
- * can size it and so inline cid: images authenticate. Remote images stay blocked until asked.
+ * can size it and so inline cid: images authenticate. Remote images load through the Worker's proxy; tracking
+ * pixels don't, unless asked.
  * Mail that sets no colours of its own takes the theme's; the rest keeps the look it was designed
  * for, on a white sheet.
  */
@@ -877,13 +878,13 @@ function HtmlBody({
 	const ref = useRef<HTMLIFrameElement>(null);
 	const [images, setImages] = useState(false);
 	const [height, setHeight] = useState(48);
-	const [hasBlocked, setHasBlocked] = useState(false);
+	const [trackers, setTrackers] = useState(0);
 	const [plain, setPlain] = useState(false);
 	const [hasQuote, setHasQuote] = useState(false);
 	const [showQuote, setShowQuote] = useState(false);
 	const isDark = useSelector(appearance, (s) => s.isDark);
 	const theme = useSelector(appearance, (s) => s.active);
-	// Each load (showing images reloads the frame) brings a new document to listen to.
+	// Each load (loading trackers reloads the frame) brings a new document to listen to.
 	const [doc, setDoc] = useState<Document | null>(null);
 
 	const onClick = useEffectEvent((e: MouseEvent) => {
@@ -958,7 +959,7 @@ function HtmlBody({
 		}
 		setHasQuote(quote.length > 0);
 		measure(doc);
-		setHasBlocked(doc.querySelector("img[data-blocked-src]") !== null);
+		setTrackers(doc.querySelectorAll("[data-blocked-src]").length);
 		setPlain(!setsColors(doc));
 		setDoc(doc);
 	};
@@ -972,10 +973,10 @@ function HtmlBody({
 
 	return (
 		<div>
-			{hasBlocked && !images ? (
-				<Button variant="secondary" size="xs" onClick={() => setImages(true)} className="mb-2">
-					<ImageOffIcon />
-					Remote images blocked · Show images
+			{trackers > 0 && !images ? (
+				<Button variant="ghost" size="xs" onClick={() => setImages(true)} className="mb-2 text-muted-foreground" title="Load the blocked images, which tell the sender you opened this">
+					<ShieldCheckIcon />
+					{trackers === 1 ? "Tracker blocked" : `${trackers} trackers blocked`} · Load anyway
 				</Button>
 			) : null}
 			<iframe

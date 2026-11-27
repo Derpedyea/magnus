@@ -6,7 +6,7 @@ import { threadQuery } from "../queries";
 
 export const Route = createFileRoute("/_app/_mail/$view/$mailboxId/$threadId")({
 	loader: ({ context, params }) => context.queryClient.ensureQueryData(threadQuery(params.mailboxId, params.threadId)),
-	// Another thread starts fresh: messages re-collapse and the remote-images prompt resets.
+	// Another thread starts fresh: messages re-collapse and the tracker prompt resets.
 	remountDeps: ({ params }) => params,
 	component: ThreadView,
 	// Where the thread covers the list, these do too, so they keep the way back.

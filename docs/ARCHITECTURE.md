@@ -549,10 +549,13 @@ Email HTML is hostile by default. Four layers protect the client:
 
 1. **HTMLRewriter** (streaming, in the Worker) strips `script`, `iframe`, `object`, `embed`, `form`, `base`,
    `link`, `meta refresh`, every `on*` attribute, `ping`, and `javascript:`/`data:text/html` URLs. It rewrites
-   `cid:` images to authenticated attachment URLs and blocks remote images by default (tracking pixels),
-   recording what it blocked.
+   `cid:` images to authenticated attachment URLs. Remote images (`src`, `srcset`, `background`, CSS `url()`)
+   are pointed at `/api/remote-image`, which fetches them from the Worker (no cookies, referrer or reader IP;
+   public http(s) hosts only; raster types only, never SVG; cached by Cloudflare), so senders see Cloudflare,
+   not the reader. Tracking pixels (`worker/trackers.ts`: tiny or hidden images, known open-tracking URLs) are
+   swapped for a blank pixel and marked `data-blocked-src`; the client counts them and offers "Load anyway".
 2. **CSP** on the body response: `default-src 'none'`, no scripts, inline styles only, `img-src` limited to
-   self/data unless the user clicks "Show images", `form-action 'none'`, `base-uri 'none'`.
+   self/data (so a remote image the rewrite missed stays blocked), `form-action 'none'`, `base-uri 'none'`.
 3. **Sandboxed iframe** without `allow-scripts`. `allow-same-origin` is safe without scripts and lets inline
    images authenticate and the frame auto-size.
 4. **Attachments** show inline only when `preview()` in `shared/files.ts` allows it: raster images, common
