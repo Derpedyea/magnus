@@ -345,23 +345,34 @@ function linkHost(href: string): string | null {
 	}
 }
 
-/** Declarations simple stylesheet rules (`.x { … }` only; anything harder is beyond this reading) give each class. */
-function classRules(html: string): ReadonlyMap<string, ReadonlyMap<string, string>> {
-	const rules = new Map<string, Map<string, string>>();
+/** One simple class rule's declarations, numbered in stylesheet order. */
+interface ClassRule {
+	order: number;
+	d: ReadonlyMap<string, string>;
+}
+
+/**
+ * The rules simple stylesheets (`.x { … }` only; anything harder is beyond this reading) give each class. Only sheets
+ * every screen applies count: none with a media attribute other than all or screen, and nothing inside an @-rule.
+ */
+function classRules(html: string): ReadonlyMap<string, readonly ClassRule[]> {
+	const rules = new Map<string, ClassRule[]>();
+	let order = 0;
 	const lower = html.toLowerCase();
-	const open = /<style\b[^>]*>/gi;
+	const open = /<style\b([^>]*)>/gi;
 	for (let match = open.exec(html); match; match = open.exec(html)) {
 		const start = match.index + match[0].length;
 		const close = lower.indexOf("</style", start);
-		const css = html.slice(start, close < 0 ? html.length : close).replaceAll(/\/\*[\s\S]*?(?:\*\/|$)/g, "");
+		const media = /\bmedia\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(match[1] ?? "");
+		const applies = !media || /^\s*(?:all|screen)?\s*$/i.test(media[1] ?? media[2] ?? media[3] ?? "");
+		const css = applies ? withoutAtRules(html.slice(start, close < 0 ? html.length : close).replaceAll(/\/\*[\s\S]*?(?:\*\/|$)/g, "")) : "";
 		for (const rule of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
-			const body = declarations(rule[2] ?? "");
+			const d = declarations(rule[2] ?? "");
+			const at = order++;
 			for (const selector of (rule[1] ?? "").split(",")) {
 				const simple = /^\.(-?[_a-zA-Z][_a-zA-Z0-9-]*)$/.exec(selector.trim())?.[1];
 				if (!simple) continue;
-				const merged = rules.get(simple) ?? new Map<string, string>();
-				for (const [name, value] of body) merged.set(name, value);
-				rules.set(simple, merged);
+				rules.set(simple, [...(rules.get(simple) ?? []), { order: at, d }]);
 			}
 		}
 		if (close < 0) break;
@@ -370,12 +381,38 @@ function classRules(html: string): ReadonlyMap<string, ReadonlyMap<string, strin
 	return rules;
 }
 
-/** An element's declarations: its classes' rules, then its own style attribute, which overrides them as a browser's does. */
-function styleOf(byClass: ReadonlyMap<string, ReadonlyMap<string, string>>, classes: string | null, style: string | null): Map<string, string> {
+/** CSS with every @-rule's block (@media, @supports, …) cut out, nested blocks and all. */
+function withoutAtRules(css: string): string {
+	let out = "";
+	for (let i = 0; i < css.length; ) {
+		const at = css.indexOf("@", i);
+		if (at < 0) return out + css.slice(i);
+		out += css.slice(i, at);
+		const brace = css.indexOf("{", at);
+		const semi = css.indexOf(";", at);
+		// A statement like @import ends at its semicolon; a block rule at its matching brace.
+		if (brace < 0 || (semi >= 0 && semi < brace)) {
+			i = semi < 0 ? css.length : semi + 1;
+			continue;
+		}
+		let depth = 0;
+		let j = brace;
+		for (; j < css.length; j++) {
+			if (css[j] === "{") depth++;
+			else if (css[j] === "}" && --depth === 0) break;
+		}
+		i = j + 1;
+	}
+	return out;
+}
+
+/** An element's declarations: its classes' rules in stylesheet order, then its own style attribute, which overrides them. */
+function styleOf(byClass: ReadonlyMap<string, readonly ClassRule[]>, classes: string | null, style: string | null): Map<string, string> {
 	const own = declarations(style);
 	if (byClass.size === 0 || !classes) return own;
+	const matched = [...new Set(classes.split(/\s+/))].flatMap((name) => byClass.get(name) ?? []).sort((a, b) => a.order - b.order);
 	const d = new Map<string, string>();
-	for (const name of classes.split(/\s+/)) for (const [k, v] of byClass.get(name) ?? []) d.set(k, v);
+	for (const rule of matched) for (const [k, v] of rule.d) d.set(k, v);
 	for (const [k, v] of own) d.set(k, v);
 	return d;
 }

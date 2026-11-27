@@ -172,6 +172,13 @@ describe("importing from Proton on the server", () => {
 		expect(await status(ids.shared)).toBeNull();
 	});
 
+	it("leaves nothing claimed when reserving the person's import slot fails", async () => {
+		await f.control.failNext("directory", "INSERT INTO proton_imports");
+		expect((await start()).status).toBe(500);
+		expect(await status()).toBeNull();
+		expect((await start()).status).toBe(202);
+	});
+
 	it("lets another member start over someone else's finished import without clearing it", async () => {
 		const bob = await f.login("bob");
 		expect((await start(ids.shared)).status).toBe(202);

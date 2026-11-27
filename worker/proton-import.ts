@@ -201,12 +201,22 @@ export class ProtonImport extends DurableObject<Env> {
 			);
 		});
 		// Containers are account-wide capacity, while this object is only one mailbox: D1 reserves one running import per person.
-		if (!(await this.#reserve(input.userId, input.mailboxId, id, now))) {
+		const unclaim = () =>
 			this.ctx.storage.transactionSync(() => {
 				this.#sql(`DELETE FROM job`);
 				this.#sql(`DELETE FROM outcomes`);
 				this.#sql(`DELETE FROM labels`);
 			});
+		let reserved: boolean;
+		try {
+			reserved = await this.#reserve(input.userId, input.mailboxId, id, now);
+		} catch (error) {
+			// The directory couldn't say: no job is left claimed, so starting again isn't refused as already running.
+			unclaim();
+			throw error;
+		}
+		if (!reserved) {
+			unclaim();
 			return { error: "You already have a Proton import running. Wait for it or stop it first.", status: 409 };
 		}
 		this.#sql(`INSERT INTO starts (at) VALUES (?1)`, now);
