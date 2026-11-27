@@ -1,11 +1,7 @@
 # Deploying Magnus
 
 You need a Cloudflare account on **Workers Paid** ($5/month; Email Sending to arbitrary recipients requires it)
-and a domain whose DNS is on Cloudflare. The spam checks ask GPT-6 Luna, through OpenRouter, about mail Clef
-isn't sure of, and rules' plain-English conditions and the mail agent use DeepSeek V4.1 Flash there too, so add an
-[OpenRouter](https://openrouter.ai/) key to AI Gateway: dashboard → AI → AI Gateway → the gateway named `default`
-(create it if there's none, with Authentication on) → Provider Keys → Add API Key → OpenRouter. Without it, mail
-Clef isn't sure of goes to Spam as unchecked, mail is delivered without its AI rules, and the agent can't answer.
+and a domain whose DNS is on Cloudflare. Every model Magnus asks runs on Workers AI, billed to the same account.
 
 ## 1. Deploy
 

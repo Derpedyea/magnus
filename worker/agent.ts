@@ -31,8 +31,7 @@ import {
 import { AgentRequestSchema, LabelNameSchema, MAX_AGENT_ARGUMENTS, MAX_AGENT_TEXT, MarkReadSchema, ModifyThreadsSchema, RuleInputSchema } from "#shared/schemas";
 import { z } from "zod";
 import { mailboxAccess, type Reader } from "./directory";
-import { type Models, openRouter, parsedJson, readHtml } from "./mail/checks";
-import { RULES_MODEL } from "./mail/rules";
+import { type Models, parsedJson, readHtml } from "./mail/checks";
 import type { Mailbox } from "./mailbox/mailbox";
 
 // The assistant in the app's side panel: a model given tools that act as the signed-in person, with the
@@ -41,12 +40,11 @@ import type { Mailbox } from "./mailbox/mailbox";
 // back as a PendingAction for the person to approve (approveAction()). The app keeps the conversation.
 
 /**
- * Answers in the side panel: the rules' model, through OpenRouter (openRouter()). On bench/models' tasks, three runs,
- * it did all 36 in about 3 s each for $0.31 a thousand. Workers AI's copy of it did 33 in 21 s for $0.61, held to 20
- * requests a minute. Claude Haiku 5.5 did 36 for $2.36. GPT-6.1 Terra and Gemma 4 refuse the tools' schemas (their
- * `\p{…}` patterns).
+ * Answers in the side panel. Billed as Workers AI. On bench/models' 12 tasks, six times each, it did 68 of 72, at
+ * about 20 s and $0.55-0.73 a thousand questions. Of the other Workers AI models GLM 5.3 did 34 of 36 (17 s, priced
+ * about four times higher per token), gpt-oss-120b 30 and Inkling 2 Small 23, and Gemma 4 refuses the tools' schemas.
  */
-export const AGENT_MODEL = RULES_MODEL;
+export const AGENT_MODEL = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
 /** Model calls per question, at most, tools in between. */
 const MAX_STEPS = 8;
 /** Characters of tool results the model rereads, from earlier in the conversation and this answer; older ones are left out. */
@@ -487,12 +485,9 @@ function toolMessage(id: string, name: string, content: unknown, summary: string
 }
 
 async function ask(models: Models, messages: Record<string, unknown>[]) {
-	let raw: unknown;
+	let raw: Record<string, unknown>;
 	try {
-		const response = await openRouter(models, { model: AGENT_MODEL, messages, tools: SPECS, tool_choice: "auto", reasoning: { effort: "low" }, max_tokens: 4000 });
-		// Status alone: a provider's error body can quote the request.
-		if (!response.ok) throw new Error(`${AGENT_MODEL} answered ${response.status}`);
-		raw = await response.json();
+		raw = await models.run(AGENT_MODEL, { messages, tools: SPECS, tool_choice: "auto", reasoning_effort: "low", max_completion_tokens: 4000 });
 	} catch {
 		throw new AgentError("The assistant couldn't be reached. Try again in a minute.");
 	}

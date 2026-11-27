@@ -5,8 +5,9 @@
 //
 // --mail: a set from import.mjs (real mail) in place of mail.json.
 // quick: the decision model checkMail() asks first; mail it isn't sure of is answered with the true category, so its
-//        errors are its own confident ones. deep: every message reaches the deep model (an OpenRouter model through the
-//        account's `default` gateway, or a Workers AI one). rules: checkRules(). agent: converse() on bench/models/agent.ts.
+//        errors are its own confident ones. deep: every message reaches the deep model. rules: checkRules(). agent:
+//        converse() on bench/models/agent.ts. Any model can be Workers AI's, or OpenRouter's through the account's
+//        `default` gateway, to compare with.
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";

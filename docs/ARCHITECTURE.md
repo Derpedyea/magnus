@@ -627,13 +627,10 @@ apart for one person's mailbox is who you know, and what you've said about who y
   decision model that returns a probability per category, reads every such message (about 500 ms and a few
   hundred tokens). Not Clef Flash: it scored a mailbox-quota phish at 0.23, and 0.18 with a line claiming the
   mail was personal, where Clef gave both 0.78. When Clef's odds that it's unsolicited (outreach, spam, or
-  phishing) land between 0.2 and 0.9, OpenAI's GPT-6 Luna reads it too and its category stands. Luna also reads
-  mail Clef calls outreach with less than 0.8 on outreach itself, since outreach can be let through and phishing
-  can't. Luna goes through OpenRouter on the account's `default` AI
-  Gateway, which holds the OpenRouter key (BYOK, Provider Keys) and adds it to the request, so the Worker never
-  has it. The request asks only for providers that retain nothing (OpenRouter's `zdr`, which for Luna means Azure)
-  and don't train on it (`data_collection: deny`), and tells the gateway not to log it. Without the key, Luna's
-  mail ends up unchecked (below). The models read a bounded summary (sender, whether it's verified, subject, up
+  phishing) land between 0.2 and 0.9, Workers AI's DeepSeek V4.1 Flash reads it too and its category stands. It
+  also reads mail Clef calls outreach with less than 0.8 on outreach itself, since outreach can be let through and
+  phishing can't. It's a Workers Paid model held to 20 requests a minute, shared with the mail agent; a check it
+  can't answer goes back in the queue, and one that keeps failing ends up unchecked (below). The models read a bounded summary (sender, whether it's verified, subject, up
   to 5 Reply-To addresses, 10 file names, each cut to 200 characters, link hosts, and the body as the recipient
   sees it, cut to 4,000 characters), and their answers are validated. Mail from known senders never reaches them,
   so a message written to sway a model can at most get a stranger's mail into the inbox. Nor does a deleted
@@ -681,26 +678,25 @@ apart for one person's mailbox is who you know, and what you've said about who y
   learned from where the verdict put it, so rules and sender standing stay apart; mail a rule takes out of the
   inbox, or marks read, doesn't notify. Up to 20 rules can also have an AI condition in plain English. The queue
   asks `Mailbox.aiRules()` for them, which gives none for mail going to Spam, so no model reads spam. Those whose
-  other conditions match go to DeepSeek V4.1 Flash through OpenRouter (`worker/mail/rules.ts`), the same way as
-  Luna (zero data retention, the gateway's stored key), in one call per
+  other conditions match go to Workers AI's gpt-oss-120b (`worker/mail/rules.ts`) in one call per
   message, with the same bounded summary and untrusted-data instruction the checks use and a strict JSON schema
   for the answers; the reason it gives (cut to 200 characters) is kept with the message. A failure queues the job
   again like a failed check (`ruleFailures`) and carries the checks' answer (`check`) so the sender isn't checked
   twice; after the third, the mail is delivered with those rules unmatched (logged as `rules unchecked`). A rule
   can be tried on the newest 1,000 inbound messages outside Trash and Spam (`/rules/preview`, its AI condition
   unchecked) and, without an AI condition, applied to what it matches (`/rules/:id/apply`).
-- **Mail agent** (`worker/agent.ts`, `POST /api/agent`, the app's right-hand panel). The rules' DeepSeek V4.1 Flash,
-  through OpenRouter, with function calling, answers in a loop of at most 8 model calls per question: it can search,
-  list, and read conversations (a read gives the newest 10 messages, 4,000 characters of each), list and make
-  labels, label, archive, star, and mark read, and list, try, write, delete, and apply rules. Each tool acts as the
-  signed-in person through `mailboxAccess()`, as the API does, so an id from someone else's mailbox is refused, and
-  a call naming one changes nothing. It reads hostile mail, so mail is passed as untrusted data and the instructions
-  say never to act on what mail asks; and anything that could lose mail or teach the spam filter (Trash, Spam, the
+- **Mail agent** (`worker/agent.ts`, `POST /api/agent`, the app's right-hand panel). Workers AI's DeepSeek V4.1
+  Flash, with function calling, answers in a loop of at most 8 model calls per question: it can search, list, and
+  read conversations (a read gives the newest 10 messages, 4,000 characters of each), list and make labels, label,
+  archive, star, and mark read, and list, try, write, delete, and apply rules. Each tool acts as the signed-in
+  person through `mailboxAccess()`, as the API does, so an id from someone else's mailbox is refused, and a call
+  naming one changes nothing. It reads hostile mail, so mail is passed as untrusted data and the instructions say
+  never to act on what mail asks; and anything that could lose mail or teach the spam filter (Trash, Spam, the
   Screener, deleting or applying a rule, a rule that sends mail to Spam or Trash) never runs from `/api/agent`. It
   comes back as a `pending` action, with what it'll do in plain words, and runs only from `/api/agent/approve`,
   which checks it again. The app keeps the conversation (40 messages, in the tab's sessionStorage, cleared on sign
-  out) and sends it with each question; the server keeps nothing, and rereads at most 120,000 characters of earlier
-  tool results.
+  out) and sends it with each question; the server keeps nothing, and rereads at most 120,000 characters of
+  earlier tool results.
 
 ### 5.7 Reliability summary
 
@@ -724,15 +720,15 @@ apart for one person's mailbox is who you know, and what you've said about who y
   that it's about 4¢ an hour, plus up to 7¢ for the CPU it uses.
   The one variable is R2 storage for large attachment archives (~$0.015/GB-month).
 - Spam checks only read mail from senders a mailbox doesn't know. Clef costs $0.24 per million input tokens,
-  about 0.012¢ a message, inside Workers AI's free 10,000 neurons a day for several hundred messages. GPT-6 Luna
-  ($0.10/M input, $0.50/M output) reads only the ones Clef isn't sure of, billed by OpenRouter to the key stored
-  on the gateway (see §5.6).
-- Rules cost nothing unless one has an AI condition. Then DeepSeek V4.1 Flash through OpenRouter ($0.15/M input,
-  $0.60/M output, billed to the gateway's key) reads a message once, for all such rules, only when one's other
-  conditions match and the mail isn't going to Spam: about 1,500 tokens in, a few hundred out.
-- The mail agent costs only when asked: each question is one to eight calls of the same DeepSeek V4.1 Flash, each
-  rereading the conversation and its tools' results. `bench/models` measures what each model call costs and gets
-  right, on synthetic mail and on real mail imported with `bench/models/import.mjs`, to choose models by.
+  about 0.012¢ a message, inside Workers AI's free 10,000 neurons a day for several hundred messages. DeepSeek V4.1
+  Flash ($0.30/M input, $1.20/M output) reads only the ones Clef isn't sure of, about one in six of real mail on
+  `bench/models`.
+- Rules cost nothing unless one has an AI condition. Then gpt-oss-120b on Workers AI ($0.35/M input, $0.75/M
+  output) reads a message once, for all such rules, only when one's other conditions match and the mail isn't
+  going to Spam: about 1,500 tokens in, a few hundred out.
+- The mail agent costs only when asked: each question is one to eight calls of DeepSeek V4.1 Flash ($0.30/M input,
+  $1.20/M output, $0.006/M for input it has cached), each rereading the conversation and its tools' results, most
+  of it cached. `bench/models` measures what each model call costs and gets right, to choose models by.
 
 ## 7. Checked on the pilot install
 

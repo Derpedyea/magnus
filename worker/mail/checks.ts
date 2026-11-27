@@ -3,8 +3,8 @@ import { z } from "zod";
 import { REMOVED_ELEMENTS } from "../html";
 
 // Workers AI's call on mail from senders a mailbox doesn't know. Clef, Cloudflare's decision model that answers with
-// a probability per category, reads all of it; GPT-6 Luna reads only what Clef wasn't sure of. Neither reads mail from
-// senders the mailbox knows, so a message written to sway them can at most get a stranger's mail into the inbox,
+// a probability per category, reads all of it; a chat model reads only what Clef wasn't sure of. Neither reads mail
+// from senders the mailbox knows, so a message written to sway them can at most get a stranger's mail into the inbox,
 // which is where all of it went before there were checks.
 
 /**
@@ -13,14 +13,17 @@ import { REMOVED_ELEMENTS } from "../html";
  */
 export const QUICK_MODEL = "@cf/cloudflare/clef";
 /**
- * Reads what the quick model wasn't sure of, through OpenRouter, with the key stored on the account's `default` AI
- * Gateway (BYOK): the Worker never holds it, and OpenRouter bills it.
+ * Reads what the quick model wasn't sure of. Billed as Workers AI; the mail agent's model too. On bench/models' 800
+ * real messages, two runs, Clef then this got 98.6-98.9% right, sent 7 of 500 wanted ones to Spam and let no phishing
+ * through, for about $0.25 a thousand; on the 72 synthetic ones, 91.7%. Gemma 4 26B scored as well on synthetic and
+ * sent 12 to Spam. This one is a Workers Paid model held to 20 requests a minute, shared with the agent: past that a
+ * check fails and the queue retries it (ingest.ts), and mail whose check keeps failing goes to Spam unchecked.
  */
-export const DEEP_MODEL = "openai/gpt-6-luna";
-const GATEWAY = "default";
+export const DEEP_MODEL = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
 /**
  * Clef's probability that mail is unsolicited (outreach, spam, or phishing) at or above which its category stands
- * without asking Luna. Where outreach goes is the mailbox's call (MailSettings), so it counts as unsolicited here.
+ * without asking the deep model. Where outreach goes is the mailbox's call (MailSettings), so it counts as unsolicited
+ * here.
  */
 const SURE_SPAM = 0.9;
 /** …and below which it isn't. */
@@ -61,7 +64,6 @@ const INSTRUCTIONS = [
 /** What the checks need of the AI binding, so tests can stand in for it. */
 export interface Models {
 	run(model: string, inputs: Record<string, unknown>, options?: AiOptions): Promise<Record<string, unknown>>;
-	gateway(id: string): { run(request: AIGatewayUniversalRequest): Promise<Response> };
 }
 
 /** What the models read: the message as its recipient would judge it, bounded. */
@@ -87,7 +89,7 @@ const QuickReply = z.object({
 	}),
 });
 
-const DeepReply = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string().nullable() }) })) });
+const DeepReply = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string().nullish() }) })) });
 const DeepVerdict = z.object({ category: z.enum(MAIL_CATEGORIES) });
 
 /**
@@ -115,15 +117,15 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 	const sure = spam < SURE_CLEAN || (spam >= SURE_SPAM && settled);
 	if (sure) return { kind: "checked", category: top, spam, model: QUICK_MODEL };
 
-	const response = await openRouter(models, {
-		model: DEEP_MODEL,
+	const reply = await models.run(DEEP_MODEL, {
 		messages: [
 			{ role: "system", content: INSTRUCTIONS },
 			{ role: "user", content: JSON.stringify(state) },
 		],
-		// Reasoning shares this budget; an answer cut short has no content and fails below.
-		max_tokens: 2000,
-		reasoning: { effort: "low" },
+		// Reasoning shares this budget; an answer cut short has no content and fails below. Room to spare: on
+		// bench/models a reasoning model (Gemma 4) ran past 2,000 on one message in 72.
+		max_completion_tokens: 4000,
+		reasoning_effort: "low",
 		response_format: {
 			type: "json_schema",
 			json_schema: {
@@ -133,29 +135,11 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 			},
 		},
 	});
-	// Status alone: a provider's error body can quote the request.
-	if (!response.ok) throw new CheckError(`${DEEP_MODEL} answered ${response.status}`);
-	const text = DeepReply.safeParse(await response.json().catch(() => null)).data?.choices[0]?.message.content;
+	const text = DeepReply.safeParse(reply).data?.choices[0]?.message.content;
 	if (!text) throw new CheckError(`${DEEP_MODEL} gave no answer`);
 	const verdict = DeepVerdict.safeParse(parsedJson(text));
 	if (!verdict.success) throw new CheckError(`${DEEP_MODEL} answered off-schema`);
 	return { kind: "checked", category: verdict.data.category, spam, model: DEEP_MODEL };
-}
-
-/**
- * A chat completion from an OpenRouter model, through the account's `default` AI Gateway, which holds the OpenRouter key
- * (BYOK): the Worker never has it, and OpenRouter bills it. It reads mail, so it goes only to providers that honour every
- * parameter asked for and keep nothing they're sent, and stays out of the gateway's logs. A failure's body can quote the
- * request: read its status, not its text.
- */
-export function openRouter(models: Models, query: Record<string, unknown>): Promise<Response> {
-	return models.gateway(GATEWAY).run({
-		provider: "openrouter",
-		endpoint: "v1/chat/completions",
-		// No Authorization: the gateway adds the stored key only when there's none.
-		headers: { "Content-Type": "application/json", "cf-aig-collect-log": false },
-		query: { ...query, provider: { require_parameters: true, data_collection: "deny", zdr: true } },
-	});
 }
 
 /** JSON.parse's errors quote the text, which here is a model's answer: so no error, just nothing. */

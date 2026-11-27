@@ -286,8 +286,8 @@ async function rulesOrGiveUp(env: Env, models: Models, facts: MailFacts, rules: 
 }
 
 /**
- * What a failed check says, safe to log and keep: this code's own messages, or the platform's (the AI binding, the
- * gateway), bounded. Never a model's answer, which can echo the mail (CheckError).
+ * What a failed check says, safe to log and keep: this code's own messages, or the platform's (the AI binding),
+ * bounded. Never a model's answer, which can echo the mail (CheckError).
  */
 function checkErrorOf(error: unknown): string {
 	return (error instanceof CheckError ? error.message : String(error)).slice(0, MAX_CHECK_ERROR);

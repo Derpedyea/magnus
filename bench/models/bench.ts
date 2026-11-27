@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import type { MailCategory } from "#shared";
-import { approveAction, converse } from "../../worker/agent";
+import { AGENT_MODEL, approveAction, converse } from "../../worker/agent";
 import { checkMail, DEEP_MODEL, type MailFacts, type Models, QUICK_MODEL } from "../../worker/mail/checks";
-import { checkRules } from "../../worker/mail/rules";
+import { checkRules, RULES_MODEL } from "../../worker/mail/rules";
 import { runTask, TASKS } from "./agent";
 
 // Benchmarks models for each of Magnus's model calls, through the production code (checkMail(), checkRules(),
@@ -94,7 +94,7 @@ export function costOf(model: string, u: Usage): number {
 
 interface Swap {
 	quick?: string;
-	/** An OpenRouter model (through the account's gateway, as production does) or a Workers AI one. */
+	/** A Workers AI model, or an OpenRouter one through the account's `default` gateway, to compare with. */
 	deep?: string;
 	rules?: string;
 	agent?: string;
@@ -124,31 +124,29 @@ function shim(ai: Ai, swap: Swap, calls: Call[]): Models {
 				const target = swap.quick ?? model;
 				return (await record(target, () => ai.run(target as never, { ...inputs, model: target.split("/").pop() } as never))) as Record<string, unknown>;
 			}
-			return (await record(model, () => ai.run(model as never, inputs as never))) as Record<string, unknown>;
-		},
-		gateway(id) {
-			return {
-				async run(request) {
-					const query = request.query as Record<string, unknown> & { model: string; reasoning?: { effort?: string }; max_tokens?: number };
-					// What production asked for: the deep check, the agent (with tools), or rules.
-					const role = query.model === DEEP_MODEL ? "deep" : "tools" in query ? "agent" : "rules";
-					if (role === "deep" && swap.oracle) return Response.json({ choices: [{ message: { content: JSON.stringify({ category: swap.oracle }) } }] });
-					const target = (role === "deep" ? swap.deep : role === "agent" ? swap.agent : swap.rules) ?? query.model;
-					const body = await record(target, async () => {
-						if (target.startsWith("@cf/")) {
-							// The same request, as a Workers AI chat model takes it.
-							const { model: _, provider: __, reasoning, max_tokens, ...rest } = query;
-							return ai.run(target as never, { ...rest, max_completion_tokens: max_tokens, reasoning_effort: reasoning?.effort } as never);
-						}
-						const res = await ai.gateway(id).run({ ...request, query: { ...query, model: target, usage: { include: true } } } as AIGatewayUniversalRequest);
-						if (!res.ok) throw new Error(`gateway ${res.status}: ${(await res.text()).slice(0, 200)}`);
-						return res.json();
-					});
-					return Response.json(body);
-				},
-			};
+			// The agent and the deep check can share a model: the agent's calls are the ones with tools.
+			const role = model === AGENT_MODEL && "tools" in inputs ? "agent" : model === DEEP_MODEL ? "deep" : model === RULES_MODEL ? "rules" : null;
+			if (role === "deep" && swap.oracle) return { choices: [{ message: { content: JSON.stringify({ category: swap.oracle }) } }] };
+			const target = (role === "deep" ? swap.deep : role === "agent" ? swap.agent : role === "rules" ? swap.rules : undefined) ?? model;
+			return (await record(target, () => (target.startsWith("@cf/") ? ai.run(target as never, inputs as never) : openRouter(ai, target, inputs)))) as Record<string, unknown>;
 		},
 	};
+}
+
+/**
+ * A Workers AI chat request, sent to an OpenRouter model instead, to compare one with Magnus's: through the account's
+ * `default` gateway with its stored OpenRouter key, only to providers that keep nothing.
+ */
+async function openRouter(ai: Ai, model: string, inputs: Record<string, unknown>) {
+	const { max_completion_tokens, reasoning_effort, ...rest } = inputs;
+	const res = await ai.gateway("default").run({
+		provider: "openrouter",
+		endpoint: "v1/chat/completions",
+		headers: { "Content-Type": "application/json", "cf-aig-collect-log": false },
+		query: { ...rest, model, max_tokens: max_completion_tokens, reasoning: { effort: reasoning_effort }, provider: { require_parameters: true, data_collection: "deny", zdr: true }, usage: { include: true } },
+	} as AIGatewayUniversalRequest);
+	if (!res.ok) throw new Error(`gateway ${res.status}: ${(await res.text()).slice(0, 200)}`);
+	return res.json();
 }
 
 async function pool<T, R>(items: T[], n: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {

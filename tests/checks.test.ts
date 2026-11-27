@@ -50,7 +50,7 @@ describe("checks by Workers AI", () => {
 	it.each([
 		["phishing", "spam"],
 		["transactional", "inbox"],
-	] as const)("asks Luna when Clef isn't sure, and goes by its answer: %s", async (deep, label) => {
+	] as const)("asks the deep model when Clef isn't sure, and goes by its answer: %s", async (deep, label) => {
 		await f.control.setModels({ quick: 0.5, deep });
 		expect(await deliver()).toMatchObject({ verdict: { kind: "checked", category: deep, spam: 0.5, model: DEEP_MODEL }, labels: [label] });
 		expect((await calls()).map((c) => c.model)).toEqual([QUICK_MODEL, DEEP_MODEL]);
@@ -227,11 +227,6 @@ describe("checks by Workers AI", () => {
 		expect(quick.state.body.length).toBe(4001);
 		expect(quick.state.subject.length).toBe(201);
 		expect(quick.state.replyTo).toHaveLength(5);
-		expect(JSON.parse(deep.request.query.messages[1].content)).toEqual(quick.state);
-		// Through the gateway's stored OpenRouter key, and out of its logs.
-		expect(deep).toMatchObject({ id: "default", request: { provider: "openrouter", headers: { "cf-aig-collect-log": false } } });
-		// Only providers that retain nothing.
-		expect(deep.request.query.provider).toMatchObject({ zdr: true, data_collection: "deny" });
-		expect(deep.request.headers).not.toHaveProperty("Authorization");
+		expect(JSON.parse(deep.messages[1].content)).toEqual(quick.state);
 	});
 });
