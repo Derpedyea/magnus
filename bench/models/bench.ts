@@ -266,8 +266,8 @@ export function scoreClassify(vs: Verdict[]) {
 		hard: pct(hard.filter((v) => v.got && v.accept.includes(v.got)).length, hard.length),
 		/** Wanted mail sent to Spam. */
 		legitToJunk: vs.filter((v) => LEGIT.has(v.truth) && v.got && JUNK.has(v.got) && !v.accept.includes(v.got)).length,
-		/** Phishing let through as wanted mail. */
-		phishMissed: vs.filter((v) => v.truth === "phishing" && v.got && LEGIT.has(v.got)).length,
+		/** Phishing not sent to Spam: outreach counts, as a mailbox can let it into the inbox (placeFor()). */
+		phishMissed: vs.filter((v) => v.truth === "phishing" && v.got && !JUNK.has(v.got)).length,
 		failed: vs.filter((v) => !v.got).length,
 		retried: vs.filter((v) => v.calls.some((c) => c.retries > 0)).length,
 		msMedian: Math.round(median(vs.flatMap((v) => v.calls.map((c) => c.ms)))),
