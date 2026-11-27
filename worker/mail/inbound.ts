@@ -2,6 +2,7 @@ import { byteBudget, type EmailSendingEvent, type InboundJob, r2Keys, ulid } fro
 import { addressParser } from "postal-mime";
 import { resolveRecipient } from "../directory";
 import { holdMail } from "../held";
+import { redactAddress, redactedInboundJob, redactedSendingEvent } from "../observability";
 import { handleDeliveryEvent } from "./events";
 import type { Models } from "./checks";
 import { ingest, isPermanentParseError, recordFailed } from "./ingest";
@@ -22,7 +23,8 @@ export async function email(message: ForwardableEmailMessage, env: Env): Promise
 	const fromHeader = addressParser(message.headers.get("from") ?? "", { flatten: true }).flatMap((a) => a.address ?? []);
 	const resolution = await resolveRecipient(env.DIRECTORY, [message.from, ...fromHeader], message.to);
 	if (resolution.kind === "reject") {
-		console.log(JSON.stringify({ msg: "rejected", from: message.from, to: message.to, reason: resolution.reason }));
+		const [from, to] = await Promise.all([redactAddress(message.from), redactAddress(message.to)]);
+		console.log(JSON.stringify({ msg: "rejected", from, to, reason: resolution.reason }));
 		message.setReject(resolution.reason);
 		return;
 	}
@@ -53,13 +55,19 @@ export async function email(message: ForwardableEmailMessage, env: Env): Promise
 	}));
 	await env.INBOUND.sendBatch(jobs.map((body) => ({ body })));
 
-	console.log(JSON.stringify({ msg: "accepted", ingestId, to: message.to, mailboxes: resolution.mailboxIds, size: message.rawSize }));
+	console.log(JSON.stringify({ msg: "accepted", ingestId, to: await redactAddress(message.to), mailboxes: resolution.mailboxIds, size: message.rawSize }));
 }
 
 // Messages are told apart by shape rather than queue name, since queues can be renamed when deploying.
 const isInboundJob = (body: unknown): body is InboundJob => typeof body === "object" && body !== null && "ingestId" in body && "rawKey" in body;
 const isSendingEvent = (body: unknown): body is EmailSendingEvent =>
 	typeof body === "object" && body !== null && "type" in body && typeof body.type === "string" && body.type.startsWith("cf.email.sending.");
+
+async function redactedBody(body: unknown): Promise<unknown> {
+	if (isInboundJob(body)) return redactedInboundJob(body);
+	if (isSendingEvent(body)) return redactedSendingEvent(body);
+	return { type: typeof body };
+}
 
 /**
  * Parsing holds a message several times over (its bytes, its parts), and a batch shares one isolate's 128 MB. Messages
@@ -82,7 +90,7 @@ export async function queue(batch: MessageBatch, env: Env, models: Models = env.
 			} catch (err) {
 				// Mail is only dropped after its last retry if listing it under Failed kept failing too. The raw copy stays in
 				// R2: re-send its job to replay it.
-				console.error(JSON.stringify({ msg: "queue message failed", queue: batch.queue, attempts: msg.attempts, body: msg.body, error: String(err) }));
+				console.error(JSON.stringify({ msg: "queue message failed", queue: batch.queue, attempts: msg.attempts, body: await redactedBody(msg.body), error: String(err) }));
 				msg.retry({ delaySeconds: Math.min(30 * 2 ** (msg.attempts - 1), 3600) });
 			} finally {
 				budget.give(bytes);
