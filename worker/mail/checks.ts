@@ -32,6 +32,9 @@ const SURE_CLEAN = 0.2;
 const SURE_OUTREACH = 0.8;
 /** Bounds what a message costs to check: about a thousand tokens of body, and little of anything else. */
 const MAX_BODY = 4000;
+/** The beginning and end of a longer visible body, so filler in either place can't push all of the rest out. */
+const BODY_HEAD = 2500;
+const BODY_TAIL = MAX_BODY - BODY_HEAD;
 /** A plain-text body searched for links, at most. */
 const MAX_LINK_SCAN = 200_000;
 const MAX_FIELD = 200;
@@ -160,8 +163,6 @@ export function parsedJson(text: string): unknown {
 
 /** Elements whose content isn't shown: what a browser doesn't render as text, and what the app's sanitizer removes. */
 const UNSHOWN = new Set<string>(["head", "title", "style", "template", "canvas", "video", "audio", ...REMOVED_ELEMENTS]);
-/** Visible text collected, at most: describe() cuts the body one character shorter. */
-const MAX_COLLECTED = MAX_BODY + 1;
 /** Image-map areas among the links, at most: one isn't known to be usable, so it can't fill the list. */
 const MAX_AREAS = 5;
 /** A plain-text body is read this much at a time, until enough of it shows. */
@@ -189,6 +190,7 @@ interface Inherited {
  * past the checks into the inbox, where all of it went before there were checks.
  */
 export async function readHtml(html: string, attached: ReadonlySet<string>): Promise<Page> {
+	const hiddenByClass = hiddenClasses(html);
 	// Depth inside subtrees nothing in can show: display: none, `hidden`, opacity 0, elements the sanitizer removes.
 	// onEndTag fires on implicit closes too, so an unclosed one ends where the browser ends it.
 	let closed = 0;
@@ -225,10 +227,11 @@ export async function readHtml(html: string, attached: ReadonlySet<string>): Pro
 					...(tag === "details" && !el.hasAttribute("open") ? { outer: parent.folded } : {}),
 				};
 				const display = d.get("display");
+				const classes = (el.getAttribute("class") ?? "").split(/\s+/);
 				const closes =
 					UNSHOWN.has(tag) ||
-					display === "none" ||
-					isZero(d.get("opacity")) ||
+					hidesElement(d) ||
+					classes.some((c) => hiddenByClass.has(c)) ||
 					(el.hasAttribute("hidden") && (display === undefined || display === "none")) ||
 					(tag === "dialog" && !el.hasAttribute("open"));
 				const visible = closed === 0 && !closes && !own.invisible && !own.tiny && !own.folded;
@@ -282,7 +285,11 @@ export async function readHtml(html: string, attached: ReadonlySet<string>): Pro
 
 /** Visible text, budgeted by what shows: whitespace collapsed, invisible formatting characters dropped. */
 class Collector {
+	// Kept whole until the budget is past; past it, only the ends are. Memory stays bounded either way.
 	private out = "";
+	private head = "";
+	private tail = "";
+	private length = 0;
 	private gap = false;
 
 	/** A boundary between elements: what comes next is a new word. */
@@ -296,20 +303,18 @@ class Collector {
 		const core = t.trim();
 		if (t.startsWith(" ")) this.gap = true;
 		if (!core) return false;
-		if (this.out.length < MAX_COLLECTED) {
-			if (this.gap && this.out) this.out += " ";
-			this.out += core.slice(0, MAX_COLLECTED - this.out.length);
-		}
+		const piece = `${this.gap && this.length > 0 ? " " : ""}${core}`;
+		this.length += piece.length;
+		if (this.out.length <= MAX_BODY) this.out = (this.out + piece).slice(0, MAX_BODY + 1);
+		if (this.head.length < BODY_HEAD) this.head = (this.head + piece).slice(0, BODY_HEAD);
+		this.tail = (this.tail + piece).slice(-BODY_TAIL);
 		this.gap = t.endsWith(" ");
 		return true;
 	}
 
-	full(): boolean {
-		return this.out.length >= MAX_COLLECTED;
-	}
-
+	/** The whole text when it fits; otherwise its first and last parts joined by an ellipsis. */
 	value(): string {
-		return this.out;
+		return this.length <= MAX_BODY ? this.out : `${this.head}…${this.tail}`;
 	}
 }
 
@@ -322,7 +327,7 @@ export function readText(text: string): Page {
 		if (links.size >= MAX_LINKS) break;
 	}
 	const shown = new Collector();
-	for (let at = 0; at < text.length && !shown.full(); at += TEXT_SLICE) shown.add(text.slice(at, at + TEXT_SLICE), false);
+	for (let at = 0; at < text.length; at += TEXT_SLICE) shown.add(text.slice(at, at + TEXT_SLICE), false);
 	return { text: shown.value(), links: [...links] };
 }
 
@@ -336,6 +341,73 @@ function linkHost(href: string): string | null {
 	} catch {
 		return null;
 	}
+}
+
+/** Class selectors simple stylesheet rules hide (`.x { … }` only; anything harder is beyond this reading). */
+function hiddenClasses(html: string): ReadonlySet<string> {
+	const rules = new Map<string, Map<string, string>>();
+	const lower = html.toLowerCase();
+	const open = /<style\b[^>]*>/gi;
+	for (let match = open.exec(html); match; match = open.exec(html)) {
+		const start = match.index + match[0].length;
+		const close = lower.indexOf("</style", start);
+		const css = html.slice(start, close < 0 ? html.length : close).replaceAll(/\/\*[\s\S]*?(?:\*\/|$)/g, "");
+		for (const rule of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+			const body = declarations(rule[2] ?? "");
+			for (const selector of (rule[1] ?? "").split(",")) {
+				const simple = /^\.(-?[_a-zA-Z][_a-zA-Z0-9-]*)$/.exec(selector.trim())?.[1];
+				if (!simple) continue;
+				const merged = rules.get(simple) ?? new Map<string, string>();
+				for (const [name, value] of body) merged.set(name, value);
+				rules.set(simple, merged);
+			}
+		}
+		if (close < 0) break;
+		open.lastIndex = close + 8;
+	}
+	const hidden = new Set<string>();
+	for (const [name, d] of rules) {
+		const visibility = d.get("visibility");
+		if (hidesElement(d) || visibility === "hidden" || visibility === "collapse" || isZero(d.get("font-size"))) hidden.add(name);
+	}
+	return hidden;
+}
+
+/** What hides a whole subtree without a descendant being able to show again, as far as inline/simple CSS says. */
+function hidesElement(d: Map<string, string>): boolean {
+	if (d.get("display") === "none" || isZero(d.get("opacity")) || d.get("color") === "transparent") return true;
+	if ((d.get("position") === "absolute" || d.get("position") === "fixed") && ["left", "right", "top", "bottom"].some((side) => largeNegativeOffset(d.get(side)))) return true;
+	if (zeroClip(d.get("clip")) || zeroClipPath(d.get("clip-path"))) return true;
+	const transform = d.get("transform") ?? "";
+	for (const scale of transform.matchAll(/scale(?:x|y|3d)?\(([^)]*)\)/g)) {
+		if ((scale[1] ?? "").split(/[\s,]+/).some((n) => isZero(n))) return true;
+	}
+	const overflowY = d.get("overflow-y") ?? d.get("overflow");
+	return (isZero(d.get("height")) || isZero(d.get("max-height"))) && (overflowY === "hidden" || overflowY === "clip");
+}
+
+/** A positioned box pushed well out of view: about a hundred CSS pixels, half its own size, or half the viewport. */
+function largeNegativeOffset(value: string | undefined): boolean {
+	const match = /^-(\d+(?:\.\d+)?)(px|pt|em|rem|vh|vw|%)?$/.exec((value ?? "").replaceAll(/\s+/g, ""));
+	if (!match) return false;
+	const n = Number(match[1]);
+	const unit = match[2] ?? "px";
+	if (unit === "%" || unit === "vh" || unit === "vw") return n >= 50;
+	if (unit === "em" || unit === "rem") return n >= 6;
+	if (unit === "pt") return n >= 75;
+	return n >= 100;
+}
+
+function zeroClip(value: string | undefined): boolean {
+	const body = /^rect\(([^)]*)\)$/.exec(value ?? "")?.[1];
+	if (!body) return false;
+	const sides = body.split(/[\s,]+/).filter(Boolean);
+	return sides.length === 4 && sides.every((side) => isZero(side));
+}
+
+function zeroClipPath(value: string | undefined): boolean {
+	const v = value ?? "";
+	return /^inset\(\s*(?:100%|50%)\s*\)$/.test(v) || /^circle\(\s*0(?:[a-z%]+)?\s*\)$/.test(v) || /^ellipse\(\s*0(?:[a-z%]+)?\s+0(?:[a-z%]+)?\s*\)$/.test(v);
 }
 
 /**
@@ -404,6 +476,7 @@ export function describe(facts: MailFacts) {
 		// Where links go, since phishing hides them behind text.
 		linkDomains: facts.page.links,
 		attachments: facts.attachments.slice(0, MAX_FILES).map((a) => ({ filename: cut(a.filename), contentType: cut(a.contentType) })),
-		body: cut(body, MAX_BODY),
+		// readHtml()/readText() already bound this to MAX_BODY plus the ellipsis, head and tail together.
+		body,
 	};
 }

@@ -130,6 +130,33 @@ describe("checks by Workers AI", () => {
 		expect(quick.state.body).not.toContain("gone");
 	});
 
+	it.each([
+		["a class hidden in a style tag", `<style>.hpad{display:none}</style><div class="hpad">${"gone ".repeat(1000)}</div><p>Wire the payment today.</p>`],
+		["an off-screen absolutely positioned block", `<div style="position:absolute;left:-10000px">${"gone ".repeat(1000)}</div><p>Wire the payment today.</p>`],
+		["an off-screen fixed block", `<div style="position:fixed;top:-200vh">${"gone ".repeat(1000)}</div><p>Wire the payment today.</p>`],
+		["transparent text", `<div style="color:transparent">${"gone ".repeat(1000)}</div><p>Wire the payment today.</p>`],
+		["zero-scale text", `<div style="transform:scale(0)">${"gone ".repeat(1000)}</div><p>Wire the payment today.</p>`],
+		["a zero rectangle clip", `<div style="position:absolute;clip:rect(0px 0px 0px 0px)">${"gone ".repeat(1000)}</div><p>Wire the payment today.</p>`],
+		["a halfway inset clip path", `<div style="clip-path:inset(50%)">${"gone ".repeat(1000)}</div><p>Wire the payment today.</p>`],
+		["zero height with overflow hidden", `<div style="max-height:0;overflow:hidden">${"gone ".repeat(1000)}</div><p>Wire the payment today.</p>`],
+	])("leaves out filler hidden by %s", async (_, html) => {
+		await f.control.setModels({ quick: 0.5 });
+		await deliver(VERIFIED, "Lunch?", { html });
+		const [quick] = (await calls()).map((c) => JSON.parse(c.inputs));
+		expect(quick.state.body).toContain("Wire the payment today.");
+		expect(quick.state.body).not.toContain("gone");
+	});
+
+	it("reads the beginning and end of a long visible body, so visible filler can't push the ending out", async () => {
+		await f.control.setModels({ quick: 0.5 });
+		const filler = "A long visible newsletter introduction. ".repeat(160);
+		await deliver(VERIFIED, `${filler}Wire 4,000 USD to the account below before noon.`);
+		const [quick] = (await calls()).map((c) => JSON.parse(c.inputs));
+		expect(quick.state.body.length).toBe(4001);
+		expect(quick.state.body).toContain("A long visible newsletter introduction.");
+		expect(quick.state.body).toContain("Wire 4,000 USD to the account below before noon.");
+	});
+
 	it("records where links really go, and not links the recipient can't see", async () => {
 		await f.control.setModels({ quick: 0.5 });
 		const hiddenLinks = Array.from({ length: 50 }, (_, i) => `<a href="https://pad${i}.example/">.</a>`).join("");
