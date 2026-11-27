@@ -172,7 +172,7 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		receivedAt: job.receivedAt,
 		messageIdHeader,
 		inReplyTo: parseMessageIds(email.inReplyTo).slice(0, 1),
-		references: withoutOwnReference(email).slice(-MAX_THREAD_REFERENCES),
+		references: boundReferences(withoutOwnReference(email)),
 		from,
 		to,
 		cc,
@@ -209,6 +209,11 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 			console.error(JSON.stringify({ msg: "push failed", ingestId: job.ingestId, mailboxId: job.mailboxId, error: String(error) })),
 		);
 	}
+}
+
+/** The root and the newest of a long References: the root still joins an import to its thread, the newest a live reply. */
+function boundReferences(refs: string[]): string[] {
+	return refs.length <= MAX_THREAD_REFERENCES ? refs : [refs[0]!, ...refs.slice(1 - MAX_THREAD_REFERENCES)];
 }
 
 /**
