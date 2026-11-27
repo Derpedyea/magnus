@@ -58,10 +58,17 @@ export function RecipientField(props: {
 			value={value}
 			onValueChange={(next, details) => {
 				// Escape would clear every chip; here it only closes the suggestions.
-				if (details.reason !== "escape-key") onChange(next);
+				if (details.reason === "escape-key") return;
+				onChange(next);
+				// A picked suggestion takes the place of what was typed to find it.
+				if (next.length > value.length) setTyped("");
 			}}
 			inputValue={typed}
-			onInputValueChange={setTyped}
+			// The combobox clears what's typed whenever its suggestions close, as they do once it matches no one. Here that's
+			// an address being written, so it stays until it becomes a chip.
+			onInputValueChange={(next, details) => {
+				if (details.reason !== "input-clear") setTyped(next);
+			}}
 			open={showing}
 			onOpenChange={setOpen}
 			autoHighlight
