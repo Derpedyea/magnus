@@ -4,6 +4,20 @@ import { type InboundJob, r2Keys } from "#shared";
 
 const HOUR = 3600 * 1000;
 
+function mimeParts(count: number, attachment = false): string {
+	const lines = [
+		"From: Sender <sender@outside.test>", "To: alice@example.com", "Subject: Parts", "MIME-Version: 1.0",
+		'Content-Type: multipart/mixed; boundary="x"', "",
+	];
+	for (let i = 0; i < count; i++) {
+		lines.push("--x", "Content-Type: text/plain");
+		if (attachment) lines.push('Content-Disposition: attachment; filename="a.txt"');
+		lines.push("", "x");
+	}
+	lines.push("--x--", "");
+	return lines.join("\r\n");
+}
+
 describe("Failed", () => {
 	let f: Fixture;
 	let ids: Mailboxes;
@@ -16,9 +30,9 @@ describe("Failed", () => {
 	});
 
 	/** An original queued for these mailboxes, and alice's job for it. */
-	async function store(mailboxes = [ids.alice]) {
+	async function store(mailboxes = [ids.alice], raw = MIME) {
 		const input = job(ids.alice);
-		await f.env.MAIL.put(input.rawKey, MIME, { customMetadata: { mailboxes: mailboxes.join(",") } });
+		await f.env.MAIL.put(input.rawKey, raw, { customMetadata: { mailboxes: mailboxes.join(",") } });
 		return input;
 	}
 	/** The job's last try fails reading the original. */
@@ -47,6 +61,19 @@ describe("Failed", () => {
 		const input = await store();
 		expect(await f.control.consume([input], 11)).toEqual({ acks: ["0"], retries: [] });
 		expect(await alice().listFailed({})).toMatchObject([{ id: input.ingestId, error: null }]);
+		expect(await inbox()).toEqual([]);
+	});
+
+	it.each([
+		["too many attachments", mimeParts(501, true), "Too many attachments"],
+		["too many MIME parts", mimeParts(1001), "Maximum MIME part count"],
+	])("lists %s under Failed on its first try, before extracting files", async (_, raw, error) => {
+		const input = await store([ids.alice], raw);
+		expect(await f.control.consume([input])).toEqual({ acks: ["0"], retries: [] });
+		const failed = await alice().listFailed({});
+		expect(failed).toHaveLength(1);
+		expect(failed[0]?.error).toContain(error);
+		expect((await f.env.MAIL.list()).objects).toHaveLength(1);
 		expect(await inbox()).toEqual([]);
 	});
 

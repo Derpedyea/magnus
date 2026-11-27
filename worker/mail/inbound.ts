@@ -4,7 +4,7 @@ import { resolveRecipient } from "../directory";
 import { holdMail } from "../held";
 import { handleDeliveryEvent } from "./events";
 import type { Models } from "./checks";
-import { ingest, recordFailed } from "./ingest";
+import { ingest, isPermanentParseError, recordFailed } from "./ingest";
 
 /**
  * Tries at parsing inbound mail, about three hours with the backoff below, before it's listed under Failed instead.
@@ -99,7 +99,7 @@ async function inbound(env: Env, job: InboundJob, attempts: number, models: Mode
 	try {
 		await ingest(env, job, models);
 	} catch (err) {
-		if (attempts < INGEST_ATTEMPTS) throw err;
+		if (!isPermanentParseError(err) && attempts < INGEST_ATTEMPTS) throw err;
 		// Bounded: it's stored and shown in the list.
 		await recordFailed(env, job, String(err).slice(0, MAX_ERROR_LENGTH));
 	}

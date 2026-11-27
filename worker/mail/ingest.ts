@@ -32,11 +32,45 @@ import { checkRules } from "./rules";
  */
 const CHECK_ATTEMPTS = 3;
 const MAX_CHECK_ERROR = 300;
+const MAX_ATTACHMENTS = 500;
+const MAX_MIME_PARTS = 1000;
+const MAX_MIME_NESTING_DEPTH = 32;
+const MAX_RFC822_NESTING_DEPTH = 2;
+const MAX_MIME_HEADERS_SIZE = 256 * 1024;
 /** Headers kept for rules (MailHeader), at most, and each one's length. */
 const MAX_HEADERS = 60;
 const MAX_HEADER_VALUE = 500;
 /** Headers every message has a pile of, which say how it travelled or was signed rather than anything a rule is about. */
 const TRACE_HEADERS = /^(?:received|dkim-signature|arc-.*|authentication-results)$/;
+
+const PARSE_LIMIT_CODES = new Set(["EMAXNESTINGDEPTH", "EMAXHEADERSIZE", "EMAXPARTCOUNT", "EMAXFORWARDEDADDRESSES"]);
+
+class PermanentParseError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "PermanentParseError";
+	}
+}
+
+export function isPermanentParseError(error: unknown): boolean {
+	return error instanceof PermanentParseError;
+}
+
+async function parseEmail(raw: ArrayBuffer): Promise<Email> {
+	try {
+		return await PostalMime.parse(raw, {
+			attachmentEncoding: "arraybuffer",
+			maxPartCount: MAX_MIME_PARTS,
+			maxNestingDepth: MAX_MIME_NESTING_DEPTH,
+			maxRfc822NestingDepth: MAX_RFC822_NESTING_DEPTH,
+			maxHeadersSize: MAX_MIME_HEADERS_SIZE,
+		});
+	} catch (error) {
+		const code = error instanceof Error && "code" in error ? error.code : null;
+		if (typeof code === "string" && PARSE_LIMIT_CODES.has(code)) throw new PermanentParseError(error instanceof Error ? error.message : String(error));
+		throw error;
+	}
+}
 
 /** Parse a stored raw message, split out bodies/attachments to R2, and hand metadata to the mailbox. */
 export async function ingest(env: Env, job: InboundJob, models: Models = env.AI): Promise<void> {
@@ -51,7 +85,8 @@ export async function ingest(env: Env, job: InboundJob, models: Models = env.AI)
 		return;
 	}
 
-	const email = await PostalMime.parse(await raw.arrayBuffer(), { attachmentEncoding: "arraybuffer" });
+	const email = await parseEmail(await raw.arrayBuffer());
+	if (email.attachments.length > MAX_ATTACHMENTS) throw new PermanentParseError(`Too many attachments: ${email.attachments.length} exceeds ${MAX_ATTACHMENTS}`);
 	const messageId = job.ingestId;
 	const mailbox = env.MAILBOX.getByName(job.mailboxId);
 
