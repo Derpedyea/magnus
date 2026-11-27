@@ -1,9 +1,9 @@
 # Rules and the mail agent: design (draft)
 
 Status: v1 engine built, backend only: per-mailbox ordered rules with static conditions, organize actions, `stop`,
-plain-English AI conditions on Workers AI (gpt-oss-120b), a `rule_runs` audit on each message
+plain-English AI conditions read by DeepSeek V4.1 Flash through OpenRouter, a `rule_runs` audit on each message
 (`MessageDetail.rules`), preview, and apply to existing mail (docs/ARCHITECTURE.md §5.6, Rules). The agent sidebar
-is built in a simpler form than §9: no Agent DO or Agents SDK, the app keeps the conversation, Workers AI's
+is built in a simpler form than §9: no Agent DO or Agents SDK, the app keeps the conversation, the same
 DeepSeek V4.1 Flash with function calling, and §9.2's approval split for the tools that exist (§5.6, Mail agent).
 Not built yet: the Settings › Rules UI, forward and auto-reply, Sieve, person and admin scopes, the agent's drafts, undo,
 suggestions and cleanup, learned patterns, rule versions, and AI budgets. The rest is the design draft of 2026-10-23 (v1's tables are simpler than §2's): decisions

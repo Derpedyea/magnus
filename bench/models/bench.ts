@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import type { MailCategory } from "#shared";
-import { AGENT_MODEL, converse } from "../../worker/agent";
+import { converse } from "../../worker/agent";
 import { checkMail, DEEP_MODEL, type MailFacts, type Models, QUICK_MODEL } from "../../worker/mail/checks";
-import { checkRules, RULES_MODEL } from "../../worker/mail/rules";
+import { checkRules } from "../../worker/mail/rules";
 import { runTask, TASKS } from "./agent";
 
 // Benchmarks models for each of Magnus's model calls, through the production code (checkMail(), checkRules(),
@@ -124,27 +124,26 @@ function shim(ai: Ai, swap: Swap, calls: Call[]): Models {
 				const target = swap.quick ?? model;
 				return (await record(target, () => ai.run(target as never, { ...inputs, model: target.split("/").pop() } as never))) as Record<string, unknown>;
 			}
-			const target = model === RULES_MODEL ? (swap.rules ?? model) : model === AGENT_MODEL ? (swap.agent ?? model) : model;
-			return (await record(target, () => ai.run(target as never, inputs as never))) as Record<string, unknown>;
+			return (await record(model, () => ai.run(model as never, inputs as never))) as Record<string, unknown>;
 		},
 		gateway(id) {
 			return {
 				async run(request) {
-					const r = request as { query: { messages: unknown[]; response_format: unknown } };
-					if (swap.oracle) return Response.json({ choices: [{ message: { content: JSON.stringify({ category: swap.oracle }) } }] });
-					const target = swap.deep ?? DEEP_MODEL;
-					if (!target.startsWith("@cf/")) {
-						const body = await record(target, async () => {
-							const res = await ai.gateway(id).run({ ...request, query: { ...(request.query as object), model: target, usage: { include: true } } } as AIGatewayUniversalRequest);
-							if (!res.ok) throw new Error(`gateway ${res.status}`);
-							return res.json();
-						});
-						return Response.json(body);
-					}
-					// The same messages and schema, as a Workers AI chat model takes them (worker/mail/rules.ts).
-					const body = await record(target, () =>
-						ai.run(target as never, { messages: r.query.messages, response_format: r.query.response_format, max_completion_tokens: 2000, reasoning_effort: "low" } as never),
-					);
+					const query = request.query as Record<string, unknown> & { model: string; reasoning?: { effort?: string }; max_tokens?: number };
+					// What production asked for: the deep check, the agent (with tools), or rules.
+					const role = query.model === DEEP_MODEL ? "deep" : "tools" in query ? "agent" : "rules";
+					if (role === "deep" && swap.oracle) return Response.json({ choices: [{ message: { content: JSON.stringify({ category: swap.oracle }) } }] });
+					const target = (role === "deep" ? swap.deep : role === "agent" ? swap.agent : swap.rules) ?? query.model;
+					const body = await record(target, async () => {
+						if (target.startsWith("@cf/")) {
+							// The same request, as a Workers AI chat model takes it.
+							const { model: _, provider: __, reasoning, max_tokens, ...rest } = query;
+							return ai.run(target as never, { ...rest, max_completion_tokens: max_tokens, reasoning_effort: reasoning?.effort } as never);
+						}
+						const res = await ai.gateway(id).run({ ...request, query: { ...query, model: target, usage: { include: true } } } as AIGatewayUniversalRequest);
+						if (!res.ok) throw new Error(`gateway ${res.status}: ${(await res.text()).slice(0, 200)}`);
+						return res.json();
+					});
 					return Response.json(body);
 				},
 			};
@@ -251,7 +250,7 @@ export async function agent(b: Bench, model: string, concurrency: number, repeat
 
 // ─── Scoring ──────────────────────────────────────────────────────────────
 
-const pct = (n: number, d: number) => (d === 0 ? "–" : `${((100 * n) / d).toFixed(0)}%`);
+const pct = (n: number, d: number) => (d === 0 ? "–" : `${((100 * n) / d).toFixed(1)}%`);
 const median = (xs: number[]) => {
 	const s = [...xs].sort((a, b) => a - b);
 	return s.length === 0 ? Number.NaN : s[Math.floor(s.length / 2)]!;

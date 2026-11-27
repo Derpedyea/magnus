@@ -1,20 +1,19 @@
 import type { Rule, RuleAnswer } from "#shared";
 import { z } from "zod";
-import { CheckError, describe, type MailFacts, type Models, parsedJson } from "./checks";
+import { CheckError, describe, type MailFacts, type Models, openRouter, parsedJson } from "./checks";
 
-// Workers AI's reading of the AI conditions of a mailbox's rules (RuleInput.ai), for new mail whose other conditions
+// A model's reading of the AI conditions of a mailbox's rules (RuleInput.ai), for new mail whose other conditions
 // match. One call reads the message once for all of them. Mail going to Spam isn't read (Mailbox.aiRules()), so a
 // condition can only file mail someone would see anyway.
 
 /**
- * Reads new mail against rules' AI conditions. Billed as Workers AI. Not DeepSeek V4.1 Flash, which the mail agent
- * uses: on bench/models' 49 conditions, gpt-oss-120b was right 94% of the time (four runs) to DeepSeek's 96%
- * (three), at about $0.23 a thousand messages to $0.31-0.37, and it has Workers AI's usual 300 requests a minute where
- * DeepSeek, a Workers Paid model, has 20, which a burst of mail runs into. DeepSeek errs towards not matching; this
- * one's few wrong matches were a $149 card alert taken for "a receipt over $100" and a phish, which goes to Spam
- * unread here.
+ * Reads new mail against rules' AI conditions, through OpenRouter (openRouter()). The mail agent's model too. On
+ * bench/models' 49 conditions, three runs, it was right 95% of the time for about $0.14 a thousand messages. Workers
+ * AI's copy of it was right 96% for $0.31-0.37 and allows 20 requests a minute, which a burst of mail runs into, and
+ * Workers AI's gpt-oss-120b 94% for $0.23. Claude Haiku 5.5 was right 97% for $0.14, but within noise of this, and
+ * its mistakes were rules matching mail they shouldn't, where this one's mostly leave mail be.
  */
-export const RULES_MODEL = "@cf/openai/gpt-oss-120b";
+export const RULES_MODEL = "deepseek/deepseek-v4.1-flash-1017";
 /** What the model says of why a rule matched, at most: shown with the message. */
 const MAX_REASON = 200;
 
@@ -24,7 +23,7 @@ const INSTRUCTIONS = [
 	"verifiedSender says whether the sender's domain vouched for the From address.",
 ].join("\n");
 
-const Reply = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string().nullable() }) })) });
+const Reply = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string().nullish() }) })) });
 const Answers = z.object({ answers: z.array(z.object({ rule: z.number().int(), match: z.boolean(), reason: z.string() })) });
 
 /**
@@ -32,40 +31,42 @@ const Answers = z.object({ answers: z.array(z.object({ rule: z.number().int(), m
  * Throws when the model can't be reached or answers off-schema; the queue retries it.
  */
 export async function checkRules(models: Models, facts: MailFacts, rules: Pick<Rule, "id" | "ai">[]): Promise<Record<string, RuleAnswer>> {
-	const reply = Reply.safeParse(
-		await models.run(RULES_MODEL, {
-			messages: [
-				{ role: "system", content: INSTRUCTIONS },
-				{ role: "user", content: JSON.stringify({ conditions: rules.map((r, i) => ({ rule: i + 1, condition: r.ai })), email: describe(facts) }) },
-			],
-			// Reasoning shares this budget; an answer cut short has no content and fails below.
-			max_completion_tokens: 1500,
-			reasoning_effort: "low",
-			response_format: {
-				type: "json_schema",
-				json_schema: {
-					name: "answers",
-					strict: true,
-					schema: {
-						type: "object",
-						additionalProperties: false,
-						required: ["answers"],
-						properties: {
-							answers: {
-								type: "array",
-								items: {
-									type: "object",
-									additionalProperties: false,
-									required: ["rule", "match", "reason"],
-									properties: { rule: { type: "integer" }, match: { type: "boolean" }, reason: { type: "string" } },
-								},
+	const response = await openRouter(models, {
+		model: RULES_MODEL,
+		messages: [
+			{ role: "system", content: INSTRUCTIONS },
+			{ role: "user", content: JSON.stringify({ conditions: rules.map((r, i) => ({ rule: i + 1, condition: r.ai })), email: describe(facts) }) },
+		],
+		// Reasoning shares this budget; an answer cut short has no content and fails below.
+		max_tokens: 1500,
+		reasoning: { effort: "low" },
+		response_format: {
+			type: "json_schema",
+			json_schema: {
+				name: "answers",
+				strict: true,
+				schema: {
+					type: "object",
+					additionalProperties: false,
+					required: ["answers"],
+					properties: {
+						answers: {
+							type: "array",
+							items: {
+								type: "object",
+								additionalProperties: false,
+								required: ["rule", "match", "reason"],
+								properties: { rule: { type: "integer" }, match: { type: "boolean" }, reason: { type: "string" } },
 							},
 						},
 					},
 				},
 			},
-		}),
-	);
+		},
+	});
+	// Status alone: a provider's error body can quote the request.
+	if (!response.ok) throw new CheckError(`${RULES_MODEL} answered ${response.status}`);
+	const reply = Reply.safeParse(await response.json().catch(() => null));
 	const text = reply.data?.choices[0]?.message.content;
 	if (!text) throw new CheckError(`${RULES_MODEL} gave no answer`);
 	const answers = Answers.safeParse(parsedJson(text));

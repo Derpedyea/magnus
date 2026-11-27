@@ -115,34 +115,24 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 	const sure = spam < SURE_CLEAN || (spam >= SURE_SPAM && settled);
 	if (sure) return { kind: "checked", category: top, spam, model: QUICK_MODEL };
 
-	const response = await models.gateway(GATEWAY).run(
-		{
-			provider: "openrouter",
-			endpoint: "v1/chat/completions",
-			// No Authorization: the gateway adds the stored key only when there's none. Mail stays out of its logs.
-			headers: { "Content-Type": "application/json", "cf-aig-collect-log": false },
-			query: {
-				model: DEEP_MODEL,
-				messages: [
-					{ role: "system", content: INSTRUCTIONS },
-					{ role: "user", content: JSON.stringify(state) },
-				],
-				// Reasoning shares this budget; an answer cut short has no content and fails below.
-				max_tokens: 2000,
-				reasoning: { effort: "low" },
-				response_format: {
-					type: "json_schema",
-					json_schema: {
-						name: "verdict",
-						strict: true,
-						schema: { type: "object", additionalProperties: false, required: ["category"], properties: { category: { type: "string", enum: MAIL_CATEGORIES } } },
-					},
-				},
-				// Only providers that honour the schema, and don't keep what they're sent.
-				provider: { require_parameters: true, data_collection: "deny", zdr: true },
+	const response = await openRouter(models, {
+		model: DEEP_MODEL,
+		messages: [
+			{ role: "system", content: INSTRUCTIONS },
+			{ role: "user", content: JSON.stringify(state) },
+		],
+		// Reasoning shares this budget; an answer cut short has no content and fails below.
+		max_tokens: 2000,
+		reasoning: { effort: "low" },
+		response_format: {
+			type: "json_schema",
+			json_schema: {
+				name: "verdict",
+				strict: true,
+				schema: { type: "object", additionalProperties: false, required: ["category"], properties: { category: { type: "string", enum: MAIL_CATEGORIES } } },
 			},
 		},
-	);
+	});
 	// Status alone: a provider's error body can quote the request.
 	if (!response.ok) throw new CheckError(`${DEEP_MODEL} answered ${response.status}`);
 	const text = DeepReply.safeParse(await response.json().catch(() => null)).data?.choices[0]?.message.content;
@@ -150,6 +140,22 @@ export async function checkMail(models: Models, facts: MailFacts): Promise<MailC
 	const verdict = DeepVerdict.safeParse(parsedJson(text));
 	if (!verdict.success) throw new CheckError(`${DEEP_MODEL} answered off-schema`);
 	return { kind: "checked", category: verdict.data.category, spam, model: DEEP_MODEL };
+}
+
+/**
+ * A chat completion from an OpenRouter model, through the account's `default` AI Gateway, which holds the OpenRouter key
+ * (BYOK): the Worker never has it, and OpenRouter bills it. It reads mail, so it goes only to providers that honour every
+ * parameter asked for and keep nothing they're sent, and stays out of the gateway's logs. A failure's body can quote the
+ * request: read its status, not its text.
+ */
+export function openRouter(models: Models, query: Record<string, unknown>): Promise<Response> {
+	return models.gateway(GATEWAY).run({
+		provider: "openrouter",
+		endpoint: "v1/chat/completions",
+		// No Authorization: the gateway adds the stored key only when there's none.
+		headers: { "Content-Type": "application/json", "cf-aig-collect-log": false },
+		query: { ...query, provider: { require_parameters: true, data_collection: "deny", zdr: true } },
+	});
 }
 
 /** JSON.parse's errors quote the text, which here is a model's answer: so no error, just nothing. */

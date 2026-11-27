@@ -1,8 +1,9 @@
 // Benchmarks models for Magnus's model calls against the real AI binding. Costs a few cents a run.
 //
-//   CLOUDFLARE_ACCOUNT_ID=… node bench/models/run.mjs <quick|deep|rules|agent> <model,…> [--concurrency 4] [--limit n] [--repeat n, agent only] [--out dir]
+//   CLOUDFLARE_ACCOUNT_ID=… node bench/models/run.mjs <quick|deep|rules|agent> <model,…> [--concurrency 4] [--limit n] [--repeat n, agent only] [--mail set.json] [--out dir]
 //   node bench/models/run.mjs report [--out dir]
 //
+// --mail: a set from import.mjs (real mail) in place of mail.json.
 // quick: the decision model checkMail() asks first; mail it isn't sure of is answered with the true category, so its
 //        errors are its own confident ones. deep: every message reaches the deep model (an OpenRouter model through the
 //        account's `default` gateway, or a Workers AI one). rules: checkRules(). agent: converse() on bench/models/agent.ts.
@@ -18,7 +19,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../..");
 const { values, positionals } = parseArgs({
 	allowPositionals: true,
-	options: { concurrency: { type: "string", default: "4" }, limit: { type: "string" }, repeat: { type: "string", default: "1" }, out: { type: "string", default: join(tmpdir(), "magnus-bench") } },
+	options: { concurrency: { type: "string", default: "4" }, limit: { type: "string" }, repeat: { type: "string", default: "1" }, mail: { type: "string" }, out: { type: "string", default: join(tmpdir(), "magnus-bench") } },
 });
 const [role, list] = positionals;
 const out = values.out;
@@ -40,7 +41,7 @@ async function run(role, models, concurrency) {
 	mkdirSync(out, { recursive: true });
 	try {
 		const b = { ai: proxy.env.AI };
-		const mail = bench.loadMail(join(here, "mail.json")).slice(0, values.limit ? Number(values.limit) : undefined);
+		const mail = bench.loadMail(values.mail ?? join(here, "mail.json")).slice(0, values.limit ? Number(values.limit) : undefined);
 		for (const model of models) {
 			const t0 = performance.now();
 			const verdicts =
