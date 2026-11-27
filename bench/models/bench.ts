@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { MailCategory } from "#shared";
-import { converse } from "../../worker/agent";
+import { approveAction, converse } from "../../worker/agent";
 import { checkMail, DEEP_MODEL, type MailFacts, type Models, QUICK_MODEL } from "../../worker/mail/checks";
 import { checkRules } from "../../worker/mail/rules";
 import { runTask, TASKS } from "./agent";
@@ -235,7 +235,7 @@ export async function agent(b: Bench, model: string, concurrency: number, repeat
 		async (task) => {
 			const calls: Call[] = [];
 			try {
-				const { problem, reply } = await runTask(converse as never, shim(b.ai, { agent: model }, calls), task);
+				const { problem, reply } = await runTask(converse as never, approveAction as never, shim(b.ai, { agent: model }, calls), task);
 				const trace = reply.messages.map((m) =>
 					m.role === "assistant" ? `said ${JSON.stringify(m.content.slice(0, 160))}${(m.toolCalls ?? []).map((c) => ` → ${c.name}${c.arguments.slice(0, 200)}`).join("")}` : `${m.role}: ${"summary" in m ? m.summary : ""}`,
 				);

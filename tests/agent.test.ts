@@ -148,7 +148,7 @@ describe("Mail agent", () => {
 		await f.control.setModels({ agent: [{ calls: [{ name: "read_thread", args: { mailboxId: ids.alice, threadId } }] }, { content: "Read." }] });
 
 		expect((await ask("Read this")).status).toBe(200);
-		const last = (await f.control.state()).modelCalls.filter((c) => c.model === RULES_MODEL).at(-1)!;
+		const last = (await f.control.state()).modelCalls.filter((c) => c.model === AGENT_MODEL).at(-1)!;
 		const tool = JSON.parse(last.inputs).messages.filter((m: { role: string }) => m.role === "tool").at(-1);
 		const read = JSON.parse(tool.content).untrustedMail.messages[0].text;
 		expect(read).toContain("The visible invoice is attached.");
