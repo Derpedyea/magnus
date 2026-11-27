@@ -344,6 +344,14 @@ async function sendIdentity(c: Context<AppEnv>, from: string) {
 	return identities.find((i) => i.address === normalizeAddress(from));
 }
 
+/** A short burst cap no human hits, so automation can't queue mail or uploads unboundedly. A daily quota is still a gap. */
+async function outboundBurst(c: Context<AppEnv>, kind: "send" | "upload") {
+	const { success } = await c.env.OUTBOUND_LIMIT_30_PER_60S.limit({ key: `${c.var.user.id}:${kind}` });
+	if (success) return null;
+	c.header("Retry-After", "60");
+	return c.json({ error: `Too many ${kind === "send" ? "sends" : "uploads"}. Try again in a minute.` }, 429);
+}
+
 /** Of these normalized recipients, the ones a send from `from` delivers by itself (see localRecipients()). */
 async function localTo(c: Context<AppEnv>, from: string, recipients: string[]): Promise<LocalRecipient[]> {
 	const routed = await Promise.all(
@@ -583,6 +591,8 @@ const mb = new Hono<AppEnv>()
 
 	/** Composer attachment upload: raw body, filename in X-Filename (URI-encoded). Whatever doesn't fit in the message goes as a link. */
 	.post("/uploads", async (c) => {
+		const limited = await outboundBurst(c, "upload");
+		if (limited) return limited;
 		const length = Number(c.req.header("Content-Length") ?? 0);
 		if (!length) return c.json({ error: "Content-Length required" }, 411);
 		if (length > MAX_UPLOAD_BYTES) return c.json({ error: `Files are limited to ${formatBytes(MAX_UPLOAD_BYTES)}` }, 413);
@@ -601,6 +611,8 @@ const mb = new Hono<AppEnv>()
 	})
 
 	.post("/send", zValidator("json", ComposeSchema), async (c) => {
+		const limited = await outboundBurst(c, "send");
+		if (limited) return limited;
 		const req = c.req.valid("json");
 		const db = c.env.DIRECTORY;
 		const userId = c.var.user.id;

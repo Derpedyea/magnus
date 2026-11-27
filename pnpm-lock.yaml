@@ -22,7 +22,7 @@ importers:
         version: 5.3.0
       '@hono/zod-validator':
         specifier: ^0.9.1
-        version: 0.9.1(hono@4.13.9)(zod@4.6.7)
+        version: 0.9.1(hono@4.13.23)(zod@4.6.7)
       '@simplewebauthn/browser':
         specifier: 13.3.0
         version: 13.3.0
@@ -78,8 +78,8 @@ importers:
         specifier: ^0.4.0
         version: 0.4.0
       hono:
-        specifier: ^4.13.9
-        version: 4.13.9
+        specifier: ^4.13.23
+        version: 4.13.23
       input-otp:
         specifier: ^1.5.0
         version: 1.5.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -93,17 +93,14 @@ importers:
         specifier: ^17.0.6
         version: 17.0.6
       postal-mime:
-        specifier: ^4.0.0
-        version: 4.0.0
+        specifier: ^4.2.1
+        version: 4.2.1
       react:
         specifier: ^19.3.0
         version: 19.3.0
       react-dom:
         specifier: ^19.3.0
         version: 19.3.0(react@19.3.0)
-      shadcn:
-        specifier: ^4.21.0
-        version: 4.21.0(typescript@7.0.2)
       tw-animate-css:
         specifier: ^1.4.0
         version: 1.4.0
@@ -159,6 +156,9 @@ importers:
       miniflare:
         specifier: 5.20260926.1-alpha
         version: 5.20260926.1-alpha(@types/node@24.19.2)
+      shadcn:
+        specifier: ^4.21.0
+        version: 4.21.0(typescript@7.0.2)
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
@@ -2765,8 +2765,8 @@ packages:
     resolution: {integrity: sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A==}
     engines: {node: '>= 0.4'}
 
-  hono@4.13.9:
-    resolution: {integrity: sha512-7dMkQmZoC4E6F7AtaQSPhlWAdnBti+j7rreMZl8QB4jFiEhP9TWbGWUMi8WYzBCgmgulxuvLQupKqo+Co6Omyg==}
+  hono@4.13.23:
+    resolution: {integrity: sha512-OS90dj7dcsftEEWCOef8jRbnHE5lbrOq0hNRqjSyPsOnaGZvvfof1KS05hQNb4kUOCfDq1mG3PmHoX37DMnHQg==}
     engines: {node: '>=16.9.0'}
 
   http-errors@2.0.1:
@@ -3356,8 +3356,8 @@ packages:
     resolution: {integrity: sha512-LKWqWJRhstyYo9pGvgor/ivk2w94eSjE3RGVuzLGlr3NmD8bf7RcYGze1mNdEHRP6TRP6rMuDHk5t44hnTRyow==}
     engines: {node: '>=14.19.0'}
 
-  postal-mime@4.0.0:
-    resolution: {integrity: sha512-pmAD50GSuJ6Njf7oa4bleSsYrPy8UYxTRmxVFFwysOm2p8t4C3DFEmP+j7tkvQzPdFUT0X1PuzJvrnb2Sx40BA==}
+  postal-mime@4.2.1:
+    resolution: {integrity: sha512-uFQnu6TPJe5IGzj3ZIjzAYCk7qnVYM3KFvo0JpRFftJKtxJcUSMgTaWsIXDakTKfN71fUULhjNNVbNonim5f0Q==}
     engines: {node: '>=20'}
 
   postcss-selector-parser@7.1.6:
@@ -4575,13 +4575,13 @@ snapshots:
 
   '@hexagon/base64@1.1.28': {}
 
-  '@hono/node-server@2.1.1(hono@4.13.9)':
+  '@hono/node-server@2.1.1(hono@4.13.23)':
     dependencies:
-      hono: 4.13.9
+      hono: 4.13.23
 
-  '@hono/zod-validator@0.9.1(hono@4.13.9)(zod@4.6.7)':
+  '@hono/zod-validator@0.9.1(hono@4.13.23)(zod@4.6.7)':
     dependencies:
-      hono: 4.13.9
+      hono: 4.13.23
       zod: 4.6.7
 
   '@img/colour@1.1.0': {}
@@ -4748,7 +4748,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.30.1(zod@3.25.76)':
     dependencies:
-      '@hono/node-server': 2.1.1(hono@4.13.9)
+      '@hono/node-server': 2.1.1(hono@4.13.23)
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5
@@ -4758,7 +4758,7 @@ snapshots:
       eventsource-parser: 3.1.1
       express: 5.2.1
       express-rate-limit: 8.7.0(express@5.2.1)
-      hono: 4.13.9
+      hono: 4.13.23
       jose: 6.2.12
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -4770,7 +4770,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.30.1(zod@4.6.7)':
     dependencies:
-      '@hono/node-server': 2.1.1(hono@4.13.9)
+      '@hono/node-server': 2.1.1(hono@4.13.23)
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5
@@ -4780,7 +4780,7 @@ snapshots:
       eventsource-parser: 3.1.1
       express: 5.2.1
       express-rate-limit: 8.7.0(express@5.2.1)
-      hono: 4.13.9
+      hono: 4.13.23
       jose: 6.2.12
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -6391,7 +6391,7 @@ snapshots:
     dependencies:
       function-bind: 1.1.2
 
-  hono@4.13.9: {}
+  hono@4.13.23: {}
 
   http-errors@2.0.1:
     dependencies:
@@ -6879,7 +6879,7 @@ snapshots:
 
   pngjs@7.0.0: {}
 
-  postal-mime@4.0.0: {}
+  postal-mime@4.2.1: {}
 
   postcss-selector-parser@7.1.6:
     dependencies:

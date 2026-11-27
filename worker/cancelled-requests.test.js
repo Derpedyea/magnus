@@ -28,6 +28,7 @@ beforeEach(() => {
 	// Every case starts on a fresh isolate, with nothing kept from the last.
 	vi.resetModules();
 	for (const key of Object.keys(env)) delete env[key];
+	env.AUTH_LIMIT_3_PER_60S = { limit: async () => ({ success: true }) };
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -50,7 +51,7 @@ describe("migrate", () => {
 describe("auth", () => {
 	const request = () => new Request("https://mail.example.com/api/auth/sign-in/email-otp");
 	/** Answers the session secret with `secret`, and everything else with `rest`. */
-	const directory = (secret, rest = never) => d1((sql) => (sql.includes("auth_secret") ? secret() : rest()));
+	const directory = (secret, rest = never) => d1((sql) => (sql.includes("auth_secret") ? secret() : rest(sql)));
 
 	it("reads the secret itself when another request's read never got its reply", async () => {
 		const { auth } = await import("./auth");
@@ -72,7 +73,8 @@ describe("auth", () => {
 		let asked = () => {};
 		const firstAsked = new Promise((resolve) => { asked = resolve; });
 		let queries = 0;
-		env.DIRECTORY = directory(() => [{ value: "secret" }], () => {
+		env.DIRECTORY = directory(() => [{ value: "secret" }], (sql) => {
+			if (sql.includes("auth_email_throttles")) return [{ n: 1 }];
 			if (++queries > 1) return [];
 			asked();
 			return never();
@@ -89,7 +91,7 @@ describe("notifyNewMail", () => {
 	it("signs its pushes when another push's token never came", async () => {
 		const { keyPair, notifyNewMail, rawKey } = await import("./push");
 		const browser = await keyPair({ name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
-		const device = { endpoint: "https://push.example.net/abc", origin: "https://mail.example.com", p256dh: toBase64Url(await rawKey(browser.publicKey)), auth: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) };
+		const device = { endpoint: "https://fcm.googleapis.com/fcm/send/abc", origin: "https://mail.example.com", p256dh: toBase64Url(await rawKey(browser.publicKey)), auth: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) };
 		const signing = await keyPair({ name: "ECDSA", namedCurve: "P-256" }, ["sign", "verify"]);
 		const vapid = JSON.stringify({ publicKey: toBase64Url(await rawKey(signing.publicKey)), privateKey: await crypto.subtle.exportKey("jwk", signing.privateKey) });
 		/** The device and the install's keys; the stored push token answers with `token`. */

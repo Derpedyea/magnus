@@ -408,12 +408,13 @@ describe("removing a person", () => {
 
 	it("sends nothing they queued in a mailbox they shared, and what the others queued still goes", async () => {
 		const mailbox = f.env.MAILBOX.getByName(ids.shared);
-		await mailbox.enqueueSend(sendInput(ids.shared, { senderId: "alice", subject: "Alice's", delayMs: 10_000 }));
-		await mailbox.enqueueSend(sendInput(ids.shared, { senderId: "bob", subject: "Bob's", delayMs: 10_000 }));
+		await f.env.DIRECTORY.prepare("INSERT INTO address_routes VALUES ('family@example.com', ?1, 1)").bind(ids.shared).run();
+		await mailbox.enqueueSend(sendInput(ids.shared, { senderId: "alice", from: { address: "family@example.com", name: "Alice" }, subject: "Alice's", delayMs: 10_000 }));
+		await mailbox.enqueueSend(sendInput(ids.shared, { senderId: "bob", from: { address: "family@example.com", name: "Bob" }, subject: "Bob's", delayMs: 10_000 }));
 		await remove();
 		await f.control.setNow(NOW + 10_000);
 		// A directory that can't say sends nothing, and the outbox asks again in a minute.
-		await f.control.failNext("directory", "SELECT 1 AS ok FROM mailbox_members WHERE user_id = ?1 AND mailbox_id = ?2");
+		await f.control.failNext("directory", "SELECT EXISTS(SELECT 1 FROM auth_users");
 		await mailbox.drain();
 		expect((await f.control.state()).sends).toEqual([]);
 		expect(await mailbox.alarmAt()).toBe(NOW + 10_000 + 60_000);
