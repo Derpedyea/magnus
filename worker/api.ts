@@ -62,7 +62,7 @@ import { type Agent, AgentError, approveAction, converse } from "./agent";
 import { auth, currentUser, endReplacedSession, googleEnabled } from "./auth";
 import { CloudflareError } from "./cloudflare";
 import { getCustomHotkeys, getSendIdentities, getUserMailboxes, mailboxAccess, mailboxesRestoring, type Reader, resolveRecipient, setCustomHotkeys, setSignature } from "./directory";
-import { fileHeaders, renderEmailHtml, serveFile } from "./html";
+import { fileHeaders, proxyImage, renderEmailHtml, serveFile } from "./html";
 import { LIVE_USER_HEADER, type Mailbox } from "./mailbox/mailbox";
 import { getInstall } from "./settings";
 import { setup } from "./setup";
@@ -447,7 +447,8 @@ const mb = new Hono<AppEnv>()
 		return renderEmailHtml(obj.body, {
 			attachments: blobs.attachments,
 			attachmentUrl: (id) => `${base}/${id}`,
-			allowRemote: c.req.query("images") === "1",
+			remoteUrl: (url) => `/api/remote-image?url=${encodeURIComponent(url)}`,
+			blockTrackers: c.req.query("images") !== "1",
 			origin: new URL(c.req.url).origin,
 		});
 	})
@@ -793,6 +794,9 @@ const routes = app
 		if (!mailboxes.some((m) => m.addresses.some((a) => a.address === address && a.canSend))) return c.json({ error: `You can't send as ${address}` }, 403);
 		return c.json({ signature: await setSignature(c.env.DIRECTORY, c.var.reader, address, text) });
 	})
+
+	/** A remote image in an email, fetched for the reader so the sender never sees their address (renderEmailHtml()). */
+	.get("/remote-image", (c) => proxyImage(c.req.query("url")))
 
 	.route("/", views)
 	.route("/drafts", draftRoutes)

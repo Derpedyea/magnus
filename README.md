@@ -62,8 +62,8 @@ Objects, D1, R2, and Queues handles everything in between, and a fast web client
   own Export Tool for it in a Cloudflare Container. Or drop an export: the `.mbox` from Gmail's Takeout, Thunderbird's
   Mail folder, the folder Proton's Export Tool saves on your computer, or any folder of `.eml` or mbox files.
   Importing the same mail again adds nothing twice.
-- **Hostile HTML stays contained**: streaming sanitizer, strict CSP, sandboxed iframe, and remote images
-  blocked until you ask.
+- **Hostile HTML stays contained**: streaming sanitizer, strict CSP, and a sandboxed iframe. Remote images load
+  through the Worker, so senders never see your IP, and tracking pixels are blocked.
 - **Sign in with a passkey, an emailed code, or a password** you set, or Google if you add it. There's no sign-up; only people you add can get in.
 - **Raw messages are kept in R2**, so a parsing bug can be fixed by replaying the queue. Mail that still can't be read
   after its retries goes to **Failed**, to retry or download, rather than being dropped. Permanent deletion removes
