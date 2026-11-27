@@ -28,6 +28,7 @@ beforeEach(() => {
 	// Every case starts on a fresh isolate, with nothing kept from the last.
 	vi.resetModules();
 	for (const key of Object.keys(env)) delete env[key];
+	env.AUTH_LIMIT_3_PER_60S = { limit: async () => ({ success: true }) };
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -50,7 +51,7 @@ describe("migrate", () => {
 describe("auth", () => {
 	const request = () => new Request("https://mail.example.com/api/auth/sign-in/email-otp");
 	/** Answers the session secret with `secret`, and everything else with `rest`. */
-	const directory = (secret, rest = never) => d1((sql) => (sql.includes("auth_secret") ? secret() : rest()));
+	const directory = (secret, rest = never) => d1((sql) => (sql.includes("auth_secret") ? secret() : rest(sql)));
 
 	it("reads the secret itself when another request's read never got its reply", async () => {
 		const { auth } = await import("./auth");
@@ -72,7 +73,8 @@ describe("auth", () => {
 		let asked = () => {};
 		const firstAsked = new Promise((resolve) => { asked = resolve; });
 		let queries = 0;
-		env.DIRECTORY = directory(() => [{ value: "secret" }], () => {
+		env.DIRECTORY = directory(() => [{ value: "secret" }], (sql) => {
+			if (sql.includes("auth_email_throttles")) return [{ n: 1 }];
 			if (++queries > 1) return [];
 			asked();
 			return never();

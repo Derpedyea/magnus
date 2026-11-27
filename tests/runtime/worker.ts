@@ -100,14 +100,40 @@ async function atTestTime<T>(run: () => Promise<T>): Promise<T> {
 	}
 }
 
-// Have I Been Pwned's password range API, which knows just this one (sign-in.test.ts). Nothing reaches the real one.
+// Google's test keys, for sign-in.test.ts's OIDC tokens. Generated in the Worker so its private half never leaves it.
+type GoogleKeys = { privateKey: CryptoKey; publicJwk: JsonWebKey };
+let googleKeys: Promise<GoogleKeys> | null = null;
+function testGoogleKeys(): Promise<GoogleKeys> {
+	if (googleKeys) return googleKeys;
+	const made = (async () => {
+		const pair = await crypto.subtle.generateKey(
+			{ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+			false,
+			["sign", "verify"],
+		);
+		if (!("privateKey" in pair)) throw new Error("Expected a key pair");
+		const jwk = (await crypto.subtle.exportKey("jwk", pair.publicKey)) as JsonWebKey;
+		return { privateKey: pair.privateKey, publicJwk: { ...jwk, kid: "magnus-test", alg: "RS256", use: "sig" } };
+	})();
+	googleKeys = made;
+	return made;
+}
+
+// Have I Been Pwned's password range API, which knows just this one (sign-in.test.ts), and Google's public keys.
+// Nothing reaches the real ones.
 const BREACHED_PASSWORD = "password password password";
 const realFetch = globalThis.fetch;
 Reflect.set(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-	if (new URL(new Request(input, init).url).hostname !== "api.pwnedpasswords.com") return realFetch(input, init);
+	const url = new URL(new Request(input, init).url);
+	if (url.hostname === "www.googleapis.com" && url.pathname === "/oauth2/v3/certs") {
+		return Response.json({ keys: [(await testGoogleKeys()).publicJwk] });
+	}
+	if (url.hostname !== "api.pwnedpasswords.com") return realFetch(input, init);
 	const sha1 = new Uint8Array(await crypto.subtle.digest("SHA-1", new TextEncoder().encode(BREACHED_PASSWORD)));
 	return new Response(`${Array.from(sha1, (b) => b.toString(16).padStart(2, "0")).join("").slice(5).toUpperCase()}:3\r\n`);
 });
+
+const base64Url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 
 // Every push service, as far as ingest can tell: requests are recorded and answered with pushStatus. Restored on every
 // exit.
@@ -418,6 +444,18 @@ export default class TestWorker extends WorkerEntrypoint<TestEnv> {
 	async code(address: string) {
 		const a = await auth(new Request("https://magnus.test/api/auth/sign-in/email-otp"));
 		return a.api.createVerificationOTP({ body: { email: address, type: "sign-in" } });
+	}
+	/** A Google ID token signed by the fixture's key, with the claims a test gives it. */
+	async signGoogleToken(claims: Record<string, unknown>) {
+		const header = base64Url(new TextEncoder().encode(JSON.stringify({ alg: "RS256", kid: "magnus-test", typ: "JWT" })));
+		const now = Math.floor(Date.now() / 1000);
+		const payload = base64Url(new TextEncoder().encode(JSON.stringify({
+			sub: "google-subject", name: "Alice", picture: "", ...claims,
+			iss: "https://accounts.google.com", aud: "test-google-client", iat: now, exp: now + 3600,
+		})));
+		const input = `${header}.${payload}`;
+		const signature = await crypto.subtle.sign({ name: "RSASSA-PKCS1-v1_5" }, (await testGoogleKeys()).privateKey, new TextEncoder().encode(input));
+		return `${input}.${base64Url(new Uint8Array(signature))}`;
 	}
 	forgetExpiredDevices() { return forgetExpiredDevices(this.env.DIRECTORY, Date.now()); }
 	/** Deletes someone for good, leaving their mail to deleteMailboxObjects(), as the hourly cron would. */

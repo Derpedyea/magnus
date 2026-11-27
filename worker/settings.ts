@@ -7,7 +7,7 @@ const InstallSchema = z.object({
 	accountId: z.string(),
 	workerName: z.string(),
 	/** Kept until Cloudflare confirms every activation step. A lost response or restart can resume it. */
-	setup: z.object({ domain: z.string(), zoneId: z.string(), email: z.string(), address: z.string(), moveMail: z.boolean() }).optional(),
+	setup: z.object({ domain: z.string(), zoneId: z.string(), email: z.string(), address: z.string(), moveMail: z.boolean(), resumeHash: z.string().optional() }).optional(),
 });
 
 /** Where this install lives in Cloudflare. Existing installs without `setup` are already complete. */
