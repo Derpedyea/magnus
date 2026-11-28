@@ -12,7 +12,7 @@ describe("cold outreach", () => {
 	afterAll(async () => { await f?.server.close(); });
 	beforeEach(async () => {
 		ids = await f.seed();
-		// Clef unsure, so Luna's category stands.
+		// Clef unsure, so the deep model's category stands.
 		await f.control.setModels({ quick: 0.5, deep: "outreach" });
 	});
 
@@ -58,13 +58,13 @@ describe("cold outreach", () => {
 		expect(moved?.verdict).toEqual({ kind: "checked", category: "outreach", spam: 0.5, model: DEEP_MODEL });
 	});
 
-	it("asks Luna when Clef is sure mail is unsolicited but not that it's only outreach", async () => {
+	it("asks the deep model when Clef is sure mail is unsolicited but not that it's only outreach", async () => {
 		await box().updateSettings({ outreachToSpam: false });
 		await f.control.setModels({ quick: { personal: 0.05, transactional: 0, newsletter: 0, outreach: 0.5, spam: 0, phishing: 0.45 }, deep: "phishing" });
 		expect(await deliver()).toMatchObject({ verdict: { category: "phishing", model: DEEP_MODEL }, labels: ["spam"] });
 	});
 
-	it("asks Luna when Clef is split between outreach and spam", async () => {
+	it("asks the deep model when Clef is split between outreach and spam", async () => {
 		await box().updateSettings({ outreachToSpam: false });
 		await f.control.setModels({ quick: { personal: 0.09, transactional: 0, newsletter: 0, outreach: 0.45, spam: 0.46, phishing: 0 }, deep: "outreach" });
 		expect(await deliver()).toMatchObject({ verdict: { category: "outreach", model: DEEP_MODEL }, labels: ["inbox"] });

@@ -32,14 +32,19 @@ import { AgentRequestSchema, LabelNameSchema, MAX_AGENT_ARGUMENTS, MAX_AGENT_TEX
 import { z } from "zod";
 import { mailboxAccess, type Reader } from "./directory";
 import { type Models, parsedJson, readHtml } from "./mail/checks";
-import { RULES_MODEL } from "./mail/rules";
 import type { Mailbox } from "./mailbox/mailbox";
 
-// The assistant in the app's side panel: the rules' model, given tools that act as the signed-in person, with the
+// The assistant in the app's side panel: a model given tools that act as the signed-in person, with the
 // mailboxes and checks the API gives them and nothing more. It reads hostile mail, so what could lose mail or teach
 // the spam filter (Trash, Spam, the Screener, deleting or applying rules, rules that do those) never runs here: it comes
 // back as a PendingAction for the person to approve (approveAction()). The app keeps the conversation.
 
+/**
+ * Answers in the side panel. Billed as Workers AI; the spam check's deep model too. On bench/models' 12 tasks, three
+ * times each, it did 33 of 36 at about 15 s and $0.64 a thousand questions, reading most of each step from its cache.
+ * GLM 5.3 did 35 for $5.14, gpt-oss-120b 29 and Inkling 2 Small 23, and Gemma 4 refuses the tools' schemas.
+ */
+export const AGENT_MODEL = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
 /** Model calls per question, at most, tools in between. */
 const MAX_STEPS = 8;
 /** Characters of tool results the model rereads, from earlier in the conversation and this answer; older ones are left out. */
@@ -482,7 +487,7 @@ function toolMessage(id: string, name: string, content: unknown, summary: string
 async function ask(models: Models, messages: Record<string, unknown>[]) {
 	let raw: Record<string, unknown>;
 	try {
-		raw = await models.run(RULES_MODEL, { messages, tools: SPECS, tool_choice: "auto", reasoning_effort: "low", max_completion_tokens: 4000 });
+		raw = await models.run(AGENT_MODEL, { messages, tools: SPECS, tool_choice: "auto", reasoning_effort: "low", max_completion_tokens: 4000 });
 	} catch {
 		throw new AgentError("The assistant couldn't be reached. Try again in a minute.");
 	}

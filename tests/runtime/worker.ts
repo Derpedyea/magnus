@@ -8,6 +8,7 @@ import { auth, signInWithoutCode } from "../../worker/auth";
 import { email, queue } from "../../worker/mail/inbound";
 import { DEEP_MODEL, type Models, QUICK_MODEL } from "../../worker/mail/checks";
 import { ingest } from "../../worker/mail/ingest";
+import { AGENT_MODEL } from "../../worker/agent";
 import { RULES_MODEL } from "../../worker/mail/rules";
 import { Mailbox as ProductionMailbox } from "../../worker/mailbox/mailbox";
 import { type Exporter, ProtonImport as ProductionProtonImport } from "../../worker/proton-import";
@@ -42,8 +43,8 @@ let pushEndless = false;
 /** One answer of the mail agent's model: what it says, and the tools it calls. */
 export type AgentStep = { content?: string; calls?: { name: string; args: unknown }[] };
 /**
- * What the stand-in models answer: Clef's probability of spam, Luna's category, whether every rule's AI condition
- * matches, and the mail agent's answers in turn (then "Done."). "fail" throws; "garbage" is off-schema.
+ * What the stand-in models answer: Clef's probability of spam, the deep model's category, whether every rule's AI
+ * condition matches, and the mail agent's answers in turn (then "Done."). "fail" throws; "garbage" is off-schema.
  */
 type ModelAnswers = { quick: number | Record<MailCategory, number> | "fail" | "garbage"; deep: MailCategory | "fail" | "echo"; rules: boolean | "fail" | "garbage"; agent: AgentStep[] };
 const ANSWERS: ModelAnswers = { quick: 0, deep: "personal", rules: true, agent: [] };
@@ -63,7 +64,7 @@ const models: Models = {
 				: answers.quick;
 			return { model: "clef", answers: { category: { type: "choice", choice: "personal", probabilities, confidence: 1 } }, usage: { input_tokens: 1, output_tokens: 0 } };
 		}
-		if (model === RULES_MODEL && "tools" in inputs) {
+		if (model === AGENT_MODEL && "tools" in inputs) {
 			const [step = { content: "Done." }, ...rest] = answers.agent;
 			answers = { ...answers, agent: rest };
 			const calls = step.calls?.map((c, i) => ({ id: `call-${modelCalls.length}-${i}`, type: "function", function: { name: c.name, arguments: JSON.stringify(c.args) } }));
@@ -76,17 +77,14 @@ const models: Models = {
 			const content = JSON.stringify({ answers: conditions.map((_, i) => ({ rule: i + 1, match: answers.rules, reason: `Answer ${i + 1}` })) });
 			return { choices: [{ message: { role: "assistant", content } }] };
 		}
+		if (model === DEEP_MODEL) {
+			if (answers.deep === "fail") throw new Error("Injected model failure");
+			// A model answering off-schema by repeating the mail back.
+			if (answers.deep === "echo") return { choices: [{ message: { role: "assistant", content: `Sure: ${JSON.stringify(inputs)}` } }] };
+			return { choices: [{ message: { role: "assistant", content: JSON.stringify({ category: answers.deep }) } }] };
+		}
 		throw new Error(`Unexpected model ${model}`);
 	},
-	gateway: (id) => ({
-		async run(request) {
-			modelCalls.push({ model: DEEP_MODEL, inputs: JSON.stringify({ id, request }) });
-			if (answers.deep === "fail") return new Response("Injected model failure", { status: 502 });
-			// A model answering off-schema by repeating the mail back.
-			if (answers.deep === "echo") return Response.json({ choices: [{ message: { role: "assistant", content: `Sure: ${JSON.stringify(request.query)}` } }] });
-			return Response.json({ choices: [{ message: { role: "assistant", content: JSON.stringify({ category: answers.deep }) } }] });
-		},
-	}),
 };
 
 // Future alarms cannot fire on wall time; only drain() runs them. Restore the clock on every exit.
